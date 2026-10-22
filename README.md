@@ -4,10 +4,10 @@ Specs, implementation plans and architecture decision records (ADRs) for [Percon
 
 ## Layout
 
-One folder per piece of work, named `<JIRA-KEY>-<short-name>`. Use the epic's key when the work spans several tickets, otherwise the ticket's own key.
+One folder per piece of work under `tickets/`, named `<JIRA-KEY>-<short-name>`. Use the epic's key when the work spans several tickets, otherwise the ticket's own key.
 
 ```
-PMM-15567-otel/
+tickets/PMM-15567-otel/
 ├── README.md        status, related tickets, PRs
 ├── spec.md          what and why: the design
 ├── plans/           how: implementation plans, numbered in execution order (00-roadmap.md, 01-….md)
@@ -28,4 +28,4 @@ Create only the parts the work needs; a small change may need just `spec.md`.
 
 | Folder | Topic | Status |
 |---|---|---|
-| [PMM-15567-otel](PMM-15567-otel/) | OpenTelemetry logs and traces | Design; ADRs partly accepted |
+| [PMM-15567-otel](tickets/PMM-15567-otel/) | OpenTelemetry logs and traces | Design; ADRs partly accepted |
