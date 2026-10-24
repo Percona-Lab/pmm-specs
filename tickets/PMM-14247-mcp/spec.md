@@ -78,7 +78,7 @@ Security assumptions and interfaces are settled before more code is built on the
 1. **Security model.** A security design review of this spec, centred on ADR-03, 05, 07, 08, 10, 12 and 15 to 18, before the rest of phase 2. The Origin check (ADR-10) lands as the next MCP PR. The implementation review before release stays ([§10](#10-phase-5-release)).
 2. **Tool contract.** `tool-contract.md` ([§8](#8-phase-3-output-contract)) written and reviewed, for the phase 2 and phase 2b tools. The phase 2 branches already written land first ([§6.5](#65-landing-order)), and the contract records their inputs.
 3. **Rest of phase 2, and the metrics tools,** built to the contract ([§6](#6-phase-2-the-rest-of-query-intelligence), [§7.1](#71-metrics), [§7.4](#74-service-health-in-pmm_inventory)); MySQL table discovery is best effort and doesn't block it.
-4. **Phase 3 code:** structured output, paging, errors, `pmm_qan_columns`.
+4. **Phase 3 code:** structured output, paging, errors, `pmm_catalog`.
 5. **Phase 4:** service-account principals, and Access Roles on the inventory, alert and Advisor APIs ([§9](#9-phase-4-identity-and-access-roles)).
 6. **Alerts and Advisors tools,** on those APIs ([§7.2](#72-alerts), [§7.3](#73-advisors)).
 7. **Phase 5:** client and engine matrix, HA check, security sign-off, release with MCP off ([§10](#10-phase-5-release), [§11](#11-testing-and-verification)).
@@ -127,7 +127,8 @@ MCP client ──HTTPS──▶ nginx  location /mcp
 
 | Tool | Returns | Backing API | Kind | Phase |
 |---|---|---|---|---|
-| `pmm_qan_columns` | The QAN column catalogue | None; built into the server | Passive | 3 |
+| `pmm_catalog` | Reference data: the QAN column catalogue (phase 3) and the metrics catalogue per engine (phase 2b) | None; built into the server | Passive | 3, 2b |
+| `pmm_service_health` | 10 to 15 key signals of one service, summarized | Datasource proxy: `/api/v1/query_range` | Passive | 2b |
 | `pmm_query_metrics` | Instant or range query results, summarized per series | Datasource proxy: `/api/v1/query`, `/api/v1/query_range` | Passive | 2b |
 | `pmm_list_metrics` | Metric names, label names and values, series | Datasource proxy: `/api/v1/labels`, `/api/v1/label/{name}/values`, `/api/v1/series` | Passive | 2b |
 | `pmm_alerts` | Firing alerts with labels, summary and start time | `GET /v1/alerting/alerts` (new, ADR-17) | Passive | 2b |
@@ -237,10 +238,14 @@ Ticket: PMM-15790, under PMM-14247. The tools are passive (ADR-05), follow the c
 
 Decision: [ADR-15](adr/ADR-15-metrics-tools.md).
 
-- `pmm_query_metrics` runs an instant or a range query through the datasource proxy (`/api/v1/query`, `/api/v1/query_range`). A range result is summarized per series (min, avg, max, last) unless raw points are asked for.
-- `pmm_list_metrics` lists metric names matching a pattern, label names, label values, and the series of a selector (`/api/v1/labels`, `/api/v1/label/{name}/values`, `/api/v1/series`), always within a time range.
-- Access Roles need nothing new: vmproxy injects the caller's filters on all these paths (`vmproxy/proxy/proxy.go:46-50`) [V].
-- Both build on `queryMetrics` (`tools_inventory.go:256`), which runs instant queries today [V].
+- `pmm_service_health(service_id, range)` returns 10 to 15 key signals of one service, summarized, from a fixed map of queries per engine taken from PMM's dashboards.
+- `pmm_catalog(kind: metrics, engine)` returns the curated catalog: name, meaning, unit, counter or gauge, key labels and a ready query, for 30 to 60 metrics per engine. A CI test checks every entry against exporter `/metrics` fixtures, as the QAN column catalogue is checked against qan-api2 [V].
+- `pmm_query_metrics` runs any instant or range query through the datasource proxy (`/api/v1/query`, `/api/v1/query_range`).
+- `pmm_list_metrics` lists metric names matching a pattern, label names, label values, and the series of a selector on this server (`/api/v1/labels`, `/api/v1/label/{name}/values`, `/api/v1/series`), always within a time range.
+- Access Roles need nothing new: vmproxy injects the caller's filters on all these paths (`vmproxy/proxy/proxy.go:46-50`) [V]. vmproxy doesn't forward the metadata endpoint, so meaning and type come from the catalog, not from the server.
+- Every `pmm_query_metrics` response fits one budget ([§8](#8-phase-3-output-contract)): summaries by default, a step chosen to fit, the top N series by max, repeated and internal labels left out of rows, and a narrowing hint built from the caller's expression when a result is cut.
+- `Instructions` and the tool description steer toward the built-in signals, the catalog, and aggregated queries.
+- All build on `queryMetrics` (`tools_inventory.go:256`), which runs instant queries today [V].
 - At most 4 metric queries in flight per caller; a further call answers `rate_limited`.
 
 ### 7.2 Alerts
@@ -264,7 +269,9 @@ Decision: [ADR-18](adr/ADR-18-advisors.md).
 
 ### 7.5 Acceptance
 
-- `pmm_query_metrics` answers an instant and a range query. A range that would exceed the point cap gets a larger step, and the result says so; a result over the series cap reports `truncated` and the series total.
+- `pmm_service_health` returns its signals for a MySQL, a PostgreSQL and a MongoDB service, one call each.
+- `pmm_catalog(kind: metrics)` returns entries for each engine. The CI test fails when an entry's metric disappears from the exporter fixtures.
+- `pmm_query_metrics` answers an instant and a range query. No response exceeds the point and size budget: a result that would is summarized or cut to the top N series, says so, and suggests a narrower query built from the caller's expression.
 - With an Access Role that allows one service, `pmm_query_metrics`, `pmm_list_metrics`, `pmm_alerts` and `pmm_advisors` return only that service's series, alerts and results.
 - A fifth metric query from the same caller, while four are in flight, returns `rate_limited`.
 - `pmm_advisors` returns `unauthorized` to a Viewer token and the failed checks to an Editor token.
@@ -275,7 +282,7 @@ Decision: [ADR-18](adr/ADR-18-advisors.md).
 
 Decision: [ADR-11](adr/ADR-11-output-contract.md).
 
-1. **One result value, two renderings.** Each tool gets a Go output type, for example `inventoryResult{Services, Total, Offset, Limit, Truncated}`. The handler builds it once. With a typed `Out`, the SDK infers `outputSchema`, validates the value against it and sends it as `structuredContent`, and keeps the text content the handler sets (`mcp/server.go:387-470` in v1.8.0) [V]. The text, with its "View in PMM" links, is rendered from the same value.
+1. **One result value, two renderings.** Each tool gets a Go output type, for example `inventoryResult{Services, Total, Offset, Limit, Truncated}`. The handler builds it once. With a typed `Out`, the SDK infers `outputSchema`, validates the value against it and sends it as `structuredContent`, and keeps the text content the handler sets (`mcp/server.go:387-470` in v1.8.0) [V]. The text, with its "View in PMM" links, is rendered from the same value. For metrics, the text carries the summary table and raw points go only in the structured content (ADR-15).
 2. **Redaction on the value.** ADR-07's masking runs on the result value before either rendering, so structured content can't carry what the text withholds. A test runs every tool with `PMM_MCP_RAW_SQL` off and checks both renderings.
 3. **Caps and paging.** Every listing tool takes `limit` and `offset` and reports `total`, `offset`, `limit` and `truncated`. The text ends with an explicit marker such as "showing 1–50 of 312; pass offset=50 for more". Starting values, which the token measurement may change:
 
@@ -287,8 +294,9 @@ Decision: [ADR-11](adr/ADR-11-output-contract.md).
    | `pmm_get_config` variables | 200 | 1000 |
    | Plan body | — | 64 KiB, with a truncation marker |
    | One table's DDL | — | 32 KiB, with a truncation marker |
-   | `pmm_query_metrics` series per result | 20 | 100 |
-   | `pmm_query_metrics` raw points per series | — | 500; the step grows to fit |
+   | `pmm_query_metrics` series shown (top N by max) | 20 | 100 |
+   | `pmm_query_metrics` points per response | — | 2,000; the step grows to fit, else summaries |
+   | `pmm_query_metrics` response size | — | 16 KiB |
    | `pmm_query_metrics` range | 1 h | the data retention |
    | `pmm_query_metrics` query timeout | 30 s | 30 s |
    | `pmm_list_metrics` values | 100 | 1000 |
@@ -296,8 +304,8 @@ Decision: [ADR-11](adr/ADR-11-output-contract.md).
    | `pmm_advisors` failed checks | 50 | 200 |
 
 4. **Errors.** The eight codes in `errors.go` are part of the contract: `not_found`, `invalid_input`, `unauthorized`, `timeout`, `no_query_source`, `insufficient_privileges`, `agent_unreachable`, `pmm_unavailable` [V], plus `rate_limited` (ADR-05). Each tool's contract lists the codes it can return. An error stays an `isError` result. Its text starts with `error: <code>`, as today (`errors.go:26-50`) [V], and its `_meta` carries `percona.com/error: {code, retryable}` for programs (`CallToolResult` has a `Meta` field in v1.8.0 [V]). `timeout`, `agent_unreachable`, `pmm_unavailable` and `rate_limited` are retryable. The error message never names a service the caller can't see.
-5. **Tool-description budget.** The QAN column catalogue moves out of `pmm_top_queries`' description into a new read-only tool, `pmm_qan_columns`. `pmm_top_queries` keeps the four standard rankings and says to call `pmm_qan_columns` for the rest; an unknown column answers `invalid_input` and points to it. The token cost of a standard slow-query triage is measured before and after and recorded on PMM-15530.
-6. **`Instructions`.** Updated to the new contract (EXPLAIN and schema from a `queryid` alone, paging, `pmm_qan_columns`, metrics, alerts and Advisors) and kept short.
+5. **Tool-description budget.** Reference data moves out of tool descriptions into one read-only tool, `pmm_catalog(kind, engine)`: the QAN column catalogue (`kind: qan_columns`) leaves `pmm_top_queries`' description, and the metrics catalogue (`kind: metrics`, ADR-15) never enters one. `pmm_top_queries` keeps the four standard rankings and says to call `pmm_catalog` for the rest; an unknown column answers `invalid_input` and points to it. The token cost of a standard slow-query triage is measured before and after and recorded on PMM-15530.
+6. **`Instructions`.** Updated to the new contract (EXPLAIN and schema from a `queryid` alone, paging, `pmm_catalog`, alerts and Advisors), plus ADR-15's metrics block, and kept short.
 7. **Where the contract lives.** `tool-contract.md` in this folder, written and reviewed before the rest of phase 2 ([§3.1](#31-order-from-here)). For every tool:
    - inputs, outputs, error codes and caps;
    - an authorization row: minimum Grafana role, backing APIs, whether LBAC filters the data;
@@ -385,10 +393,10 @@ Every phase:
 Additionally:
 - **Origin check (ADR-10):** a cross-site `Origin` gets 403; a request without `Origin` is served; a non-loopback peer gets 404; a backing call carries the caller's headers unchanged.
 - **Phase 2:** MySQL EXPLAIN fixtures from each supported version, and a multi-table join on a live server. The per-caller limit on live inspection.
-- **Phase 2b:** metric query caps (series, points, range, timeout) and summaries; `rate_limited` for metric queries; alerts and Advisors on a server with firing alerts and failed checks.
+- **Phase 2b:** the built-in signals and the metrics catalog against exporter fixtures; the response budget on a result with 300 series, with its narrowing hint; summaries; `rate_limited` for metric queries; alerts and Advisors on a server with firing alerts and failed checks.
 - **Phase 4:** the Access Role matrix over the inventory, QAN, metrics, alerts and Advisors: Access Control on and off; interactive Viewer, Editor, service token and Admin; a role that allows one service, two roles with different filters, and the default role. The matcher runs qan-api2's selector cases too.
 - **Phase 5:**
-  - Clients: Claude Code and Cursor against a Feature Build, with a service-account token, on each protocol version the SDK negotiates. Go SDK v1.8.0 supports 2024-11-05 to 2026-07-28 and defaults to 2026-07-28 (`mcp/shared.go:50`) [V].
+  - Clients: Claude Code and Cursor against a Feature Build, with a service-account token, on each protocol version the SDK negotiates. For each client, record whether it passes `Instructions` and structured content to the model. Go SDK v1.8.0 supports 2024-11-05 to 2026-07-28 and defaults to 2026-07-28 (`mcp/shared.go:50`) [V].
   - Engines: the triage on MySQL, PostgreSQL and MongoDB, recorded as a tool-by-engine table in `tool-contract.md`.
   - Failure: an agent that is down (`agent_unreachable`), an expired token (`unauthorized`), and pmm-managed restarting mid-call.
   - HA: one failover check before the merge back. `Stateless` should make it a non-event; this has not been tested [I].
@@ -419,7 +427,8 @@ Additionally:
 ## 13. Risks
 
 - **Phase 4 changes PMM-wide APIs.** Access Roles on the inventory, alert and Advisor APIs change what every restricted caller sees, the PMM UI included (ADR-16).
-- **Model-written metric queries** load PMM's own VictoriaMetrics; the caps and a per-caller limit bound it (ADR-15).
+- **Model-written metric queries** load PMM's own VictoriaMetrics; the budget, the timeout and a per-caller limit bound it (ADR-15).
+- **Catalog drift.** The built-in signals and the metrics catalog follow exporter metric names; the fixture tests catch renames, at the cost of keeping the fixtures current.
 - **Alerts without service labels** are hidden from restricted callers, and Grafana's alert list in the UI stays unscoped (ADR-17).
 - **No per-user MCP switch until ADR-13 ships.** With Access Control on, every Viewer and above can use MCP once an admin enables it; Access Roles still scope what each sees.
 - **A long-lived branch in a repository with generated code.** `*.pb.go` and Swagger conflicts are resolved by regenerating, never by hand (roadmap). The phase 2 branches already diverged once.

@@ -19,7 +19,7 @@ The endpoint is driven by language models. A tool that changes state can be trig
 Option 1. Every tool carries `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. The hints are metadata for clients; what keeps a tool read-only is the backing calls it makes.
 
 Tools are of two kinds:
-- **Passive** tools read what PMM has already collected: `pmm_version`, `pmm_inventory`, `pmm_top_queries`, `pmm_query_detail`, `pmm_qan_columns`, `pmm_get_config`, `pmm_query_metrics`, `pmm_list_metrics`, `pmm_alerts`, `pmm_advisors`, and `pmm_get_explain` for PostgreSQL (the stored plan).
+- **Passive** tools read what PMM has already collected: `pmm_version`, `pmm_inventory`, `pmm_top_queries`, `pmm_query_detail`, `pmm_catalog`, `pmm_get_config`, `pmm_service_health`, `pmm_query_metrics`, `pmm_list_metrics`, `pmm_alerts`, `pmm_advisors`, and `pmm_get_explain` for PostgreSQL (the stored plan).
 - **Live inspection** starts a pmm-agent action on the monitored database: `pmm_get_explain` for MySQL and MongoDB, and `pmm_get_schema`. MySQL EXPLAIN is always the non-executing form, never `EXPLAIN ANALYZE`. MongoDB `explain` is sent without a verbosity, so the server's default applies, which runs the candidate plans to collect statistics [I]; it never modifies data.
 
 Live inspection is bounded:

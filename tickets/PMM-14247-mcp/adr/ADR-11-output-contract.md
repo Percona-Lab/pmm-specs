@@ -22,7 +22,8 @@ Option 3.
 - Redaction (ADR-07) runs on the value, before either rendering.
 - Every listing tool takes `limit` and `offset` and reports `total`, `offset`, `limit` and `truncated`; the text ends with an explicit truncation marker. Starting caps are in [spec §8](../spec.md#8-phase-3-output-contract).
 - The error codes are part of the contract: the eight in `errors.go` plus `rate_limited` (ADR-05). An error stays an `isError` result. Its text starts with `error: <code>` for the model, and its `_meta` carries `percona.com/error: {code, retryable}` for programs. `timeout`, `agent_unreachable`, `pmm_unavailable` and `rate_limited` are retryable; the others are not.
-- The QAN column catalogue moves to a new read-only tool, `pmm_qan_columns`.
+- Reference data moves out of tool descriptions into one read-only tool, `pmm_catalog(kind, engine)`: `kind: qan_columns` is the QAN column catalogue, `kind: metrics` the metrics catalogue (ADR-15).
+- For a metrics result, the text carries the summary table and leaves raw points to the structured content (ADR-15), so the points are not sent twice.
 - The contract is written in `tool-contract.md` in this folder and reviewed before the rest of phase 2 is built. For each tool it lists the inputs, outputs, error codes and caps, the minimum Grafana role, the backing APIs, whether LBAC filters the data, whether the tool is passive or live (ADR-05), and the engines it supports. A golden-file test in percona/pmm snapshots `tools/list`.
 - Until release the contract may change freely; afterwards, only additively.
 
@@ -31,5 +32,6 @@ Option 3.
 - Human clients keep prose and links; programs get typed data and typed errors; both come from one implementation.
 - Responses roughly double in size, because structured content repeats the text's data. Caps and the token measurement on PMM-15530 must account for it.
 - Any change to a tool's inputs or outputs shows up as a golden-file diff in review.
-- One more tool in `tools/list`, in exchange for a shorter `pmm_top_queries` description.
+- One reference tool, `pmm_catalog`, instead of a catalogue in each description that needs one.
+- A client that passes only the text to its model sees summaries, not raw points. The client matrix (spec §11) records which clients do.
 - The remaining phase 2 work waits for the contract review.
