@@ -7,7 +7,7 @@
 
 ## Context
 
-`pmm_get_config` and the version enrichment in `pmm_inventory` read metrics. The raw `/prometheus` path is Admin-only. The path must be readable by a Viewer and must carry LBAC filters.
+`pmm_get_config`, the version and health lookups in `pmm_inventory`, and the metrics tools (ADR-15) read metrics. The raw `/prometheus` path is Admin-only. The path must be readable by a Viewer and must carry LBAC filters.
 
 ## Options
 
@@ -17,7 +17,7 @@
 
 ## Decision
 
-Option 3. `GET /graph/api/datasources/name/Metrics` returns the uid, with the caller's credentials, on every call; nothing is cached across callers. Queries then go to `/graph/api/datasources/proxy/uid/{uid}/api/v1/query`. LBAC filters apply to that path: #5942 added `/graph/api/datasources/proxy/uid/` to `lbacPrefixes` (PMM-15533), and `main`, merged into `PMM-MCP-GA` since, covers the whole `/graph/api/datasources/` tree.
+Option 3. `GET /graph/api/datasources/name/Metrics` returns the uid, with the caller's credentials, on every call; nothing is cached across callers. Queries then go to `/graph/api/datasources/proxy/uid/{uid}/api/v1/query`, and for ADR-15 also to `query_range`, `series`, `labels` and label values under the same prefix, all of which vmproxy filters. LBAC filters apply to that path: #5942 added `/graph/api/datasources/proxy/uid/` to `lbacPrefixes` (PMM-15533), and `main`, merged into `PMM-MCP-GA` since, covers the whole `/graph/api/datasources/` tree.
 
 ## Consequences
 

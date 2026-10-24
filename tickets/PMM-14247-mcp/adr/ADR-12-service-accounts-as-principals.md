@@ -1,13 +1,13 @@
 # ADR-12: Service-account tokens are principals
 
 - Status: Proposed
-- Date: 2026-10-22
+- Date: 2026-10-22, revised 2026-10-24
 - Tickets: PMM-14247, PMM-15531, PMM-15534
 - Implemented: not yet (phase 4)
 
 ## Context
 
-The MCP documentation tells users to connect with a service-account token. PMM Access Roles, which carry LBAC filters and, after ADR-13, permissions, are assigned to user IDs. For a token to be governed by Access Roles, the auth path has to know which account it belongs to. PMM-15534 tracks the underlying ticket; its details stay in Jira.
+The MCP documentation tells users to connect with a service-account token. PMM Access Roles, which carry LBAC filters, are assigned to user IDs. Today a service token resolves to user ID 0 (`getAuthUser` in `managed/services/grafana/client.go`), so no Access Role applies to it and its data is unfiltered (PMM-15534). For a token to be governed by Access Roles, the auth path has to know which account it belongs to.
 
 ## Options
 
@@ -25,5 +25,6 @@ Out of scope: a role picker on Grafana's service-account page; a machine princip
 
 - Access Roles govern every token-based integration, not only MCP.
 - No Grafana fork change and no extra call per request.
-- A token is governed by the default role from its first request. Admins who changed the default role should check it before upgrading; the release notes say so.
+- A token is governed by the default role from its first request. Since tokens get no filter today, this can only narrow what a token sees. Admins who restricted the default role should check their tokens before upgrading; the release notes say so.
+- This is a release prerequisite: without it, a token's MCP results are not scoped by Access Roles.
 - `mcp.md` and the access-control docs describe role assignment for service accounts, in the same change.

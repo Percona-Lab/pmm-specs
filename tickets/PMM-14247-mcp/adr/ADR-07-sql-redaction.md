@@ -26,6 +26,7 @@ With it off:
 - A SQL fingerprint with a literal outside its comments is treated as a raw statement and withheld. When the engine of a report is unknown, a quote that either MySQL or PostgreSQL reads as a string withholds the fingerprint.
 - `pmm_get_schema` DDL is not masked.
 - QAN dimension values in `pmm_top_queries` (`group_by=username`, `client_host`) are shown (D10): Viewers already see them in QAN, and this ADR is about SQL literals.
+- Metric label values, alert summaries and descriptions, and Advisor texts are returned as stored: they are not SQL statements, and the same caller sees them in PMM.
 
 Operators who need a hard guarantee also turn off query examples in PMM.
 
