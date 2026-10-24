@@ -30,7 +30,11 @@ Option 3. All metric reads go through the Grafana datasource proxy (ADR-09); vmp
 - **`pmm_service_health(service_id, range)`** returns 10 to 15 key signals of one service, already summarized: load (QPS), threads or connections, replication lag, CPU, memory, disk latency, and engine-specific ones such as the buffer pool hit ratio. The queries are a fixed map in Go, taken from PMM's dashboards and checked against fixtures. One call replaces the usual guessing.
 - **`pmm_catalog(kind: metrics, engine)`** returns the curated catalog for MySQL, PostgreSQL, MongoDB or the node: about 30 to 60 metrics each, with name, meaning, unit, counter or gauge, key labels and a ready query. It is hand-curated from the dashboards' queries and kept in step with the exporters by a CI test against their `/metrics` output. ADR-11 serves the QAN column catalogue from the same tool. Live metadata is not an option: vmproxy doesn't forward the metadata endpoint.
 - **`pmm_query_metrics`** runs any instant or range query: the escape hatch for what the built-in signals don't cover.
-- **`pmm_list_metrics`** discovers what exists on this server: metric names matching a pattern, label names and values, the series of a selector. It covers custom queries.
+- **`pmm_list_metrics`** discovers what exists on this server, custom queries included:
+  - `search` takes a substring of the metric name, such as `mysql`, `mongodb` or `replication`. The server turns it into a `match[]` selector on the label-values endpoint, so VictoriaMetrics filters the names [I]; the model writes no regex.
+  - `service_id` or `service_name` keeps only the metrics that exist for that service.
+  - Label names and values, and the series of a selector, help narrow a query.
+  - It looks back 1 h by default. When more names match than the limit, the result groups them by prefix, such as `mysql_global_status_*`, with a count each, so the model can narrow the search. Names that are in the catalog carry its one-line meaning and type.
 
 **Response budget** for `pmm_query_metrics` (starting values in spec §8):
 - One budget per response, in points and bytes, rather than separate caps per series.

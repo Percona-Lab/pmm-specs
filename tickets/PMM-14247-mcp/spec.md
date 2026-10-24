@@ -130,7 +130,7 @@ MCP client ──HTTPS──▶ nginx  location /mcp
 | `pmm_catalog` | Reference data: the QAN column catalogue (phase 3) and the metrics catalogue per engine (phase 2b) | None; built into the server | Passive | 3, 2b |
 | `pmm_service_health` | 10 to 15 key signals of one service, summarized | Datasource proxy: `/api/v1/query_range` | Passive | 2b |
 | `pmm_query_metrics` | Instant or range query results, summarized per series | Datasource proxy: `/api/v1/query`, `/api/v1/query_range` | Passive | 2b |
-| `pmm_list_metrics` | Metric names, label names and values, series | Datasource proxy: `/api/v1/labels`, `/api/v1/label/{name}/values`, `/api/v1/series` | Passive | 2b |
+| `pmm_list_metrics` | Metric names by substring search, label names and values, series | Datasource proxy: `/api/v1/labels`, `/api/v1/label/{name}/values`, `/api/v1/series` | Passive | 2b |
 | `pmm_alerts` | Firing alerts with labels, summary and start time | `GET /v1/alerting/alerts` (new, ADR-17) | Passive | 2b |
 | `pmm_advisors` | Failed Advisor checks per service | `GET /v1/advisors/failedServices`, `GET /v1/advisors/checks/failed` | Passive | 2b |
 
@@ -241,7 +241,7 @@ Decision: [ADR-15](adr/ADR-15-metrics-tools.md).
 - `pmm_service_health(service_id, range)` returns 10 to 15 key signals of one service, summarized, from a fixed map of queries per engine taken from PMM's dashboards.
 - `pmm_catalog(kind: metrics, engine)` returns the curated catalog: name, meaning, unit, counter or gauge, key labels and a ready query, for 30 to 60 metrics per engine. A CI test checks every entry against exporter `/metrics` fixtures, as the QAN column catalogue is checked against qan-api2 [V].
 - `pmm_query_metrics` runs any instant or range query through the datasource proxy (`/api/v1/query`, `/api/v1/query_range`).
-- `pmm_list_metrics` lists metric names matching a pattern, label names, label values, and the series of a selector on this server (`/api/v1/labels`, `/api/v1/label/{name}/values`, `/api/v1/series`), always within a time range.
+- `pmm_list_metrics` searches the metric names on this server. `search` takes a substring such as `mysql` or `mongodb`; `service_id` or `service_name` narrows to one service; label names, label values and the series of a selector help narrow a query (`/api/v1/label/__name__/values` with `match[]`, `/api/v1/labels`, `/api/v1/series`). It always works within a time range. Over the limit, names are grouped by prefix with counts; names in the catalog carry their meaning.
 - Access Roles need nothing new: vmproxy injects the caller's filters on all these paths (`vmproxy/proxy/proxy.go:46-50`) [V]. vmproxy doesn't forward the metadata endpoint, so meaning and type come from the catalog, not from the server.
 - Every `pmm_query_metrics` response fits one budget ([§8](#8-phase-3-output-contract)): summaries by default, a step chosen to fit, the top N series by max, repeated and internal labels left out of rows, and a narrowing hint built from the caller's expression when a result is cut.
 - `Instructions` and the tool description steer toward the built-in signals, the catalog, and aggregated queries.
@@ -272,7 +272,8 @@ Decision: [ADR-18](adr/ADR-18-advisors.md).
 - `pmm_service_health` returns its signals for a MySQL, a PostgreSQL and a MongoDB service, one call each.
 - `pmm_catalog(kind: metrics)` returns entries for each engine. The CI test fails when an entry's metric disappears from the exporter fixtures.
 - `pmm_query_metrics` answers an instant and a range query. No response exceeds the point and size budget: a result that would is summarized or cut to the top N series, says so, and suggests a narrower query built from the caller's expression.
-- With an Access Role that allows one service, `pmm_query_metrics`, `pmm_list_metrics`, `pmm_alerts` and `pmm_advisors` return only that service's series, alerts and results.
+- `pmm_list_metrics` with `search: mongodb` returns only names that contain `mongodb`; over the limit, it groups them by prefix with counts.
+- With an Access Role that allows one service, `pmm_service_health`, `pmm_query_metrics`, `pmm_list_metrics`, `pmm_alerts` and `pmm_advisors` return only that service's series, alerts and results.
 - A fifth metric query from the same caller, while four are in flight, returns `rate_limited`.
 - `pmm_advisors` returns `unauthorized` to a Viewer token and the failed checks to an Editor token.
 
@@ -299,7 +300,7 @@ Decision: [ADR-11](adr/ADR-11-output-contract.md).
    | `pmm_query_metrics` response size | — | 16 KiB |
    | `pmm_query_metrics` range | 1 h | the data retention |
    | `pmm_query_metrics` query timeout | 30 s | 30 s |
-   | `pmm_list_metrics` values | 100 | 1000 |
+   | `pmm_list_metrics` names or values | 100 | 1000; over the limit, grouped by prefix with counts |
    | `pmm_alerts` alerts | 50 | 200 |
    | `pmm_advisors` failed checks | 50 | 200 |
 
