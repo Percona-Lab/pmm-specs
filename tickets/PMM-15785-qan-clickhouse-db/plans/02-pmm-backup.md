@@ -5,13 +5,13 @@
 **Goal:** `pmm-backup.sh` handles QAN data correctly across ClickHouse pods:
 - a backup runs on the pod with the most rows;
 - a restore refuses only when a ClickHouse or Keeper pod does not answer. After stopping PMM and downloading the backup, it brings every pod to one `pmm`, then restores;
-- a restore fails, with PMM left scaled down, when ClickHouse comes back inconsistent or with a row count different from the backup.
+- a restore fails, with PMM left scaled down, when ClickHouse comes back inconsistent (two UUIDs, different table UUIDs, or unequal counts).
 
 **Architecture:** New POSIX-sh helpers in `charts/pmm-ha/files/pmm-backup.sh` read the `pmm` UUID and row count on every ClickHouse pod through `kubectl exec` (the script's existing access path; spec C1–C2 do not apply). They are called from `backup_clickhouse`, `validate_restore_clickhouse` and `restore_clickhouse`.
 
 **Tech Stack:** POSIX sh (dash, bash, busybox), kubectl, jq, clickhouse-client in the `clickhouse` container; the script's own unit and lint suites.
 
-**Spec:** [`../spec.md`](../spec.md) §2.7–2.8, §4.3, §4.4, D5, D6, D10, D13; contract in [`00-roadmap.md`](00-roadmap.md).
+**Spec:** [`../spec.md`](../spec.md) §2.7–2.8, §4.3, §4.4, D5, D6, D10, D13, D14; contract in [`00-roadmap.md`](00-roadmap.md).
 
 ## Global Constraints
 
@@ -32,15 +32,14 @@ The roadmap's global constraints apply. In addition:
 
 ## Review Focus
 
-1. **A restore while one ClickHouse pod has no `pmm`** (the lab's R2). Expected: `pmm` is created on that pod before the restore; afterwards there is one UUID and `count()` equals the backup's. Test: unit `restore creates pmm on a missing pod first` (Task 3) and the live R2 replay (Task 6).
-2. **A restore while the restore pod holds a stray copy** (the lab's R3). Expected: the pod is recreated with the majority UUID after PMM stops; afterwards there is one UUID, no stray rows, and `count()` equals the backup's. Test: unit `restore recreates a split pod first` (Task 3) and the live R3 replay (Task 6).
+1. **A restore while one ClickHouse pod has no `pmm`** (the lab's R2). Expected: `pmm` is created on that pod before the restore; afterwards there is one UUID and equal counts on every pod. Test: unit `restore creates pmm on a missing pod first` (Task 3) and the live R2 replay (Task 6).
+2. **A restore while the restore pod holds a stray copy** (the lab's R3). Expected: the pod is recreated with the majority UUID after PMM stops; afterwards there is one UUID, no stray rows, and equal counts on every pod. Test: unit `restore recreates a split pod first` (Task 3) and the live R3 replay (Task 6).
 3. **A ClickHouse pod down at restore time.** Expected: refused before PMM is stopped, naming the pod. Test: unit `restore preflight refuses when a pod is down` (Task 3).
 4. **A backup while one pod is still copying history.** Expected: the backup runs on the pod with the most rows. Test: unit `ch_pod_most_rows returns the pod with the most rows` (Task 1).
 5. **A backup during a split.** Expected: a WARN naming the UUIDs; the backup runs on the pod with the most rows. Test: unit `backup warns on a split` (Task 2).
-6. **A restore from a backup made before this change** (no `metrics_rows` in the manifest). Expected: the count check is skipped with a WARN; the other checks still run. Test: unit `restore without metrics_rows only warns` (Task 4).
-7. **A pod whose `pmm` has no `metrics` table** (spec C13). Expected: it counts as 0 rows, not `?`, so the backup and the restore handle it like any other copy. Test: unit `ch_pmm_states counts a missing table as 0` (Task 1).
-8. **A restore with no `pmm` on any pod.** Expected: one `ON CLUSTER` create with `UUID` before `ON CLUSTER` (spec C12), then the restore. Tests: unit `restore creates pmm when no pod has it` (Task 3) and the live R4 replay (Task 6).
-9. **`--dry-run` restore with a split.** Expected: it prints which pods would be dropped and recreated with which UUID, changes nothing, and exits 0. Test: unit `dry-run restore prints the fix` (Task 3).
+6. **A pod whose `pmm` has no `metrics` table** (spec C12). Expected: it counts as 0 rows, not `?`, so the backup and the restore handle it like any other copy. Test: unit `ch_pmm_states counts a missing table as 0` (Task 1).
+7. **A restore with no `pmm` on any pod.** Expected: one `ON CLUSTER` create with `UUID` before `ON CLUSTER` (spec C11), then the restore. Tests: unit `restore creates pmm when no pod has it` (Task 3) and the live R4 replay (Task 6).
+8. **`--dry-run` restore with a split.** Expected: it prints which pods would be dropped and recreated with which UUID, changes nothing, and exits 0. Test: unit `dry-run restore prints the fix` (Task 3).
 
 ---
 
@@ -56,7 +55,7 @@ The roadmap's global constraints apply. In addition:
 - Produces:
   - `ch_pods` — prints every ClickHouse pod name, one per line, via `kubectl get pods -l "$(comp_pod_selector clickhouse)" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'` under `timeout ${KUBECTL_STATUS_TIMEOUT}`.
   - `ch_query_pod POD SQL` — `ch_query` with an explicit pod; the password on stdin as today.
-  - `ch_pmm_states` — prints `POD UUID ROWS` per pod. The UUID is `-` when the pod has no `pmm`, and `?` only when the pod does not answer `SELECT 1`. `ROWS` is `count()` of `pmm.metrics`, `0` without `pmm` or without that table (code 60, spec C13).
+  - `ch_pmm_states` — prints `POD UUID ROWS` per pod. The UUID is `-` when the pod has no `pmm`, and `?` only when the pod does not answer `SELECT 1`. `ROWS` is `count()` of `pmm.metrics`, `0` without `pmm` or without that table (code 60, spec C12).
   - `ch_classify` — reads `ch_pmm_states` lines on stdin and prints `VERDICT MAIN_UUID`. The verdict is one of `consistent`, `missing`, `split`, `nodb`, `unknown` (any `?`); `MAIN_UUID` is the UUID on the most pods (on a tie, the first pod's), or `-`.
   - `ch_pod_most_rows` — reads states on stdin and prints the reachable pod with the highest `ROWS`.
 
@@ -75,32 +74,26 @@ The roadmap's global constraints apply. In addition:
 
 ---
 
-### Task 2: Backup pod choice and manifest fields
+### Task 2: Backup pod choice
 
 **Files:**
 - Modify: `charts/pmm-ha/files/pmm-backup.sh`:
-  - `backup_clickhouse`: after `ch_has_backup_api` at :2471, and before the dry-run block at :2477;
-  - `ch_record_result` at :2592-2601;
-  - `load_manifest` at :2015-2016: new `MF_CH_PMM_UUID` and `MF_CH_METRICS_ROWS`, initialised at top level next to :281-283.
+  - `backup_clickhouse`: after `ch_has_backup_api` at :2471, and before the dry-run block at :2477.
 - Test: `charts/pmm-ha/tests/pmm-backup-unit.sh`
 
 **Interfaces:**
 - Consumes: Task 1.
-- Produces: manifest fields `components.clickhouse.pmm_uuid` and `components.clickhouse.metrics_rows`.
-  - `metrics_rows` is the sum of the `count.txt` files of the frozen `pmm.metrics` parts in the local backup, read in the `clickhouse-backup` container after `create` and before `upload`/`delete local`.
-  - Not `system.parts`: a part replaced by a merge leaves it after `old_parts_lifetime` (480 s, the default), so a later lookup undercounts.
+- Produces: `CH_POD` chosen by `ch_pod_most_rows`. The manifest gets no new fields (spec D14).
 
-- [ ] **Step 1: Find the frozen parts.** In the lab, after `create`, run `kubectl exec <ch pod> -c clickhouse-backup -- find /var/lib/clickhouse/backup/<name>/shadow -name count.txt` and confirm which paths belong to `pmm.metrics`. Record the path pattern in DN-52.
-- [ ] **Step 2: Write failing unit sections:**
+- [ ] **Step 1: Write failing unit sections:**
   - `backup uses the pod with the most rows`: rows 900, 1000, 400 → `CH_POD` is the second pod.
   - `backup warns on a missing or unreachable pod`: `- u1 u1` and `? u1 u1` → proceeds, with a WARN naming the pod.
   - `backup warns on a split`: `u1 u1 u2` → proceeds on the pod with the most rows, with a WARN naming both UUIDs.
   - `backup refuses without pmm anywhere`: `- - -` → returns 1.
-  - `the manifest records pmm_uuid and metrics_rows` (stubbed `result_set`).
-- [ ] **Step 3: Run** `make test-pmm-backup` → FAIL.
-- [ ] **Step 4: Implement.** `CH_POD` comes from `ch_pod_most_rows` instead of `.items[0]`.
-- [ ] **Step 5: Run** → PASS (dash, bash, busybox).
-- [ ] **Step 6: Commit** `PMM-15785 Back up QAN data from the most complete ClickHouse pod`.
+- [ ] **Step 2: Run** `make test-pmm-backup` → FAIL.
+- [ ] **Step 3: Implement.** `CH_POD` comes from `ch_pod_most_rows` instead of `.items[0]`.
+- [ ] **Step 4: Run** → PASS (dash, bash, busybox).
+- [ ] **Step 5: Commit** `PMM-15785 Back up QAN data from the most complete ClickHouse pod`.
 
 ---
 
@@ -122,7 +115,7 @@ The roadmap's global constraints apply. In addition:
     3. on HEALTHY, for each table of `pmm` whose Keeper path lists `replica`, run `SYSTEM DROP REPLICA … FROM TABLE pmm.<t>`;
     4. on TARGET, run the per-node `CREATE … UUID`;
     5. poll TARGET's `system.tables` until it has HEALTHY's tables (timeout 120 s).
-  - `ch_create_pmm_on_cluster` — for `nodb`: UUID from `/proc/sys/kernel/random/uuid`, cluster from the `cluster` macro, the roadmap's `ON CLUSTER` create with `UUID` before `ON CLUSTER` (the other order is a syntax error, spec C12), run on the first pod.
+  - `ch_create_pmm_on_cluster` — for `nodb`: UUID from `/proc/sys/kernel/random/uuid`, cluster from the `cluster` macro, the roadmap's `ON CLUSTER` create with `UUID` before `ON CLUSTER` (the other order is a syntax error, spec C11), run on the first pod.
   - `ch_one_pmm` — keeps `ch_classify`'s main UUID. For each pod with another UUID: `DROP DATABASE pmm SYNC`, then `ch_heal_pod`. For each pod without `pmm`: `ch_heal_pod`. With no UUID anywhere: `ch_create_pmm_on_cluster`. With `DRY_RUN=true` it only prints these actions.
 
 - [ ] **Step 1: Write failing unit sections:**
@@ -152,19 +145,17 @@ The roadmap's global constraints apply. In addition:
 - Test: `charts/pmm-ha/tests/pmm-backup-unit.sh`
 
 **Interfaces:**
-- Produces: `ch_verify_restore EXPECTED_ROWS` — returns 0 only when all of these hold:
+- Produces: `ch_verify_restore` — returns 0 only when all of these hold:
   - `ch_classify` is `consistent`;
   - every pod reports the same table UUIDs (`SELECT name, uuid FROM system.tables WHERE database = 'pmm'`);
-  - every pod's `count()` is equal, polled every 10 s; the check fails only when no pod's count changed for 10 min, because a single `SYSTEM SYNC REPLICA` can outlast the client's 300 s `receive_timeout` on a large restore [I];
-  - and, when `EXPECTED_ROWS` is not empty, that count equals `EXPECTED_ROWS`.
+  - every pod's `count()` is equal, polled every 10 s; the check fails only when no pod's count changed for 10 min, because a single `SYSTEM SYNC REPLICA` can outlast the client's 300 s `receive_timeout` on a large restore [I].
 
   On failure it logs one ERROR line with the failing check and the per-pod values, and `restore_clickhouse` returns 1. `CLICKHOUSE_OK` stays false, so PMM stays at 0 replicas and the run exits 1 (:5829-5832).
 
 - [ ] **Step 1: Write failing unit sections:**
   - `restore verify passes when consistent and counts match`.
   - `restore verify fails on two UUIDs` (the R2 outcome).
-  - `restore verify fails when count differs from metrics_rows`.
-  - `restore without metrics_rows only warns`: empty `EXPECTED_ROWS` → returns 0 with a WARN.
+  - `restore verify fails when pod counts stay unequal`.
   - `a failed verify keeps PMM down`: `cmd_restore` with stubbed components → `scale_up_pmm` is not called and the exit code is 1.
 - [ ] **Step 2: Run** → FAIL.
 - [ ] **Step 3: Implement.**
@@ -193,8 +184,8 @@ The roadmap's global constraints apply. In addition:
 
 **Files:** none (results go into the PR description).
 
-- [ ] **Step 1:** Install this chart branch with S3 backups (as in the lab: SeaweedFS, `centralBackupStorage.mode: s3`), and run `pmm-backup.sh backup`. `list <id>` shows the manifest with `pmm_uuid` and `metrics_rows`.
-- [ ] **Step 2: R1.** Restore in place → exit 0. One UUID; `count()` equals `metrics_rows`.
-- [ ] **Step 3: R2.** `DROP DATABASE pmm SYNC` on the first ClickHouse pod, then restore → the log shows the create, exit 0, one UUID, `count()` equals `metrics_rows`. Before this change: split and no rollback.
-- [ ] **Step 4: R3.** Create a stray copy on the first ClickHouse pod (plan 01 Task 6 Step 5's procedure), then restore → the log shows the recreate, exit 0, one UUID, no stray rows, `count()` equals `metrics_rows`. Use the released PMM image, which does not fix splits, so the split stays until the restore.
-- [ ] **Step 5: R4.** `DROP DATABASE pmm SYNC` on every ClickHouse pod, then restore → the log shows the `ON CLUSTER` create, exit 0, one UUID, `count()` equals `metrics_rows`.
+- [ ] **Step 1:** Install this chart branch with S3 backups (as in the lab: SeaweedFS, `centralBackupStorage.mode: s3`), and run `pmm-backup.sh backup`; note the time and each pod's `count()` just before it.
+- [ ] **Step 2: R1.** Restore in place → exit 0. One UUID; equal counts on every pod; rows written after the backup are gone.
+- [ ] **Step 3: R2.** `DROP DATABASE pmm SYNC` on the first ClickHouse pod, then restore → the log shows the create, exit 0, one UUID, equal counts, rows written after the backup are gone. Before this change: split and no rollback.
+- [ ] **Step 4: R3.** Create a stray copy on the first ClickHouse pod (plan 01 Task 6 Step 5's procedure), then restore → the log shows the recreate, exit 0, one UUID, no stray rows, equal counts. Use the released PMM image, which does not fix splits, so the split stays until the restore.
+- [ ] **Step 5: R4.** `DROP DATABASE pmm SYNC` on every ClickHouse pod, then restore → the log shows the `ON CLUSTER` create, exit 0, one UUID, equal counts.

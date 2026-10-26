@@ -52,7 +52,7 @@ The roadmap's global constraints apply. In addition:
 - Test: `e2e_tests/tests/ha/clickhouseConsistency.test.ts` (T1 uses it first)
 
 **Interfaces:**
-- Consumes: `K8sHelper` (`execInPod`, `getPodNames`, `getSecretValue`, `exec`, `deletePod`), `prometheusApi.instantQueryValue`.
+- Consumes: `K8sHelper` (`execInPod`, `getPodNames`, `getSecretValue`, `exec`, `deletePod`).
 - Produces `export default class HaClickHouseHelper` with:
   - `pods(): string[]` — label `clickhouse.altinity.com/chi`, sorted, excluding Keeper pods.
   - `query(pod: string, sql: string): string` — runs in container `clickhouse`, with `--multiquery`. The password goes in through the environment, not on the command line.
@@ -65,7 +65,7 @@ The roadmap's global constraints apply. In addition:
   - `createStray(pod: string, rows: number, opts?: { sharedPaths?: boolean }): string` — plan 01 Task 6 Step 5 in one `query` call: drop and create `pmm` with a new UUID, create the tables from another pod's `SHOW CREATE TABLE` with the `UUID` clause and engine arguments removed, copy the `schema_migrations` rows, then insert `rows` rows with `service_name = 'e2e-stray'` over 3 days. With `sharedPaths`, each table keeps the main table's `zookeeper_path` from `system.replicas` as an explicit engine argument (the restore-made split), with `database_replicated_allow_replicated_engine_arguments = 1` passed on the call. Returns the new UUID.
   - `waitConsistent(timeout = Timeouts.FIFTEEN_MINUTES): Promise<void>` — polls until all pods report one UUID and equal `rows` for `period_start < now() - 10 min`.
 
-- [ ] **Step 1: Write T1** in `clickhouseConsistency.test.ts`: `'PMM-Txxxx - Verify every ClickHouse replica has the same pmm database @pmm-ha'`. The helper reports 3 pods with one non-empty UUID, and `qan_api2_clickhouse_cluster_db_uuids` is 1.
+- [ ] **Step 1: Write T1** in `clickhouseConsistency.test.ts`: `'PMM-Txxxx - Verify every ClickHouse replica has the same pmm database @pmm-ha'`. The helper reports 3 pods with one non-empty UUID.
 - [ ] **Step 2: Run** `npx playwright test --grep "PMM-Txxxx"` against the Feature Build install → FAIL (no helper).
 - [ ] **Step 3: Implement** the helper and the fixture.
 - [ ] **Step 4: Run** → PASS; `npm run lint` and `npm run typecheck` in `e2e_tests` → clean.
@@ -86,7 +86,7 @@ Each body starts with `cutoff`, `before = checksum(pods[0], cutoff)`, and `targe
 
 | Case | Body | Assertions |
 |---|---|---|
-| T2 | `dropPmm(target)` | right after: `pmmUuids()[target] === ''`; within 15 min: the same UUID as the others, `repairs_total{action="create",result="success"}` went up, `checksum` equals `before` on every pod |
+| T2 | `dropPmm(target)` | right after: `pmmUuids()[target] === ''`; within 15 min: the same UUID as the others, the leader's qan-api2 log shows a `create` for `target`, `checksum` equals `before` on every pod |
 | T3 | `resetVolume(target)`; then `resetVolume(writerPod())` and `supervisorctl restart qan-api2` in the leader PMM pod, so it starts against the reset node (the Service's ClientIP affinity keeps the same node) | within 15 min after each: the original UUID on the reset node; `checksum` equals `before` on every pod; after the second, the leader's qan-api2 log shows retries and no exit, and `/v1/qan/metrics:getReport` answers 200 |
 | T4 | `createStray(target, 5000)` | right after: `pmmUuids()` holds 2 UUIDs; within 15 min: the original UUID on every pod, `checksum` equals `before` on every pod, no `e2e-stray` rows |
 | T5 | `createStray(writerPod(), 5000)` | within 15 min: the original UUID on every pod, although QAN wrote to the stray; `checksum` equals `before` on every pod; no `e2e-stray` rows |
@@ -108,9 +108,9 @@ Each body starts with `cutoff`, `before = checksum(pods[0], cutoff)`, and `targe
 
 | Case | Body | Assertions |
 |---|---|---|
-| T7 | backup, then in-place restore | job Complete; the job log's ClickHouse check reports `count()` equal to the manifest's `metrics_rows`; afterwards one UUID on every pod |
-| T8 | backup; `createStray(pods[0], 5000)` (the first ClickHouse pod, where the restore ran before this change); restore right away. Then backup, `dropPmm(pods[0])`, restore right away. Then backup, `dropPmm` on every pod, restore right away. | each restore job Complete; the same count check; one UUID; no `e2e-stray` rows. Record from the job log whether the restore or qan-api2 fixed the pod. |
-| T9 | restore the latest backup into a second release in namespace `pmm-dr`, prepared as in `charts/pmm-ha/docs/pmm-backup.md` "Preparing a DR namespace", using `new K8sHelper('pmm-dr')` | the same count check; one UUID in `pmm-dr` |
+| T7 | backup, then in-place restore | job Complete; one UUID and equal counts on every pod; rows written after the backup are gone |
+| T8 | backup; `createStray(pods[0], 5000)` (the first ClickHouse pod, where the restore ran before this change); restore right away. Then backup, `dropPmm(pods[0])`, restore right away. Then backup, `dropPmm` on every pod, restore right away. | each restore job Complete; one UUID and equal counts on every pod; no `e2e-stray` rows. Record from the job log whether the restore or qan-api2 fixed the pod. |
+| T9 | restore the latest backup into a second release in namespace `pmm-dr`, prepared as in `charts/pmm-ha/docs/pmm-backup.md` "Preparing a DR namespace", using `new K8sHelper('pmm-dr')` | one UUID and equal counts in `pmm-dr` |
 
 - [ ] **Step 1: `beforeEach`:** `ensureServing` plus `waitConsistent`.
 - [ ] **Step 2: Write** T7 and T8; run against the FB install with backups enabled (`k8s/install_pmm_ha.sh --backup-minio` or S3) → PASS.

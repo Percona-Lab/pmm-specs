@@ -8,7 +8,7 @@
 | Path | Content |
 |---|---|
 | [spec.md](spec.md) | Problem (install race, qan-api2 recreate, writes moving to a stray copy, restore), lab constraints, design (fix the race, keep every node on one `pmm`, backup and restore), tests T1–T9, decisions D1–D13 |
-| [plans/00-roadmap.md](plans/00-roadmap.md) | Order of plans 01–03 and the shared contract (package, metrics, SQL, manifest fields) |
+| [plans/00-roadmap.md](plans/00-roadmap.md) | Order of plans 01–03 and the shared contract (package, node state, leader check, SQL) |
 | [plans/01-qan-api2.md](plans/01-qan-api2.md) | qan-api2: three-replica test cluster, node inspection, safe creation, `Converge` in the HA leader, metrics (percona/pmm) |
 | [plans/02-pmm-backup.md](plans/02-pmm-backup.md) | `pmm-backup.sh`: backup from the pod with the most rows, restore that brings ClickHouse to one `pmm` first, verification (percona/percona-helm-charts) |
 | [plans/03-ha-tests.md](plans/03-ha-tests.md) | T1–T9 as automated HA tests (percona/pmm-qa) |
