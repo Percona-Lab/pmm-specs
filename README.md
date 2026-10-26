@@ -9,3 +9,4 @@ Layout and rules: [AGENTS.md](AGENTS.md).
 | Folder | Topic | Status |
 |---|---|---|
 | [PMM-15567-otel](tickets/PMM-15567-otel/) | OpenTelemetry logs and traces | Design; ADRs partly accepted |
+| [PMM-15785-qan-clickhouse-db](tickets/PMM-15785-qan-clickhouse-db/) | QAN database consistency across ClickHouse replicas (PMM HA) | Design, in review |
