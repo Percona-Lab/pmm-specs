@@ -46,10 +46,11 @@ These names are fixed across plans. A task that needs a name not listed here def
 | Node list | env `PMM_CLICKHOUSE_NODES` (comma-separated FQDNs, set by the chart, `_helpers.tpl:266-274`); kingpin flag `--clickhouse-nodes`. Port: the port of `PMM_CLICKHOUSE_ADDR` (9000). |
 | Cluster name | env `PMM_CLICKHOUSE_CLUSTER_NAME` (existing flag `--clickhouse-cluster-name`) |
 | Database | env `PMM_CLICKHOUSE_DATABASE` (existing, default `pmm`) |
-| Node state | `type NodeState struct { Host, Replica string; Reachable bool; DBUUID string; Rows uint64; TablePaths map[string]string; Shards, ClusterHosts int; Err error }`. `Replica` is the node's `replica` macro (spec C10). `DBUUID == ""` means no `pmm` database. `Rows` is `count()` of `<db>.metrics`. `TablePaths` maps table name to `system.replicas.zookeeper_path`. |
+| Node state | `type NodeState struct { Host, Replica string; Reachable bool; DBUUID string; Rows uint64; TablePaths map[string]string; Shards, ClusterHosts int; Err error }`. `Replica` is the node's `replica` macro (spec C10). `DBUUID == ""` means no `pmm` database. `Rows` is `count()` of `<db>.metrics`, 0 when the database or the table does not exist (spec C13); only a failed connection makes a node unreachable. `TablePaths` maps table name to `system.replicas.zookeeper_path`. |
 | Verdict | `type Verdict int` with `VerdictConsistent`, `VerdictMissing`, `VerdictSplit`, `VerdictNoDatabase`, `VerdictUnknown` |
 | Engine clause | `ENGINE = Replicated('/clickhouse/databases/{uuid}', '{shard}', '{replica}')`, unchanged from `qan-api2/db.go:134` |
 | Leader check | `GET http://127.0.0.1:7772/v1/ha/nodes`; the entry whose `node_name` equals env `PMM_HA_NODE_ID` has `role` `NODE_ROLE_LEADER` (spec C6). Anything else, including an error, means "not the leader". |
+| Full view | the same response lists `expected_nodes` entries, all with `status` `alive`. Required, besides the leader check, before every `DROP DATABASE` (split-brain guard). |
 
 **Metrics** (qan-api2 `/debug/metrics`, default registry, namespace `qan_api2`, subsystem `clickhouse_cluster`; exported only when `PMM_CLICKHOUSE_NODES` is non-empty):
 
@@ -71,7 +72,7 @@ SYSTEM DROP DATABASE REPLICA '<r>' FROM SHARD '<shard>' FROM DATABASE <db>;     
 SYSTEM DROP REPLICA '<r>' FROM TABLE <db>.<table>;                               -- on a healthy node, per table, only if listed
 DROP DATABASE <db> SYNC;                                                           -- on a node with another UUID
 CREATE DATABASE IF NOT EXISTS <db> UUID '<u>' ENGINE = Replicated('/clickhouse/databases/{uuid}', '{shard}', '{replica}');
-CREATE DATABASE IF NOT EXISTS <db> ON CLUSTER "<cluster>" UUID '<u>' ENGINE = Replicated('/clickhouse/databases/{uuid}', '{shard}', '{replica}');
+CREATE DATABASE IF NOT EXISTS <db> UUID '<u>' ON CLUSTER "<cluster>" ENGINE = Replicated('/clickhouse/databases/{uuid}', '{shard}', '{replica}');  -- UUID before ON CLUSTER (spec C12)
 ```
 
 Keeper registers a database replica as `<shard>|<replica>` (e.g. `0|chi-pmm-ha-pmmdb-0-2`) under `/clickhouse/databases/<uuid>/replicas`, and a table replica as `<replica>` under `<zookeeper_path>/replicas` (verified in the lab).
@@ -83,9 +84,9 @@ Keeper registers a database replica as `<shard>|<replica>` (e.g. `0|chi-pmm-ha-p
 ## Global constraints
 
 - qan-api2 never generates a UUID while any node has `pmm` (spec §4.1).
-- Only the HA leader's qan-api2 drops, creates or recreates `pmm` after startup (D3). At startup a qan-api2 only creates `pmm` on nodes that Keeper does not list.
+- Only the HA leader's qan-api2 drops, creates or recreates `pmm` after startup (D3), and it drops only with a full view. At startup a qan-api2 only creates `pmm` on nodes that Keeper does not list, and it never exits because its own node lacks `pmm` (spec §4.1 step 3).
 - Identify ClickHouse nodes by `getMacro('replica')`, never by `hostName()` (spec C10).
 - One shard only: with more than one shard in `system.clusters` for the cluster, every routine reports `VerdictUnknown` and changes nothing.
 - Direct connections use the PMM ClickHouse user and password already given to qan-api2; nothing new in secrets.
 - Follow `AGENTS.md` of each repo: percona/pmm commits `PMM-15785 <summary>`, signed off (`-s`), no named returns, no inline `if err :=`, `sync.WaitGroup.Go`, testify, `t.Context()`.
-- Non-chart installs (`PMM_CLICKHOUSE_NODES` empty) keep today's behaviour except that `pmm` is created with an explicit UUID (spec §4.1 step 3).
+- Non-chart installs (`PMM_CLICKHOUSE_NODES` empty) keep today's behaviour except that `pmm` is created with an explicit UUID (spec §4.1 step 4).

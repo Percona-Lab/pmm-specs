@@ -27,6 +27,9 @@ The roadmap's global constraints and shared contract apply. In addition:
 5. **A split while a node does not answer.** Expected: nothing changes until every node answers, since that node may hold the larger copy. Test: `TestConvergeWaitsWhileANodeIsUnreachable` (Task 4).
 6. **A split made by a pre-fix restore (shared table paths).** Expected: the stray node is recreated and no rows are lost. Test: `TestConvergeSharedPaths` (Task 4).
 7. **A cluster with two shards.** Expected: `VerdictUnknown`, no action, a log line. Test: `TestClassifyMultiShardIsUnknown` (Task 2).
+8. **qan-api2 starting while its own node lost its volume (stale Keeper registration).** Expected: it retries instead of exiting; the leader's loop fixes the node; qan-api2 then serves. Test: `TestNewDBWaitsForStaleNode` (Task 3).
+9. **Split brain: two PMM pods each see themselves as leader.** Expected: no drop without a full view; creating `pmm` on an empty node still works. Test: `TestConvergeNeedsFullViewToDrop` (Task 4).
+10. **A `pmm` without a `metrics` table** (crash after `CREATE`, interrupted restore, replica added by the operator). Expected: counts as 0 rows, the node stays reachable, and the split is fixed. Tests: `TestInspectMissingTableIsZeroRows` (Task 2), `TestConvergeSplitEmptyCopy` (Task 4).
 
 ---
 
@@ -63,17 +66,18 @@ The roadmap's global constraints and shared contract apply. In addition:
   - `func ParseNodes(list, defaultAddr string) []string` — splits on `,`, trims, drops empties, appends the port of `defaultAddr` to entries without one.
   - `type Node interface { Addr() string; DatabaseUUID(ctx context.Context, db string) (string, error); TablePaths(ctx context.Context, db string) (map[string]string, error); Macros(ctx context.Context) (shard, replica string, err error); ClusterSize(ctx context.Context, cluster string) (shards, hosts int, err error); Exec(ctx context.Context, query string) error; Select(ctx context.Context, dest any, query string, args ...any) error; Close() error }`. `DatabaseUUID` returns `""` when the database does not exist. `Select` is `sqlx` `SelectContext`; fakes implement it from canned rows.
   - `func OpenNodes(addrs []string, user, password string) []Node` — one `sqlx` pool per address (`MaxOpenConns 2`, dial and read timeout 5 s); never fails, errors surface on use.
-  - `type NodeState` and `type Verdict` from the shared contract; `func Inspect(ctx context.Context, nodes []Node, db, cluster string) []NodeState` (fills `Replica` from `Macros` and `Rows` from `count()`); `func Classify(states []NodeState, wantNodes int) (Verdict, string)` returning the main UUID (majority; `""` on a tie).
+  - `type NodeState` and `type Verdict` from the shared contract; `func Inspect(ctx context.Context, nodes []Node, db, cluster string) []NodeState` (fills `Replica` from `Macros` and `Rows` from `count()`, 0 when the table does not exist, code 60; only a failed connection sets `Reachable=false`); `func Classify(states []NodeState, wantNodes int) (Verdict, string)` returning the main UUID (majority; `""` on a tie).
 
 - [ ] **Step 1: Write failing unit tests** with an in-memory `fakeNode` (in `fake_test.go`):
   - `TestParseNodes`: `" a.svc , b.svc:9000,,c.svc "` with default `x:9000` → `["a.svc:9000","b.svc:9000","c.svc:9000"]`; `""` → `nil`.
   - `TestClassify` table: all `u1` → `VerdictConsistent, "u1"`; `u1,u1,""` → `VerdictMissing, "u1"`; `u1,u1,u2` → `VerdictSplit, "u1"`; `u1,u2,u3` → `VerdictSplit, ""`; `"","",""` → `VerdictNoDatabase, ""`.
   - `TestClassifyUnreachableIsNotMissing`: `u1,u1,<unreachable>` → `VerdictConsistent, "u1"`, and the unreachable state has `Reachable=false`.
   - `TestClassifyMultiShardIsUnknown`: any node reporting `shards=2` → `VerdictUnknown`.
-- [ ] **Step 2: Run:** `go test -run 'TestParseNodes|TestClassify' ./chcluster/` → FAIL (undefined).
+  - `TestInspectMissingTableIsZeroRows`: a node with `pmm` whose `count()` fails with code 60 → `Rows=0`, `Reachable=true`.
+- [ ] **Step 2: Run:** `go test -run 'TestParseNodes|TestClassify|TestInspect' ./chcluster/` → FAIL (undefined).
 - [ ] **Step 3: Implement** `nodes.go` and `inspect.go`. `Inspect` queries each node concurrently (`sync.WaitGroup.Go`) with the contract SQL. It fills `Shards`/`ClusterHosts` from `ClusterSize`. A node reporting more than one shard makes `Classify` return `VerdictUnknown`.
 - [ ] **Step 4: Run:** same command → PASS.
-- [ ] **Step 5: Integration test** `TestInspectCluster` (tag `chcluster`): create `pmm_t2` on all nodes with `ON CLUSTER "pmmdb" UUID '<random>'`, drop it on ch3 with `DROP DATABASE pmm_t2 SYNC` → `Classify` gives `VerdictMissing` and the UUID. Run `make test-cluster` → PASS.
+- [ ] **Step 5: Integration test** `TestInspectCluster` (tag `chcluster`): create `pmm_t2` on all nodes with `UUID '<random>' ON CLUSTER "pmmdb"`, drop it on ch3 with `DROP DATABASE pmm_t2 SYNC` → `Classify` gives `VerdictMissing` and the UUID. Run `make test-cluster` → PASS.
 - [ ] **Step 6: Commit** `PMM-15785 Inspect pmm on every ClickHouse node`.
 
 ---
@@ -82,7 +86,7 @@ The roadmap's global constraints and shared contract apply. In addition:
 
 **Files:**
 - Create: `qan-api2/chcluster/ensure.go`
-- Modify: `qan-api2/db.go:42-148` (`NewDB`, `createDB`), `qan-api2/main.go:355-361` (flag), `qan-api2/main.go:396` (call)
+- Modify: `qan-api2/db.go:42-148` (`NewDB`, `createDB`; the fatal exit at :81-83), `qan-api2/main.go:355-361` (flag), `qan-api2/main.go:396` (call)
 - Test: `qan-api2/chcluster/ensure_test.go`, `qan-api2/chcluster/ensure_cluster_test.go` (tag `chcluster`), `qan-api2/db_test.go` (`TestCreateDbIfNotExists` at :120)
 
 **Interfaces:**
@@ -97,12 +101,13 @@ The roadmap's global constraints and shared contract apply. In addition:
   - New flag `--clickhouse-nodes` (`Envar("PMM_CLICKHOUSE_NODES")`, default `""`).
   - `NewDB(dsn string, maxIdleConns, maxOpenConns int, isCluster bool, clusterName string, nodes []string)`:
     - on `UNKNOWN_DATABASE` with `len(nodes) > 0` it calls `EnsureDatabase`;
+    - when its own connection still gets `UNKNOWN_DATABASE` after `EnsureDatabase` (its node was skipped because Keeper lists it), it logs a warning and retries every 5 s instead of exiting (today's fatal exit at db.go:81-83). The leader's `Converge` runs independently (Task 5) and fixes that node;
     - on `ErrSplit` it logs a warning and connects by direct address, never exiting, to a node of the copy `KeepCopy` (Task 4) picks among the reachable nodes; the leader's `Converge` fixes the split;
     - `migrations.Run` (db.go:105) gets a DSN with the address `NewDB` connected to, so migrations never run on another copy;
-    - with no nodes it calls `createDB`, which now passes an explicit `UUID '<uuid.NewString()>'` in the cluster branch (spec §4.1 step 3). The cluster wait loop at db.go:45-68 stays for the no-nodes case.
+    - with no nodes it calls `createDB`, which now passes an explicit `UUID '<uuid.NewString()>'` in the cluster branch (spec §4.1 step 4). The cluster wait loop at db.go:45-68 stays for the no-nodes case.
 
 - [ ] **Step 1: Write failing tests:**
-  - `TestEnsureDatabaseNoDatabaseCreatesOnCluster` (fake): all nodes empty → one `Exec` whose SQL contains `ON CLUSTER "pmmdb" UUID '` and the returned UUID.
+  - `TestEnsureDatabaseNoDatabaseCreatesOnCluster` (fake): all nodes empty → one `Exec` whose SQL contains `UUID '<returned uuid>' ON CLUSTER "pmmdb"`, in that order (spec C12).
   - `TestEnsureDatabaseSplitCreatesNothing` (fake): `u1,u2,""` → `ErrSplit`, zero `Exec` calls.
   - `TestEnsureDatabaseSkipsRegisteredNode` (fake): `u1,u1,""` and Keeper lists the empty node → no `Exec`, no error.
   - `TestEnsureDatabaseWaitsForCompleteView` (fake): node 1 reports 2 hosts and node 2 reports 3 → the create runs on node 2.
@@ -115,6 +120,7 @@ The roadmap's global constraints and shared contract apply. In addition:
   - `TestEnsureDatabaseReusesExistingUUID`: `pmm` exists on ch1–ch2 only (created `ON CLUSTER`, then `DROP DATABASE … SYNC` on ch3) → ch3 gets the same UUID.
   - `TestEnsureDatabaseConcurrentCreatorsOneUUID`: two goroutines call `EnsureDatabase` on an empty cluster → both return the same UUID, and all nodes match.
   - `TestNewDBSplitConnectsToChosenCopy` from Step 1.
+  - `TestNewDBWaitsForStaleNode`: `pmm` on all nodes, then `make cluster-node-reset NODE=ch3` (Keeper keeps the registration); `NewDB` with its DSN on ch3 → it does not return or exit while ch3 lacks `pmm`; a goroutine runs `Converge` as the leader after 10 s → `NewDB` returns a working pool.
   Run `make test-cluster` → PASS.
 - [ ] **Step 6: Commit** `PMM-15785 Create pmm with one UUID on every node`.
 
@@ -135,10 +141,13 @@ The roadmap's global constraints and shared contract apply. In addition:
     2. `SYSTEM DROP REPLICA '<replica>' FROM TABLE <db>.<t>` for each table whose `<zookeeper_path>/replicas` lists `<replica>`.
   - `func CreateAndWait(ctx context.Context, target, healthy Node, db, uuid string) error` — on the target, the per-node `CREATE DATABASE IF NOT EXISTS … UUID '<uuid>'`, then poll `system.tables` until it has every table `healthy` has (timeout 2 min). It does not wait for rows (spec C4).
   - `func KeepCopy(states []NodeState) (string, error)` — the UUID with the most `Rows` among reachable nodes, then the lowest UUID; `ErrWait` when any node is unreachable.
-  - `func Converge(ctx context.Context, nodes []Node, db, cluster string, isLeader func(context.Context) bool) []RepairResult`:
+  - `func Converge(ctx context.Context, nodes []Node, db, cluster string, ha func(context.Context) (leader, fullView bool)) []RepairResult` — `ha` is Task 5's `HAStatus`:
     1. `Inspect` and `Classify`. `VerdictConsistent`, `VerdictNoDatabase` or `VerdictUnknown`: return nothing.
     2. The kept UUID: with `VerdictMissing`, the main UUID; with `VerdictSplit`, `KeepCopy`. On `ErrWait`: log and return nothing.
-    3. For each reachable node with another UUID: if `!isLeader(ctx)`, stop; record `count()` of `<db>.metrics`; `DROP DATABASE <db> SYNC`; then as for a node without `pmm` (`recreate`).
+    3. For each reachable node with another UUID, in order:
+       - `ha(ctx)` must return leader and full view, otherwise stop: no drop in a split brain or after leadership moved;
+       - read the UUID again on a node of the kept copy; if it is not the kept UUID any more, stop;
+       - record `count()` of `<db>.metrics`, `DROP DATABASE <db> SYNC`, then as for a node without `pmm` (`recreate`).
     4. For each reachable node without `pmm`: `CleanRegistrations` with a node that has the kept UUID, then `CreateAndWait` (`create`).
     5. Log each result at warning level: node, action, old and new UUID, dropped rows, error.
 
@@ -149,7 +158,9 @@ The roadmap's global constraints and shared contract apply. In addition:
   - `TestConvergeKeepsCopyWithMostRows`: `u1,u1,u2`, `u2` with more rows → `DROP DATABASE` then `CREATE … UUID 'u2'` on both `u1` nodes; results `recreate` with `DroppedRows`.
   - `TestConvergeSkipsUnreachable`: `u1,u1,<unreachable>` → no `Exec`.
   - `TestConvergeWaitsWhileANodeIsUnreachable`: `u1`, `u2`, one node unreachable → no `Exec`.
-  - `TestConvergeRechecksLeaderBeforeDrop`: `IsLeader` turns false after the decision → no `DROP`.
+  - `TestConvergeRechecksLeaderBeforeDrop`: `ha` reports not leader after the decision → no `DROP`.
+  - `TestConvergeNeedsFullViewToDrop`: `ha` reports leader without a full view, states `u1,u1,u2` plus an empty node → no `DROP`, but the empty node still gets `CREATE`.
+  - `TestConvergeRechecksKeptUUIDBeforeDrop`: the kept copy's node reports another UUID at the re-read → no `DROP`.
 - [ ] **Step 2: Run** `go test -run 'TestKeepCopy|TestConverge' ./chcluster/` → FAIL.
 - [ ] **Step 3: Implement** `converge.go`. Wire the `VerdictMissing` branch of Task 3's `EnsureDatabase` to `CreateAndWait`.
 - [ ] **Step 4: Run** → PASS.
@@ -159,6 +170,7 @@ The roadmap's global constraints and shared contract apply. In addition:
   - `TestConvergeSplitKeepsMostRows`: ch3 holds a stray `pmm_t4` (another UUID, own Keeper path, 500 marked rows) → ch3 recreated with ch1's UUID; 10,000 rows on every node; no marked rows.
   - `TestConvergeSplitLargerStray`: the stray holds 20,000 marked rows → ch1 and ch2 recreated with the stray's UUID; 20,000 marked rows on every node.
   - `TestConvergeSharedPaths`: ch3's stray `pmm_t4.metrics` uses ch1's Keeper path → ch3 recreated; 10,000 rows on every node before and after.
+  - `TestConvergeSplitEmptyCopy`: on ch3, `CREATE DATABASE pmm_t4 ENGINE = Replicated('/clickhouse/databases/{uuid}', '{shard}', '{replica}')` without a UUID and without tables (the operator's statement for a new replica, spec C13) → ch3 recreated with ch1's UUID; 10,000 rows on every node.
   Run `make test-cluster` → PASS.
 - [ ] **Step 6: Commit** `PMM-15785 Keep every ClickHouse node on one pmm database`.
 
@@ -175,7 +187,7 @@ The roadmap's global constraints and shared contract apply. In addition:
 - Consumes: Tasks 2 and 4.
 - Produces:
   - The four metrics of the shared contract as package vars, `func RegisterMetrics(r prometheus.Registerer)`, and `func Observe(states []NodeState, results []RepairResult)` (sets the gauges, adds to the counter).
-  - `func IsLeader(ctx context.Context, c *http.Client, baseURL, nodeID string) bool` — the roadmap's leader check; `false` on any error or an empty `nodeID`. Base URL `http://127.0.0.1:7772`, node ID from env `PMM_HA_NODE_ID`, an HTTP client with a 5 s timeout.
+  - `func HAStatus(ctx context.Context, c *http.Client, baseURL, nodeID string) (leader, fullView bool)` — the roadmap's leader check and full view; both `false` on any error or an empty `nodeID`. Base URL `http://127.0.0.1:7772`, node ID from env `PMM_HA_NODE_ID`, an HTTP client with a 5 s timeout.
   - `func runConsistencyLoop(ctx context.Context, interval time.Duration, check func(context.Context))` in `main.go`. It runs at start and then every `interval`, waiting with a `time.Timer` and `select` on `ctx.Done()`, the same as `runRetentionLoop` at main.go:298-343.
   - Flag `--clickhouse-consistency-interval` (hidden, default `10m`).
 
@@ -183,11 +195,11 @@ The roadmap's global constraints and shared contract apply. In addition:
   - `TestObserveSetsGauges`: states `u1,u1,""` plus one unreachable node → `db_uuids=1`, `missing_nodes=1`, `unreachable_nodes=1` (via `testutil.ToFloat64`).
   - `TestObserveCountsRepairs`: one `create` success and one `recreate` failure → `repairs_total{action="create",result="success"}=1`, `{action="recreate",result="failure"}=1`.
   - `TestConsistencyLoopRunsAtStartAndStops`: 10 ms interval, cancel after the second call → exactly 2 calls, then the loop returns.
-  - `TestIsLeader` (`httptest` server returning the `/v1/ha/nodes` JSON shape): own node `NODE_ROLE_LEADER` → true; `NODE_ROLE_FOLLOWER` → false; HTTP 500 → false; own node absent → false.
-- [ ] **Step 2: Run** `go test -run 'TestObserve|TestConsistencyLoop|TestIsLeader' ./ ./chcluster/` → FAIL.
+  - `TestHAStatus` (`httptest` server returning the `/v1/ha/nodes` JSON shape): own node `NODE_ROLE_LEADER` with 3 of `expected_nodes: 3` alive → `true, true`; leader with 2 nodes listed → `true, false`; leader with one node not `alive` → `true, false`; `NODE_ROLE_FOLLOWER` → `false, …`; HTTP 500 or own node absent → `false, false`.
+- [ ] **Step 2: Run** `go test -run 'TestObserve|TestConsistencyLoop|TestHAStatus' ./ ./chcluster/` → FAIL.
 - [ ] **Step 3: Implement.** In `main.go`, only when `len(nodes) > 0`:
   - `chcluster.RegisterMetrics(prom.DefaultRegisterer)`;
-  - `wg.Go(func() { runConsistencyLoop(ctx, *consistencyIntervalF, check) })`. `check` runs `Converge` (with `IsLeader` bound to the HTTP client and node ID) only when `IsLeader` is true, then `Inspect` and `Observe`, and logs the verdict at warning level when it is not consistent. On followers it only inspects and observes.
+  - `wg.Go(func() { runConsistencyLoop(ctx, *consistencyIntervalF, check) })`, started **before** `NewDB` (main.go:396) with its own `OpenNodes`, so it runs even while `NewDB` retries (spec §4.1 step 3). `check` runs `Converge` (with `HAStatus` bound to the HTTP client and node ID) only when `HAStatus` reports the leader, then `Inspect` and `Observe`, and logs the verdict at warning level when it is not consistent. On followers it only inspects and observes.
 - [ ] **Step 4: Run** the tests → PASS; `make check` (golangci-lint) → no new findings.
 - [ ] **Step 5: Docs and release note.** In the PMM HA troubleshooting docs under `documentation/docs/` (find the page with `grep -rl "High Availability" documentation/docs | grep -i troubleshoot`): how to read the `pmm` UUID on each ClickHouse pod, what the qan-api2 log lines about `create` and `recreate` mean, and that a split on an existing install is fixed in the first pass after the upgrade, dropping rows that exist only in the other copy. Add the release-note draft for the ticket.
 - [ ] **Step 6: Commit** `PMM-15785 Run the pmm consistency routine in the HA leader`.

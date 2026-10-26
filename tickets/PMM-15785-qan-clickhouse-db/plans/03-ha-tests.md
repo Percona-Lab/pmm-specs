@@ -87,7 +87,7 @@ Each body starts with `cutoff`, `before = checksum(pods[0], cutoff)`, and `targe
 | Case | Body | Assertions |
 |---|---|---|
 | T2 | `dropPmm(target)` | right after: `pmmUuids()[target] === ''`; within 15 min: the same UUID as the others, `repairs_total{action="create",result="success"}` went up, `checksum` equals `before` on every pod |
-| T3 | `resetVolume(target)` | within 15 min: the original UUID on `target`; `checksum` equals `before` on every pod |
+| T3 | `resetVolume(target)`; then `resetVolume(writerPod())` and `supervisorctl restart qan-api2` in the leader PMM pod, so it starts against the reset node (the Service's ClientIP affinity keeps the same node) | within 15 min after each: the original UUID on the reset node; `checksum` equals `before` on every pod; after the second, the leader's qan-api2 log shows retries and no exit, and `/v1/qan/metrics:getReport` answers 200 |
 | T4 | `createStray(target, 5000)` | right after: `pmmUuids()` holds 2 UUIDs; within 15 min: the original UUID on every pod, `checksum` equals `before` on every pod, no `e2e-stray` rows |
 | T5 | `createStray(writerPod(), 5000)` | within 15 min: the original UUID on every pod, although QAN wrote to the stray; `checksum` equals `before` on every pod; no `e2e-stray` rows |
 | T6 | `createStray(target, 0, { sharedPaths: true })` | within 15 min: one UUID; `checksum` equals `before` on every pod |
@@ -109,7 +109,7 @@ Each body starts with `cutoff`, `before = checksum(pods[0], cutoff)`, and `targe
 | Case | Body | Assertions |
 |---|---|---|
 | T7 | backup, then in-place restore | job Complete; the job log's ClickHouse check reports `count()` equal to the manifest's `metrics_rows`; afterwards one UUID on every pod |
-| T8 | backup; `createStray(pods[0], 5000)` (the first ClickHouse pod, where the restore ran before this change); restore right away. Then backup, `dropPmm(pods[0])`, restore right away. | each restore job Complete; the same count check; one UUID; no `e2e-stray` rows. Record from the job log whether the restore or qan-api2 fixed the pod. |
+| T8 | backup; `createStray(pods[0], 5000)` (the first ClickHouse pod, where the restore ran before this change); restore right away. Then backup, `dropPmm(pods[0])`, restore right away. Then backup, `dropPmm` on every pod, restore right away. | each restore job Complete; the same count check; one UUID; no `e2e-stray` rows. Record from the job log whether the restore or qan-api2 fixed the pod. |
 | T9 | restore the latest backup into a second release in namespace `pmm-dr`, prepared as in `charts/pmm-ha/docs/pmm-backup.md` "Preparing a DR namespace", using `new K8sHelper('pmm-dr')` | the same count check; one UUID in `pmm-dr` |
 
 - [ ] **Step 1: `beforeEach`:** `ensureServing` plus `waitConsistent`.
