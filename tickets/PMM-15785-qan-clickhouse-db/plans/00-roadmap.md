@@ -18,7 +18,7 @@ Ticket [PMM-15785](https://perconadev.atlassian.net/browse/PMM-15785).
 
 | Plan | Scope | Repo | Depends on |
 |---|---|---|---|
-| [01](01-qan-api2.md) | Cluster test environment; node inspection; safe creation of `pmm`; the leader's routine that keeps every node on one `pmm`; metrics | percona/pmm | — |
+| [01](01-qan-api2.md) | Cluster test environment; node inspection; safe creation of `pmm`; the leader's routine that keeps every node on one `pmm` | percona/pmm | — |
 | [02](02-pmm-backup.md) | `pmm-backup.sh`: per-pod check, backup from the pod with the most rows, restore that fixes `pmm` first, verification, docs | percona/percona-helm-charts | — (shares the SQL in the contract, not code) |
 | [03](03-ha-tests.md) | Spec §6 cases T1–T9 as automated HA tests | percona/pmm-qa | 01–02 in a Feature Build |
 
@@ -46,20 +46,11 @@ These names are fixed across plans. A task that needs a name not listed here def
 | Node list | env `PMM_CLICKHOUSE_NODES` (comma-separated FQDNs, set by the chart, `_helpers.tpl:266-274`); kingpin flag `--clickhouse-nodes`. Port: the port of `PMM_CLICKHOUSE_ADDR` (9000). |
 | Cluster name | env `PMM_CLICKHOUSE_CLUSTER_NAME` (existing flag `--clickhouse-cluster-name`) |
 | Database | env `PMM_CLICKHOUSE_DATABASE` (existing, default `pmm`) |
-| Node state | `type NodeState struct { Host, Replica string; Reachable bool; DBUUID string; Rows uint64; TablePaths map[string]string; Shards, ClusterHosts int; Err error }`. `Replica` is the node's `replica` macro (spec C10). `DBUUID == ""` means no `pmm` database. `Rows` is `count()` of `<db>.metrics`, 0 when the database or the table does not exist (spec C13); only a failed connection makes a node unreachable. `TablePaths` maps table name to `system.replicas.zookeeper_path`. |
+| Node state | `type NodeState struct { Host, Replica string; Reachable bool; DBUUID string; Rows uint64; TablePaths map[string]string; Shards, ClusterHosts int; Err error }`. `Replica` is the node's `replica` macro (spec C10). `DBUUID == ""` means no `pmm` database. `Rows` is `count()` of `<db>.metrics`, 0 when the database or the table does not exist (spec C12); only a failed connection makes a node unreachable. `TablePaths` maps table name to `system.replicas.zookeeper_path`. |
 | Verdict | `type Verdict int` with `VerdictConsistent`, `VerdictMissing`, `VerdictSplit`, `VerdictNoDatabase`, `VerdictUnknown` |
 | Engine clause | `ENGINE = Replicated('/clickhouse/databases/{uuid}', '{shard}', '{replica}')`, unchanged from `qan-api2/db.go:134` |
 | Leader check | `GET http://127.0.0.1:7772/v1/ha/nodes`; the entry whose `node_name` equals env `PMM_HA_NODE_ID` has `role` `NODE_ROLE_LEADER` (spec C6). Anything else, including an error, means "not the leader". |
 | Full view | the same response lists `expected_nodes` entries, all with `status` `alive`. Required, besides the leader check, before every `DROP DATABASE` (split-brain guard). |
-
-**Metrics** (qan-api2 `/debug/metrics`, default registry, namespace `qan_api2`, subsystem `clickhouse_cluster`; exported only when `PMM_CLICKHOUSE_NODES` is non-empty):
-
-| Name | Type | Labels | Meaning |
-|---|---|---|---|
-| `qan_api2_clickhouse_cluster_db_uuids` | gauge | — | distinct `pmm` UUIDs among reachable nodes (1 healthy, >1 split, 0 none) |
-| `qan_api2_clickhouse_cluster_db_missing_nodes` | gauge | — | reachable nodes without `pmm` |
-| `qan_api2_clickhouse_cluster_db_unreachable_nodes` | gauge | — | nodes that could not be inspected |
-| `qan_api2_clickhouse_cluster_repairs_total` | counter | `action` = `create`/`recreate`, `result` = `success`/`failure` | per node: `create` on a node without `pmm`, `recreate` on a node with another UUID |
 
 **SQL** (spec §4.2, §4.3). `<r>` and `<shard>` are the `replica` and `shard` values from `system.macros` on the target node (chart: `chi-<release>-<cluster>-0-<n>` and `0`; `system.clusters.shard_num` is 1-based and is NOT the macro):
 
@@ -72,12 +63,11 @@ SYSTEM DROP DATABASE REPLICA '<r>' FROM SHARD '<shard>' FROM DATABASE <db>;     
 SYSTEM DROP REPLICA '<r>' FROM TABLE <db>.<table>;                               -- on a healthy node, per table, only if listed
 DROP DATABASE <db> SYNC;                                                           -- on a node with another UUID
 CREATE DATABASE IF NOT EXISTS <db> UUID '<u>' ENGINE = Replicated('/clickhouse/databases/{uuid}', '{shard}', '{replica}');
-CREATE DATABASE IF NOT EXISTS <db> UUID '<u>' ON CLUSTER "<cluster>" ENGINE = Replicated('/clickhouse/databases/{uuid}', '{shard}', '{replica}');  -- UUID before ON CLUSTER (spec C12)
+CREATE DATABASE IF NOT EXISTS <db> UUID '<u>' ON CLUSTER "<cluster>" ENGINE = Replicated('/clickhouse/databases/{uuid}', '{shard}', '{replica}');  -- UUID before ON CLUSTER (spec C11)
 ```
 
 Keeper registers a database replica as `<shard>|<replica>` (e.g. `0|chi-pmm-ha-pmmdb-0-2`) under `/clickhouse/databases/<uuid>/replicas`, and a table replica as `<replica>` under `<zookeeper_path>/replicas` (verified in the lab).
 
-**pmm-backup.sh:** manifest fields `components.clickhouse.pmm_uuid` and `components.clickhouse.metrics_rows`.
 
 ---
 

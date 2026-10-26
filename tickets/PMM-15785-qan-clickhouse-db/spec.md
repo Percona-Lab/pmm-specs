@@ -66,9 +66,8 @@ PMM HA keeps QAN data in a ClickHouse `Replicated` database named `pmm`. The rep
 | C8 | After a restore, table engines carry explicit Keeper paths from the backup, so two `pmm` copies can share their tables' data. `DROP DATABASE pmm SYNC` plus `CREATE … UUID '<other>'` on one node then re-homed it with identical rows on all nodes [V]. | Dropping a copy whose tables share the kept copy's paths loses nothing. |
 | C9 | ClickHouse replica macros: `shard` is `0`, `replica` is `chi-<release>-<cluster>-0-<n>`; Keeper names a database replica `<shard>\|<replica>` [V]. | Read `system.macros` on the target node; `system.clusters.shard_num` is 1-based and not the macro. |
 | C10 | `hostName()` returns the ClickHouse pod name (`pmm-ha-pmmdb-0-0-0`), not the `replica` macro (`chi-pmm-ha-pmmdb-0-0`) [V]. | Nodes are identified with `getMacro('replica')`. |
-| C11 | qan-api2's `/debug/metrics` (port 9933) is scraped as job `qan-api2` from every PMM pod in HA [V]. | Consistency metrics can be exported from qan-api2. |
-| C12 | `UUID` must come before `ON CLUSTER`: `CREATE DATABASE … ON CLUSTER … UUID '…'` fails with a syntax error (code 62), `CREATE DATABASE … UUID '…' ON CLUSTER …` gives one UUID on all nodes [V]. Two concurrent `ON CLUSTER` creates with different explicit UUIDs ended with one UUID on all three nodes in 3 of 3 runs [V, PR review]. | The statement order is fixed in the contract; concurrent first creations are safe. |
-| C13 | The operator's statement for a new replica, `CREATE DATABASE IF NOT EXISTS "pmm" Engine = <engine_full>`, keeps `{uuid}` and creates no tables in a Replicated database: replayed on 25.8.28 it gave the replica its own UUID and no `metrics` table, so `count()` failed with `UNKNOWN_TABLE` (code 60) [V, PR review]. | A `pmm` without `metrics` counts as 0 rows, not as an unreachable node. |
+| C11 | `UUID` must come before `ON CLUSTER`: `CREATE DATABASE … ON CLUSTER … UUID '…'` fails with a syntax error (code 62), `CREATE DATABASE … UUID '…' ON CLUSTER …` gives one UUID on all nodes [V]. Two concurrent `ON CLUSTER` creates with different explicit UUIDs ended with one UUID on all three nodes in 3 of 3 runs [V, PR review]. | The statement order is fixed in the contract; concurrent first creations are safe. |
+| C12 | The operator's statement for a new replica, `CREATE DATABASE IF NOT EXISTS "pmm" Engine = <engine_full>`, keeps `{uuid}` and creates no tables in a Replicated database: replayed on 25.8.28 it gave the replica its own UUID and no `metrics` table, so `count()` failed with `UNKNOWN_TABLE` (code 60) [V, PR review]. | A `pmm` without `metrics` counts as 0 rows, not as an unreachable node. |
 
 ---
 
@@ -80,9 +79,9 @@ On a connection to `pmm` that fails with `UNKNOWN_DATABASE`:
 
 1. **Complete view.** Run the cluster check and the DDL on one pinned connection. Proceed only when that replica's `system.clusters` lists every host in `PMM_CLICKHOUSE_NODES` for `PMM_CLICKHOUSE_CLUSTER_NAME`.
 2. **Find the UUID.** Read `uuid` from `system.databases WHERE name = 'pmm'` on every node over direct connections.
-   - None found: generate one and create `pmm` `ON CLUSTER` with it (C12). Two pods starting together still end with one UUID.
+   - None found: generate one and create `pmm` `ON CLUSTER` with it (C11). Two pods starting together still end with one UUID.
    - One found: create `pmm` with it on the nodes that lack it and that Keeper does not list; a node with a stale registration is left to §4.2.
-   - More than one found: create nothing, connect to a node of the copy §4.2 would keep (the most rows, then the lowest UUID) and start; §4.2 fixes the split.
+   - More than one found: create nothing and retry as in step 3; §4.2 fixes the split.
 3. **If the node behind qan-api2's connection still has no `pmm`** (it was skipped above), qan-api2 does not exit: it retries every few seconds. The §4.2 routine runs independently of this connection, so in the leader it fixes that node and the retry then succeeds. Exiting instead would restart qan-api2 onto the same node every time (the Service's ClientIP affinity), and nothing would ever fix it.
 4. **Without `PMM_CLICKHOUSE_NODES`** (non-chart deployments with `PMM_CLICKHOUSE_IS_CLUSTER=1`), keep today's behaviour but pass an explicit UUID.
 
@@ -94,7 +93,7 @@ The qan-api2 of the PMM HA leader (C6) runs this at start, before and independen
 
 - **All nodes agree:** nothing to do.
 - **Some nodes have no `pmm`:** on each, remove any stale Keeper registration (`SYSTEM DROP DATABASE REPLICA` and `SYSTEM DROP REPLICA` per table, run on a healthy node, C7), then `CREATE DATABASE IF NOT EXISTS pmm UUID '<existing>'`. ClickHouse copies the tables and rows in the background (C4).
-- **Nodes hold different UUIDs (a split):** keep the copy with the most rows (`count()` of `pmm.metrics`; a `pmm` without that table counts as 0, C13), then the lowest UUID. On every node with another UUID:
+- **Nodes hold different UUIDs (a split):** keep the copy with the most rows (`count()` of `pmm.metrics`; a `pmm` without that table counts as 0, C12), then the lowest UUID. On every node with another UUID:
   - check leadership again, and drop only while the leader sees every expected PMM node alive (C6), so two leaders in a split brain never drop each other's copy;
   - read the kept UUID again on a node that holds it;
   - `DROP DATABASE pmm SYNC`, then the create as for a node without `pmm`.
@@ -107,25 +106,25 @@ Each action is logged at warning level with the node, the old and new UUID, and 
 
 **Once after the upgrade.** On an install that is already split, the first pass after the upgrade fixes it; afterwards §4.1 prevents new splits, and passes only act on a node that lost `pmm`. The copy with the most rows is normally the one with the full history; a stray made by the race holds only what was written to it.
 
-**Visibility:** qan-api2 metrics `db_uuids`, `missing_nodes`, `unreachable_nodes` and `repairs_total{action, result}`, plus the log lines. No alert or dashboard panel (D7).
+**Visibility:** the log lines. No metrics, alert or dashboard panel (D7).
 
 ### 4.3 Backup and restore (`charts/pmm-ha/files/pmm-backup.sh`)
 
 1. **Per-pod check** used by `backup` and `restore`: read the `pmm` UUID and `count()` on every ClickHouse pod through `kubectl exec`; C1–C2 do not apply to this path.
-2. **Backup:** run `clickhouse-backup create` on the pod with the most rows, not blindly on `items[0]` (`ch_resolve_pod`). A pod that was just recreated, or was down, may still be copying history; the pod with the most rows is the most complete. If the pods report different UUIDs, log a warning and continue. Record the `pmm` UUID and the backed-up `metrics` row count (the sum of the frozen parts' `count.txt`) in the manifest.
+2. **Backup:** run `clickhouse-backup create` on the pod with the most rows, not blindly on `items[0]` (`ch_resolve_pod`). A pod that was just recreated, or was down, may still be copying history; the pod with the most rows is the most complete. If the pods report different UUIDs, log a warning and continue.
 3. **Restore, before ClickHouse.** A restore replaces all QAN data with the backup's, so it fixes any state first:
    - **Preflight, while PMM is up:** refuse if a ClickHouse or Keeper pod does not answer. Its UUID is unknown, and it could come back holding another copy.
    - **After PMM is stopped and the backup is downloaded** (so a failed download changes nothing): keep the UUID on the most pods (on a tie, the first pod's). On pods with another UUID, `DROP DATABASE pmm SYNC`. On those and on pods without `pmm`, the §4.2 create with the kept UUID, waiting for the tables but not for rows. With no `pmm` anywhere, create it `ON CLUSTER` with a new UUID.
    - Then run `clickhouse-backup restore --rm` on any pod. Every pod now shares one `pmm`, so the restore reaches every pod through the database (lab R1).
 
    **[V] lab R3:** a stray copy sat on the restore pod (`items[0]`). The fix re-homed it in about 10 s; the restore then left one UUID and identical table UUIDs on every pod, rows older than the backup matched it exactly, and the stray rows and the rows written after the backup were gone.
-4. **Restore, after ClickHouse:** verify one `pmm` UUID and the same table UUIDs on every pod, equal row counts (polled while they still grow), and `count()` equal to the backup's. On any mismatch, exit non-zero, mark the restore failed and leave PMM down.
+4. **Restore, after ClickHouse:** verify one `pmm` UUID and the same table UUIDs on every pod, and equal row counts (polled while they still grow). On any mismatch, exit non-zero, mark the restore failed and leave PMM down.
 
 ### 4.4 Chart (percona-helm-charts)
 
 - `pmm-backup.sh` changes of §4.3, with their docs (`charts/pmm-ha/docs/pmm-backup.md`); chart version 1.8.1.
 - `wait-for-clickhouse` stays as it is: §4.1 closes the race on its own.
-- **Operator:** after a volume loss it creates nothing (C7); §4.2 handles that node. When replicas are added, the operator gives the new replica `pmm` with its own UUID and no tables (C13). §4.2 counts that copy as 0 rows and recreates it with the kept UUID [I: not run end to end].
+- **Operator:** after a volume loss it creates nothing (C7); §4.2 handles that node. When replicas are added, the operator gives the new replica `pmm` with its own UUID and no tables (C12). §4.2 counts that copy as 0 rows and recreates it with the kept UUID [I: not run end to end].
 
 ### 4.5 Scenarios
 
@@ -175,9 +174,9 @@ Each action is logged at warning level with the node, the old and new UUID, and 
 | T4 | Split: a small stray copy on a node QAN does not write to | the stray node recreated with the main UUID; the main copy's rows unchanged |
 | T5 | Split: a small stray copy on the node QAN writes to | the main UUID kept on every node (more rows); the main copy's rows unchanged |
 | T6 | Split with shared table paths (the state a pre-fix restore leaves, R2) | one UUID; counts and checksums unchanged |
-| T7 | `pmm-backup.sh backup`, then `restore` in place | one UUID; `count()` equals the backup's |
-| T8 | Split, and separately a missing `pmm`, on the first ClickHouse pod; then `restore`. Also with no `pmm` on any pod | fixed before restoring; one UUID; `count()` equals the backup's; no stray rows |
-| T9 | Restore into a fresh install (another namespace) | one UUID; `count()` equals the backup's |
+| T7 | `pmm-backup.sh backup`, then `restore` in place | one UUID; equal counts on every pod; rows written after the backup are gone |
+| T8 | Split, and separately a missing `pmm`, on the first ClickHouse pod; then `restore`. Also with no `pmm` on any pod | fixed before restoring; one UUID; equal counts on every pod; no stray rows |
+| T9 | Restore into a fresh install (another namespace) | one UUID; equal counts on every pod |
 
 **Docs:** `pmm-backup.md`; the PMM HA troubleshooting docs (how to check the UUID per node, what the log lines mean); release note.
 
@@ -193,7 +192,8 @@ Each action is logged at warning level with the node, the old and new UUID, and 
 | D4 | A node without `pmm` gets it back automatically. | ticket owner |
 | D5 | A backup runs on the pod with the most rows. | ticket owner |
 | D6 | A restore checks the cluster, brings every node to one `pmm` (drop and recreate where needed), then restores. | ticket owner |
-| D7 | No alert or dashboard panel; log lines and qan-api2 metrics only (2026-10-26). | ticket owner |
+| D7 | No metrics, alert or dashboard panel; log lines only (2026-10-26). | ticket owner |
+| D14 | Keep the solution as simple as possible: a split at startup is retried until the leader fixes it; the backup manifest records no row count; no interface or fake in the Go code (2026-10-26). | ticket owner |
 | D8 | The test cases in §6 become automated HA tests. | ticket owner |
 | D9 | qan-api2 inspects each node over direct connections from `PMM_CLICKHOUSE_NODES` (C1–C3). | author |
 | D10 | Stale Keeper registrations are removed before `pmm` is created on a node (C7). | author |
@@ -203,4 +203,4 @@ Each action is logged at warning level with the node, the old and new UUID, and 
 
 ## 8. Left to the builder
 
-- Metric names beyond the contract, the interval, and the log wording.
+- The interval and the log wording.
