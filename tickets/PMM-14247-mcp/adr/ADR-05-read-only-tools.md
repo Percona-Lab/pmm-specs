@@ -1,7 +1,7 @@
 # ADR-05: Read-only tools
 
 - Status: Proposed
-- Date: 2026-10-22, revised 2026-10-24
+- Date: 2026-10-22, revised 2026-10-24 and 2026-10-26
 - Tickets: PMM-14247, PMM-15529
 - Implemented: read-only tool set in `PMM-MCP-GA` (percona/pmm#5942); per-caller limit not yet (phase 2)
 
@@ -25,7 +25,8 @@ Tools are of two kinds:
 Live inspection is bounded:
 - pmm-agent runs at most 2 actions at once per database instance and 32 in total, each with a 10 s limit (existing, `agent/runner/runner.go`);
 - one MCP call is bounded by `PMM_MCP_ACTION_TIMEOUT` and keeps at most 4 actions in flight;
-- new: at most 2 live-inspection calls in flight per caller, keyed by a hash of the caller's credentials; a further call answers `rate_limited` at once. The phase 2 plan may change the number. Metric queries have a limit of their own (ADR-15).
+- new: at most 2 live-inspection calls in flight per caller and 8 per pmm-managed replica across all callers; a further call answers `rate_limited` at once. The phase 2 plan may change the numbers. Metric queries have limits of their own (ADR-15).
+- The caller is identified by a hash of its credentials, so the per-caller limit is **per token and per replica**. A service account with several tokens gets one allowance per token, and an HA cluster one per replica. The per-replica cap and pmm-agent's own limits bound the total. Keying by the principal would need the caller's identity inside MCP, which this epic doesn't pass (spec §9.1); there is no distributed limiter.
 
 ## Consequences
 
