@@ -1,7 +1,7 @@
 # ADR-12: Service-account tokens are principals
 
 - Status: Proposed
-- Date: 2026-10-22, revised 2026-10-24
+- Date: 2026-10-22, revised 2026-10-24 and 2026-10-30
 - Tickets: PMM-14247, PMM-15531, PMM-15534
 - Implemented: not yet (phase 4)
 
@@ -25,6 +25,7 @@ Out of scope: a role picker on Grafana's service-account page; a machine princip
 
 - Access Roles govern every token-based integration, not only MCP.
 - No Grafana fork change and no extra call per request.
-- A token is governed by the default role from its first request. Since tokens get no filter today, this can only narrow what a token sees. Admins who restricted the default role should check their tokens before upgrading; the release notes say so.
+- A token is governed by the default role from its first request. Since tokens get no filter today, this can only narrow what a token sees, on metrics and QAN. Admins who restricted the default role should check the tokens they created before upgrading; the release notes say so.
+- That includes the Admin service accounts PMM creates for every registered node (`CreateServiceAccount`, `managed/services/grafana/client.go:667`), which pmm-agent and pmm-admin use for inventory calls. On the inventory, alert and Advisor APIs, Admins are not filtered (ADR-16), so a restricted default role doesn't hide a node from its own pmm-agent or pmm-admin. No migration is needed, and nodes registered later are covered too. Spec §9.4 tests it.
 - This is a release prerequisite: without it, a token's MCP results are not scoped by Access Roles.
 - `mcp.md` and the access-control docs describe role assignment for service accounts, in the same change.

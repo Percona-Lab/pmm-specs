@@ -1,7 +1,7 @@
 # ADR-11: Output contract
 
 - Status: Proposed
-- Date: 2026-10-22, revised 2026-10-24 and 2026-10-26
+- Date: 2026-10-22, revised 2026-10-24, 2026-10-26 and 2026-10-30
 - Tickets: PMM-14247, PMM-15530
 - Implemented: not yet (phase 3; the contract is written before the rest of phase 2)
 
@@ -18,10 +18,11 @@ The tools return prose with "View in PMM" links. That suits a person driving Cla
 ## Decision
 
 Option 3.
-- Each tool has a Go output type. The handler builds the value once. The Go SDK (v1.8.0) infers `outputSchema` from the type, validates the value and sends it as `structuredContent`. The text is rendered from the same value.
+- Each tool has a Go output type `T`. The handler builds the value once. The tool is registered with `Out = any` and an explicit `OutputSchema` from `jsonschema.For[T]()`; the Go SDK (v1.8.0) validates a non-nil output against it and sends it as `structuredContent`. The text is rendered from the same value.
 - Redaction (ADR-07) runs on the value, before either rendering.
 - Every listing tool takes `limit` and `offset` and reports `total`, `offset`, `limit` and `truncated`; the text ends with an explicit truncation marker. Starting caps are in [spec §8](../spec.md#8-phase-3-output-contract).
-- The error codes are part of the contract: the eight in `errors.go` plus `rate_limited` (ADR-05). An error stays an `isError` result. Its text starts with `error: <code>` for the model, and its `_meta` carries `percona.com/error: {code, retryable}` for programs. `timeout`, `agent_unreachable`, `pmm_unavailable` and `rate_limited` are retryable; the others are not.
+- The error codes are part of the contract: the eight in `errors.go` plus `rate_limited` (ADR-05). An error stays an `isError` result. Its text starts with `error: <code>` for the model, and its `_meta` carries `com.percona/error: {code, retryable}` for programs (a reverse-DNS prefix, as MCP asks for `_meta` keys). `timeout`, `agent_unreachable`, `pmm_unavailable` and `rate_limited` are retryable; the others are not.
+- **How errors are returned.** With go-sdk v1.8.0, a handler that returns a Go error loses its own result, `_meta` included, and a tool registered with a typed `Out` sends `Out`'s zero value as structured content even next to `isError` (`mcp/server.go:420-468`) [V]. So every tool is registered with `Out = any` and an explicit `OutputSchema` built with `jsonschema.For[T]()`, and a failing call returns its own `isError` result, with `_meta`, a nil output and a nil Go error: no structured content. The golden `tools/list` test and `tool-contract.md` record this.
 - Reference data moves out of tool descriptions into one read-only tool, `pmm_catalog(kind, engine)`: `kind: qan_columns` is the QAN column catalogue, `kind: metrics` the metrics catalogue (ADR-15).
 - For a metrics result, the text carries the summary table and leaves raw points to the structured content (ADR-15), so the points are not sent twice.
 - **Provenance.** A result built from time-based data carries the window it used. A result about a query, service, alert or check carries its `pmm_url` ("View in PMM"). Both are in the structured content as well as the text.

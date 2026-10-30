@@ -1,7 +1,7 @@
 # ADR-15: Metrics tools
 
 - Status: Proposed
-- Date: 2026-10-24, revised 2026-10-26
+- Date: 2026-10-24, revised 2026-10-26 and 2026-10-30
 - Tickets: PMM-14247, PMM-15790
 - Implemented: not yet (phase 2b)
 
@@ -42,10 +42,13 @@ Option 3. All metric reads go through the Grafana datasource proxy (ADR-09); vmp
   - It looks back 1 h by default. When more names match than the limit, the result groups them by prefix, such as `mysql_global_status_*`, with a count each, so the model can narrow the search. Names that are in the catalog carry its one-line meaning and type.
   - VictoriaMetrics applies the caller's filters on the label endpoints unless `-search.ignoreExtraFiltersAtLabelsAPI` is set; PMM doesn't set it [V]. A test with a restricted role pins this.
 
-**Execution budget**, checked before a query is sent (starting values in spec §8):
-- **Selectors name a metric.** Every series selector in the expression names a metric, with `=` or with a `=~` regex that starts with a literal prefix of at least three characters. Anything else, `{__name__=~".+"}` included, answers `invalid_input` with a hint. The expression is parsed with `github.com/VictoriaMetrics/metricsql` (Apache-2.0), a new dependency: the Prometheus parser already in `go.mod` rejects MetricsQL-only syntax.
-- **Range** is capped (7 days), and the **step** is at least the range divided by the point budget, so VictoriaMetrics computes a bounded number of points per series.
-- **Timeout.** Every query carries VictoriaMetrics' `timeout` argument, which can only lower `-search.maxQueryDuration` [I, VictoriaMetrics docs].
+**Execution budget**, checked on the parsed expression before a query is sent (starting values in spec §8). The response budget below bounds what comes back; this bounds what VictoriaMetrics is asked to read. Every refusal answers `invalid_input` with a hint.
+- **Parsing.** The expression is parsed with `github.com/VictoriaMetrics/metricsql` (Apache-2.0), a new dependency: the Prometheus parser already in `go.mod` rejects MetricsQL-only syntax. An expression longer than 4 KiB, or with more than 10 series selectors, is refused; PMM's VictoriaMetrics itself accepts 1 MB (`supervisord.go:50`) [V].
+- **Selectors name a metric.** Every series selector names a metric, with `=` or with a `=~` regex that starts with a literal prefix of at least three characters. A regex name also needs a `service_id`, `service_name`, `node_id` or `node_name` matcher in the same selector: `{__name__=~"mysql_.*"}` alone selects a whole engine on every service and is refused. `{__name__=~".+"}` and selectors without a metric name are refused.
+- **Time read.** The whole span a query reads is capped at 7 days: the request's range plus the largest lookbehind in the expression, counting rollup windows (`[5m]`), subquery ranges (`[30d:5m]`) and `offset`. So `rate(x[365d])` as an instant query is refused like a 365-day range. The `@` modifier, which moves evaluation to any time, is refused.
+- **Step** is at least the range divided by the point budget, so VictoriaMetrics computes a bounded number of points per series.
+- **Request.** MCP builds the VictoriaMetrics request from a fixed set of arguments (`query`, `time` or `start`, `end` and `step`, and `timeout`) and passes nothing else through, so no extra argument changes what the checks assumed.
+- **Timeout.** Every query carries VictoriaMetrics' `timeout` argument, which can only lower `-search.maxQueryDuration` [I, VictoriaMetrics docs]. It stops a query only after it has run that long, so it backs up the checks above rather than replacing them.
 - **Concurrency.** At most 4 metric queries in flight per caller and 8 per pmm-managed replica across all callers; a further call answers `rate_limited` (ADR-05).
 
 **Response budget** for `pmm_query_metrics` (starting values in spec §8):
@@ -62,10 +65,10 @@ Option 3. All metric reads go through the Grafana datasource proxy (ADR-09); vmp
 ## Consequences
 
 - The common triage costs one call, the catalog one call per engine per session, and free-form queries stay available.
-- No metrics response exceeds the budget, whatever the query, and no query reaches VictoriaMetrics without a metric name, a bounded range and a timeout.
-- Some valid queries are refused: a selector without a metric name, or a range over 7 days. Dashboards stay the tool for those.
+- No metrics response exceeds the budget, whatever the query. No query reaches VictoriaMetrics without a metric name, a service or node scope for a regex name, a capped span of time read, a capped length and a timeout. What VictoriaMetrics reads still grows with the number of series selected; the per-replica cap bounds how many such queries run, and the load test measures them.
+- Some valid queries are refused: a selector without a metric name, a regex name without a service or node, a span over 7 days, the `@` modifier, and long expressions. Dashboards stay the tool for those.
 - One new Go dependency, `metricsql`, for parsing.
-- The load an agent can put on VictoriaMetrics is measured, not assumed: the acceptance test (spec §7.5) records VictoriaMetrics' CPU, memory and dashboard query latency under broad queries from several callers.
+- The load an agent can put on VictoriaMetrics is measured, not assumed: the acceptance test (spec §7.5) records VictoriaMetrics' CPU, memory and dashboard query latency under broad queries from several callers, long-window instant queries and scoped prefix selectors included.
 - The built-in signals and the catalog must follow exporter renames; the fixture tests catch drift.
 - Steering works only if the client passes `Instructions` to the model. The client matrix (spec §11) checks it.
 - Remembering the catalog across sessions is the client's job.
