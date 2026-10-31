@@ -24,7 +24,7 @@
 ## Review Focus
 
 - **A client that reads only `content`** (no structured output) must lose nothing it has today: every text rendering keeps today's content and links. Task 4–6 tests compare text against today's assertions, unchanged.
-- **The zero value of a result type must never reach a client:** Task 2 step 1 asserts `structuredContent` is absent on every error path, including a panic-free error from a nil API response.
+- **The zero value of a result type must never reach a client:** Task 2 step 1 asserts `structuredContent` is absent on the error path, and Task 8's golden file shows no tool registered with a typed `Out`.
 - **A truncated list must say so in both renderings:** `page.truncated` and the text marker; Task 3 tests `paginate` at the boundary (exactly `limit` items: not truncated).
 - **Untrusted marks must survive refactoring:** Task 8's `TestUntrustedFieldsMarked` fails when a listed field loses its mark.
 - **`pmm_catalog` must stay in step with `qanColumns`:** Task 7 derives entries from `qanColumns`, never a copy.

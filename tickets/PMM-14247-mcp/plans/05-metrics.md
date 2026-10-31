@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - Needs plan 02 (`limiter`, `callerKey`, `codeRateLimited`) and plan 03 (`addTool`, `window`, `page`, `pmm_catalog`).
+- Every task that adds or changes a tool regenerates `testdata/tools_list.golden.json` (`-update`) and lists its Untrusted fields in `TestUntrustedFieldsMarked` (plan 03, Task 8).
 - Execution budget: expression ≤ 4 KiB and ≤ 10 series selectors; every selector names a metric with `=` or a `=~` regex with a literal prefix of ≥ 3 characters, and a regex name also needs a `service_id`, `service_name`, `node_id` or `node_name` matcher in the same selector that is `=`, or `=~` with a regex of literal alternatives only (`db1|db2`), so `=~".+"` doesn't count as a scope; span read = range + largest (rollup window or subquery range) + largest `offset` ≤ 7 days; `@` refused. Every refusal is `invalid_input` with a hint, before any request.
 - Request arguments: only `query`, `time` or `start`/`end`/`step`, and `timeout`. Timeout 30 s.
 - Response budget: 20 series by default, 100 maximum, top N by max; 2,000 points and 16 KiB per response; summaries (min, avg, max, last) when raw points don't fit; internal labels `agent_id`, `agent_type`, `node_id`, `machine_id`, `instance`, `job` dropped from rows; labels shared by every series shown once.
@@ -26,7 +27,7 @@
 - **A model that asks for `rate(x[5m])` over exactly 7 days** gets a refusal that tells it the span and the cap, not a generic error: Task 2 tests the hint text.
 - **A result with one huge series and many small ones** keeps the huge one in the top N and says how many were left out: Task 3 tests `total_series` and the hint.
 - **VictoriaMetrics answering 422 for a bad expression** must surface as `invalid_input` with VictoriaMetrics' message, not `pmm_unavailable`: Task 1 tests the mapping.
-- **Node signals under a service-filtered role** report `no_data` with the note that it can mean "hidden", never `ok` or an error: Task 7 tests it.
+- **Node signals under a service-filtered role** report `no_data` with the note that it can mean "hidden", never `ok` or an error: Task 8 tests it.
 - **A catalogue entry whose metric was renamed upstream** fails CI, not at a customer: Task 6's fixture test.
 
 ---
@@ -137,11 +138,22 @@
 - [ ] **Step 3: Run, see FAIL; write the catalogue; run, see PASS.** Extend `TestCatalogQANColumns` with `kind: metrics, engine: postgresql`.
 - [ ] **Step 4: Commit** `PMM-15790 Add the metrics catalogue to pmm_catalog`.
 
-### Task 7: `pmm_service_health`
+### Task 7: Scrape health in `pmm_inventory`
 
-**Files:** Create `managed/services/mcp/tools_health.go`, `tools_health_test.go`, `testdata/health_*.json`; Modify `client.go`/`deps.go` if `GET /v1/server/settings/readonly` is not yet in `pmmAPI` (`ReadOnlySettings`).
+**Files:** Modify `tools_inventory.go`; Test `tools_inventory_test.go`; Modify `client.go` and `deps.go` to add `ReadOnlySettings(ctx context.Context, auth callerAuth) (*server_service.GetReadOnlySettingsOKBody, error)` to `pmmAPI` for the low metrics resolution.
 
 **Interfaces:**
+- Produces: `type scrapeState struct { State string \`json:"state"\`; LastAt *time.Time \`json:"last_at,omitempty"\` }` (`up`, `down`, `unknown`); `serviceRow.Scrape scrapeState \`json:"scrape"\``. `func (s *Service) lowResolution(ctx context.Context, auth callerAuth) time.Duration` returns `metrics_resolutions.lr`, or 60 s when the settings call fails. Two instant queries per call, beside the version query: `max by (service_id) (up{service_id!=""})` and `max by (service_id) (timestamp(up{service_id!=""}))`.
+
+- [ ] **Step 1: Extend `TestInventoryTool`:** `up` 1 → `up`; 0 → `down`; no series or last sample older than 3 × low resolution → `unknown` with `last_at` when known; a failing metrics call leaves `unknown`, not an error.
+- [ ] **Step 2: Run, see FAIL; implement; run, see PASS. Commit** `PMM-15790 Report scrape health in pmm_inventory`.
+
+### Task 8: `pmm_service_health`
+
+**Files:** Create `managed/services/mcp/tools_health.go`, `tools_health_test.go`, `testdata/health_*.json`.
+
+**Interfaces:**
+- Consumes: `scrapeState`, `lowResolution` (Task 7).
 - Produces:
   - `type signal struct { Name, Unit, Source, Query string; Node bool }`; `Query` has one `%s` for the selector (`service_name="…"` or, when `Node`, `node_name="…"`). `var healthSignals = map[string][]signal{…}`: 10 to 15 per engine (load as QPS, threads or connections, replication lag, CPU, memory, disk latency, and engine ones such as the buffer pool hit ratio), queries taken from PMM's dashboards.
   - `type signalResult struct { Name, Unit, Source, State string; Min, Avg, Max, Last *float64; LastAt *time.Time }` (`State`: `ok`, `stale`, `no_data`).
@@ -152,16 +164,6 @@
 - [ ] **Step 1: Write `TestServiceHealthTool`:** a MySQL fixture returns every signal `ok` with min/avg/max/last; a signal whose last sample is 4 minutes old (low resolution 60 s) is `stale`; an empty node signal is `no_data` and `note` says it may be hidden by an Access Role; no field is a healthy/unhealthy verdict; an unknown `service_id` is `not_found`. **`TestSignalState`.** **`TestHealthSignalsPass`:** every query, filled in, passes `checkExpr`.
 - [ ] **Step 2: Run, see FAIL; implement; run, see PASS.**
 - [ ] **Step 3: Commit** `PMM-15790 Add pmm_service_health`.
-
-### Task 8: Scrape health in `pmm_inventory`
-
-**Files:** Modify `tools_inventory.go`; Test `tools_inventory_test.go`.
-
-**Interfaces:**
-- Produces: `type scrapeState struct { State string \`json:"state"\`; LastAt *time.Time \`json:"last_at,omitempty"\` }` (`up`, `down`, `unknown`); `serviceRow.Scrape scrapeState \`json:"scrape"\``. Two instant queries per call, beside the version query: `max by (service_id) (up{service_id!=""})` and `max by (service_id) (timestamp(up{service_id!=""}))`.
-
-- [ ] **Step 1: Extend `TestInventoryTool`:** `up` 1 → `up`; 0 → `down`; no series or last sample older than 3 × low resolution → `unknown` with `last_at` when known; a failing metrics call leaves `unknown`, not an error.
-- [ ] **Step 2: Run, see FAIL; implement; run, see PASS. Commit** `PMM-15790 Report scrape health in pmm_inventory`.
 
 ### Task 9: Instructions, docs, live checks and the load test
 

@@ -17,6 +17,8 @@
 | 7 | [07 Alerts and Advisors](07-alerts-and-advisors.md) | PMM-15790, PMM-15531 | 3, 6 | Task-level |
 | 8 | [08 Release](08-release.md) | PMM-15532 | 1–7 | Task-level |
 
+ADR-13 (`mcp:use`) ships on PMM-15791 after the MCP release and has no plan here.
+
 Steps 4 and 5 can run in parallel, and so can step 6 with 3 to 5. Task-level plans are expanded to full depth, with this skill, when their step starts.
 
 **Difference from spec §3.1.** The spec builds the rest of phase 2 and the metrics tools "to the contract" before the phase 3 code. These plans put the contract's plumbing first (plan 03: typed results, errors, paging, `pmm_catalog`), so the new tools in plans 04 and 05 are written once, in their final shape, instead of text-only and then reworked. The contract document still comes first (plan 03, task 1).

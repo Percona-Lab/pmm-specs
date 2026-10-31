@@ -3,7 +3,7 @@
 - **Date:** 2026-10-22, revised 2026-10-24, 2026-10-26 and 2026-10-30 after reviews of [#4](https://github.com/Percona-Lab/pmm-specs/pull/4).
 - **Epic:** [PMM-14247](https://perconadev.atlassian.net/browse/PMM-14247), phases PMM-15527 to PMM-15532 ([§2](#2-sources)).
 - **Code base:** percona/pmm branch `PMM-MCP-GA` at `826945906`, and the phase 2 branches listed in [§3](#3-where-the-work-stands). Line numbers refer to those commits; re-check them before you edit.
-- **Plans that implement this document:** `plans/00-roadmap.md` and the plans next to it, added once this document is reviewed.
+- **Plans that implement this document:** [`plans/00-roadmap.md`](plans/00-roadmap.md) and the plans next to it.
 
 Marks used below:
 - **[V]** means verified by reading the code, the ticket or the pull request.
@@ -165,7 +165,7 @@ MCP client ──HTTPS──▶ nginx  location /mcp
 | [10](adr/ADR-10-nginx-only.md) | `/mcp` served only through nginx: SDK localhost protection off, loopback-peer check instead; cross-site `Origin` refused | Implementation notes, review of #4 | #5942, #6068; Origin check next |
 
 `DECISIONS.md` items not carried into ADRs:
-- **D1, D2** (where the contributor's branch lived, how commits are named): superseded by `PMM-MCP-GA` in percona/pmm. The branch rules from PMM-15527 move to `plans/00-roadmap.md`.
+- **D1, D2** (where the contributor's branch lived, how commits are named): superseded by `PMM-MCP-GA` in percona/pmm. The branch rules from PMM-15527 move to [`plans/00-roadmap.md`](plans/00-roadmap.md#branch-and-pr-rules).
 - **D4** (Access-Role permissions out of scope for #5942): superseded by ADR-12 and ADR-13.
 - **D6** (the contributor's demo environment): not carried. Verification uses throwaway VMs from the PMM QA tooling ([§11](#11-testing-and-verification)).
 - **D8** (Streamable HTTP response mode): the SDK default (SSE) stays. Revisit only if a client misbehaves behind nginx.

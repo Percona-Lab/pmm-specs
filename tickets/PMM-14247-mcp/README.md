@@ -20,6 +20,6 @@ Related tickets: PMM-15533, PMM-15534, PMM-15535, PMM-15536, PMM-15702, PMM-1570
 |---|---|
 | [spec.md](spec.md) | Analysis and design: architecture as built, the rest of phase 2, phases 3 to 5, corrections to the tickets |
 | [adr/](adr/README.md) | ADR-01..10 start from decisions implemented on `PMM-MCP-GA` (ADR-05, 08 and 10 revised in review); ADR-11..18 are new |
-| `plans/` | Roadmap and per-phase implementation plans; added after the spec is reviewed |
+| [plans/](plans/00-roadmap.md) | Roadmap and plans 01 to 08: full depth for the next steps, task level for phase 4, alerts and Advisors, and the release |
 
 Replaces `managed/services/mcp/DECISIONS.md` and `dev/docs/managed/mcp-access-roles-proposal.md` on `PMM-MCP-GA` (at `826945906`); [spec §5](spec.md#5-decisions-already-taken) maps each of their entries to where it lives now.

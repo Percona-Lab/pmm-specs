@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - Needs plan 02 (`startLive`) and plan 03 (`addTool`, `queryRef`, `window`, result types).
+- Tasks 4 and 5 change tool inputs and outputs: regenerate `testdata/tools_list.golden.json` (`-update`) and add `unresolved` to `TestUntrustedFieldsMarked` (plan 03, Task 8).
 - A caller's `service_id` is never used unchecked to fetch a plan: it must be one of the candidates.
 - Without a window: the last hour, as `pmm_top_queries`; the result states the window used.
 - Candidates: one → use it; several and no `service_id` → `invalid_input` listing only services the caller can see; none → `not_found` naming the window.

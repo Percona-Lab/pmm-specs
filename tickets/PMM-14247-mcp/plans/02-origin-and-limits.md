@@ -96,6 +96,7 @@ With the fixtures `TestSchemaTool` uses, and `key := callerKey(callerAuth{author
 - release one, call again: success;
 - fill 8 slots with other keys, call `pmm_get_explain` for the MySQL fixture: `error: rate_limited`;
 - with `key` at 2, `pmm_get_explain` on the PostgreSQL fixture (stored plan) succeeds.
+- after one `pmm_get_schema` call that fails (action fixture with an error) and one whose context is cancelled mid-poll, `s.live.acquire(key)` succeeds twice: both released their slot.
 
 - [ ] **Step 3: Run them to see them fail**
 
