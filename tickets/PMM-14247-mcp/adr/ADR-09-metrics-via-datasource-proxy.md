@@ -11,8 +11,8 @@
 
 ## Options
 
-1. The raw VictoriaMetrics path.
-2. Grafana's datasource proxy by numeric ID.
+1. The raw VictoriaMetrics path. Rejected: Admin-only.
+2. Grafana's datasource proxy by numeric ID. Rejected: Grafana deprecates the numeric-ID routes in favour of the uid routes [I].
 3. Grafana's datasource proxy by uid, with the uid looked up per call.
 
 ## Decision
@@ -22,5 +22,5 @@ Option 3. `GET /graph/api/datasources/name/Metrics` returns the uid, with the ca
 ## Consequences
 
 - Plain Prometheus responses, Viewer-readable, filtered by LBAC for callers that have roles.
-- One small extra call per tool call, and no stale cache.
+- One extra loopback call per tool call, and no stale cache.
 - The tool selects the datasource by name, so renaming PMM's `Metrics` datasource would break it.

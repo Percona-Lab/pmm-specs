@@ -10,20 +10,20 @@
 
 Grafana OSS has three organization roles and PMM doesn't fork that part, so there is no fourth Grafana role to give. PMM Access Roles carry only a label filter, so they can't say "may use `/mcp`". An admin who uses Access Control to separate teams has no way to decide who may point an AI client at PMM.
 
-This is governance, not data scoping. MCP can't return more than the caller's own API access (ADR-03); ADR-12 and ADR-16 make Access Roles scope what MCP returns. A permission decides whether a caller may use MCP at all.
+This is governance, not data scoping. MCP can't return more than the caller's own API access (ADR-03); ADR-12 and ADR-08 make Access Roles filter metrics and QAN for every caller, and MCP narrows the rest (ADR-03). A permission decides whether a caller may use MCP at all.
 
 The proposal on `PMM-MCP-GA` suggested `permissions` on Access Roles that **grant** access when the Grafana-role check fails. `/mcp` already passes for every Viewer, so a grant would change nothing for anyone at Viewer or above.
 
 ## Options
 
-1. Defer permissions.
-2. Permissions as grants (the proposal as written). They would only affect principals with Grafana's "No basic role".
+1. Defer permissions, design included. Rejected: admins who use Access Control to separate teams need a way to keep MCP from some of them; the design is settled now and delivered later.
+2. Permissions as grants (the proposal as written). They would only affect principals with Grafana's "No basic role". Rejected: `/mcp` already passes for every Viewer, so a grant changes nothing at Viewer or above.
 3. Permissions as requirements while Access Control is on.
 
 ## Decision
 
 Option 3, delivered on PMM-15791 after the MCP release. It touches a migration, the proto, the auth path and the role editor, which is PMM-wide work the MCP release doesn't need.
-- **Vocabulary:** `mcp:use`. Reads such as the inventory, alerts and Advisor results need no permission of their own: Access Roles already scope them (ADR-16).
+- **Vocabulary:** `mcp:use`. Reads such as the inventory, alerts and Advisor results need no permission of their own: MCP narrows them to the caller's service list (ADR-03, ADR-08).
 - **Model:** `permissions text[]` on `roles` (forward-only migration); additive `repeated string permissions` on the role messages in `api/accesscontrol/v1beta1`.
 - **Rule:** with Access Control on, a caller who is not Admin needs `mcp:use` for `/mcp`; without it, 403. Admins always pass.
 - **Union, not per role:** a user's permissions are the union over their roles, independent of the roles' filters. A user with role A (`mcp:use`, filter `environment="prod"`) and role B (no permission, filter `environment="staging"`) can use MCP, and MCP returns prod and staging data, the same as their dashboards show. Permissions decide whether, never what.

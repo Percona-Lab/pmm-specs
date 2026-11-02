@@ -11,17 +11,17 @@ MCP offers stdio and Streamable HTTP transports. A server can keep a session per
 
 ## Options
 
-1. Streamable HTTP with sessions kept in pmm-managed.
+1. Streamable HTTP with sessions kept in pmm-managed. Rejected: session state to replicate across HA replicas, for no tool that needs it.
 2. Streamable HTTP, stateless.
-3. A hand-written transport.
+3. A hand-written transport. Rejected: protocol work the official SDK already does and tracks.
 
 ## Decision
 
-Option 2, on the official `github.com/modelcontextprotocol/go-sdk` with `Stateless: true`. The SDK's default response mode (SSE) stays unless a client misbehaves behind nginx.
+Option 2, on the official `github.com/modelcontextprotocol/go-sdk` with `Stateless: true`. The SDK's default response mode (SSE) stays unless a client fails to receive streamed responses through nginx.
 
 ## Consequences
 
-- No session table: nothing to replicate in HA, and restarts are transparent to clients.
+- No session table, so nothing to replicate in HA. A restart fails only the calls in flight; clients don't re-initialize a session. Failover is untested (spec §11).
 - Every request carries its own credentials and is authorized on its own (ADR-03).
 - GET and DELETE on `/mcp` answer 405, by SDK design.
 - Server-initiated features that need a session (notifications, sampling) are unavailable. The read-only tool surface doesn't need them.

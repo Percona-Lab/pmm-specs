@@ -7,13 +7,13 @@
 
 ## Context
 
-#5942 owns the transport, authentication, error handling and redaction, with about 1,720 lines of tests, and is reviewable. #4045 (Percona-authored, closed unmerged, 26,340 lines) bundled a whole AI chat backend, but its query intelligence is better than #5942's: it resolves a `queryid` before acting, groups and filters QAN reports flexibly, publishes the QAN column catalogue, and fetches table definitions concurrently. #4045 is Percona's code, so it can be reused without a CLA.
+#5942 provides the transport, authentication, error handling and redaction, with about 1,720 lines of tests. #4045 (Percona-authored, closed unmerged, 26,340 lines) bundled an AI chat backend. Its query handling has four features #5942 lacks: it resolves a `queryid` before acting, groups and filters QAN reports, publishes the QAN column catalogue, and fetches table definitions concurrently. #4045 is Percona's code, so it can be reused without a CLA.
 
 ## Options
 
-1. Base on #4045 and strip the chat backend.
+1. Base on #4045 and strip the chat backend. Rejected: most of its 26,340 lines are the chat backend, and its polling has no deadline.
 2. Base on #5942 and port selected parts of #4045.
-3. Rewrite from scratch.
+3. Rewrite from scratch. Rejected: it discards #5942's transport, redaction and tests for no gain.
 
 ## Decision
 
@@ -28,5 +28,5 @@ Option 2.
 
 ## Consequences
 
-- The reviewed transport and redaction stay; query intelligence arrives in small PRs onto `PMM-MCP-GA`.
+- #5942's transport and redaction stay; query intelligence arrives in small PRs onto `PMM-MCP-GA`.
 - Each ported piece is re-tested against #5942's API-only data path (ADR-03): #4045 called internal services directly, which this design does not.

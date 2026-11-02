@@ -11,8 +11,8 @@ Query examples, EXPLAIN bodies and agent error messages can carry literal values
 
 ## Options
 
-1. Send everything.
-2. Mask literals by pattern.
+1. Send everything. Rejected: SQL literals can carry customer data, which would reach the model provider.
+2. Mask literals by pattern. Rejected: a literal in a form the patterns miss leaks; fail-closed masking withholds what it doesn't recognize.
 3. Mask fail-closed, with an opt-in for literal values.
 
 ## Decision
@@ -28,7 +28,7 @@ With it off:
 - QAN dimension values in `pmm_top_queries` (`group_by=username`, `client_host`) are shown (D10): Viewers already see them in QAN, and this ADR is about SQL literals.
 - Metric label values, alert summaries and descriptions, and Advisor texts are returned as stored: they are not SQL statements, and the same caller sees them in PMM.
 
-Operators who need a hard guarantee also turn off query examples in PMM.
+Turning off query examples in PMM removes one more source of literals. DDL and the other exceptions above still return what the database or the user stored, so no setting guarantees that no literal leaves the server.
 
 ## Consequences
 

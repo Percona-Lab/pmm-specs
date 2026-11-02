@@ -11,13 +11,13 @@
 
 ## Options
 
-1. On by default.
-2. Off by default, read at start-up.
+1. On by default. Rejected: every server would expose a new endpoint before the security review and any usage data.
+2. Off by default, read at start-up. Rejected: turning it off would need a restart, so it couldn't serve as a kill switch.
 3. Off by default, read on every request.
 
 ## Decision
 
-Option 3. `PMM_ENABLE_MCP` (also the `enable_mcp` field of the settings API) defaults to `false`. The handler reads the setting on every request and answers 404 when it is off, so the endpoint is invisible and can be disabled without a restart. A wiring mistake that supplies no setting also means off. The state shows in `GET /v1/server/settings/readonly`.
+Option 3. `PMM_ENABLE_MCP` (also the `enable_mcp` field of the settings API) defaults to `false`. The handler reads the setting on every request and answers 404 when it is off, so a disabled endpoint answers like an unknown path and can be disabled without a restart. A wiring mistake that supplies no setting also means off. The state shows in `GET /v1/server/settings/readonly`.
 
 ## Consequences
 

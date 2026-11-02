@@ -12,8 +12,8 @@ ADR-06 ships `/mcp` off. PMM-15532 asks for the default to be decided on evidenc
 ## Options
 
 1. Keep it off for this release; decide again for a later release.
-2. Decide in phase 5 against fixed conditions, and turn it on when they all hold, for new installations only.
-3. Turn it on at release unconditionally.
+2. Decide in phase 5 against fixed conditions, and turn it on when they all hold, for new installations only. Rejected: new and upgraded servers would have to differ, which a plain migration can't express.
+3. Turn it on at release unconditionally. Rejected: before the security review's findings and any usage data.
 
 ## Decision
 
@@ -24,6 +24,6 @@ A later ADR decides the default for the release that drops the Tech Preview labe
 ## Consequences
 
 - No server gains the endpoint without an admin choosing it.
-- No upgrade logic. Option 2 needed new and upgraded servers to differ, which a plain migration can't express.
+- No upgrade logic.
 - Adoption depends on admins finding the setting; the release notes and `mcp.md` say how to enable it.
 - Telemetry measures use after release and informs the next decision.

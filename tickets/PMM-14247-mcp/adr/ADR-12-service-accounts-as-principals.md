@@ -1,9 +1,9 @@
 # ADR-12: Service-account tokens are principals
 
 - Status: Proposed
-- Date: 2026-10-22, revised 2026-10-24 and 2026-10-30
+- Date: 2026-10-22, revised 2026-10-24, 2026-10-30 and 2026-11-02
 - Tickets: PMM-14247, PMM-15531, PMM-15534
-- Implemented: not yet (phase 4)
+- Implemented: not yet; lands on `main` through PMM-15534, then merges into `PMM-MCP-GA`
 
 ## Context
 
@@ -12,8 +12,8 @@ The MCP documentation tells users to connect with a service-account token. PMM A
 ## Options
 
 1. Resolve the account ID from the response pmm-managed already fetches when it authenticates a token.
-2. Look the account up by name with `GET /api/serviceaccounts/search`.
-3. Introduce a separate machine principal for MCP.
+2. Look the account up by name with `GET /api/serviceaccounts/search`. Rejected: an extra call per token, and option 1 already has the ID.
+3. Introduce a separate machine principal for MCP. Rejected: a new identity type in PMM's auth, for a need that service accounts already meet.
 
 ## Decision
 
@@ -26,6 +26,6 @@ Out of scope: a role picker on Grafana's service-account page; a machine princip
 - Access Roles govern every token-based integration, not only MCP.
 - No Grafana fork change and no extra call per request.
 - A token is governed by the default role from its first request. Since tokens get no filter today, this can only narrow what a token sees, on metrics and QAN. Admins who restricted the default role should check the tokens they created before upgrading; the release notes say so.
-- That includes the Admin service accounts PMM creates for every registered node (`CreateServiceAccount`, `managed/services/grafana/client.go:667`), which pmm-agent and pmm-admin use for inventory calls. On the inventory, alert and Advisor APIs, Admins are not filtered (ADR-16), so a restricted default role doesn't hide a node from its own pmm-agent or pmm-admin. No migration is needed, and nodes registered later are covered too. Spec §9.4 tests it.
-- This is a release prerequisite: without it, a token's MCP results are not scoped by Access Roles.
-- `mcp.md` and the access-control docs describe role assignment for service accounts, in the same change.
+- That includes the Admin service accounts PMM creates for every registered node (`CreateServiceAccount`, `managed/services/grafana/client.go:668`) [V]. pmm-agent and pmm-admin use them to read the inventory and to send metrics and QAN data, and Access Roles filter none of those paths (`lbacPrefixes`, `auth_server.go:181`) [V], so a restricted default role doesn't change what they do. PMM-15534's PR tests it, and plan 06 repeats the test after merging `main`.
+- It is PMM-wide, so it lands on `main` through PMM-15534's own PR and doesn't wait for the MCP release; `main` is then merged into `PMM-MCP-GA`. It is a release prerequisite for MCP: without it, a token's MCP results are not scoped by Access Roles.
+- The access-control docs describe role assignment for service accounts in PMM-15534's change; `mcp.md` points to them.
