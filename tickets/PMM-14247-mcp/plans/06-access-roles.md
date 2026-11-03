@@ -48,7 +48,7 @@
 - `const serviceListQuery`, sent as an instant query:
   `max by (service_id, service_name, service_type, node_id, node_name, environment, cluster) (tlast_over_time(up[1h]))`.
   The value is the newest sample time in Unix seconds (MetricsQL `tlast_over_time`); it counts every sample, whatever its value.
-- `func (s *Service) listServices(ctx context.Context, auth callerAuth) ([]serviceInfo, []nodeInfo, error)`: runs `serviceListQuery` with `queryMetrics`.
+- `func (s *Service) listServices(ctx context.Context, auth callerAuth) ([]serviceInfo, []nodeInfo, error)`: runs `serviceListQuery` with `queryMetrics`. It calls `func (s *Service) listServicesOver(ctx context.Context, auth callerAuth, lookback time.Duration) ([]serviceInfo, []nodeInfo, error)` with `serviceListLookback = time.Hour`; `listServicesOver` puts its look-back in the query's window. Plan 07 calls it with `alertListLookback = 7 * day` for `pmm_alerts` (ADR-17).
   - Services: each series with a non-empty `service_id`; one row per `service_id`, from the series with the newest `LastSeen`; a missing optional label is an empty field. Sorted by engine, then name, as today.
   - Nodes: every distinct `node_id` (or `node_name` when the series has no `node_id`) across all series, with or without `service_id`.
   - No version lookups: `Version` stays empty here. The `withNodeNames` argument goes.
@@ -77,7 +77,7 @@
 - The `pmm_inventory` description says the list holds the services that sent metrics in the last hour. Regenerate the golden file (`-update`).
 - api-test `TestInventory`: compare with what `serviceListQuery` returns to the admin through the datasource proxy, not with the inventory API; no row contains `address=`.
 - `mcp.md`: `pmm_inventory`'s fields and backing API; the one-hour rule; the `pmm_get_explain` and `pmm_get_config` rows lose `GET /v1/inventory/services`.
-- On the live-check environment (00), with at least 50 services: time `serviceListQuery` with `[1h]` and with `[24h]`, 20 runs each, and record the p50 and p95 on PMM-15531 and in ADR-08's Consequences. The look-back stays 1 h unless a pmm-specs PR changes ADR-08.
+- On the live-check environment (00), with at least 50 services: time `serviceListQuery` with `[1h]`, `[24h]` and `[7d]`, 20 runs each, and record the p50 and p95 on PMM-15531 and in ADR-08's Consequences. The look-backs stay 1 h for every tool and 7 days for `pmm_alerts` (ADR-17) unless a pmm-specs PR changes them.
 - Run `go test ./managed/services/mcp/...` and the lint (00). Commit `PMM-15531 Build the MCP service list from Access-Role-filtered series`.
 
 ### Task 2: Remove the Viewer inventory rules

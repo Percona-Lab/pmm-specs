@@ -1,7 +1,7 @@
 # ADR-16: Access Roles on PMM's service-scoped APIs
 
 - Status: Deferred (2026-11-02): out of the MCP epic, to a PMM ticket not yet filed, whose work lands on `main`
-- Date: 2026-10-24, revised 2026-10-26, 2026-10-30 and 2026-11-02
+- Date: 2026-10-24, revised 2026-10-26, 2026-10-30, 2026-11-02 and 2026-11-03
 - Tickets: PMM-14247, PMM-15531, PMM-15536
 - Implemented: not planned in this epic
 
@@ -10,7 +10,9 @@
 MCP no longer depends on this record. Its service list comes from Access-Role-filtered series (ADR-08), and it narrows alerts and Advisor results to that list itself (ADR-03, ADR-17, ADR-18). Applying Access Roles to pmm-managed's own APIs and to Grafana's alerts is PMM-wide work, so it moves to its own ticket on `main`, outside this epic. The design below is kept as input for that ticket, which re-decides it; it predates the 2026-11-02 revisions of ADR-03 and ADR-08, and where they differ, those records govern. MCP's narrowing (ADR-03) is the interim answer for MCP's own results. Before it is accepted there, it also settles:
 - every gateway in front of an Access-Role-filtered API takes the filter from exactly one path and refuses a request that carries more than one value;
 - the exact encoding of "unrestricted", since nginx sends no header for an empty value;
-- the matching semantics, defined and tested on their own rather than copied from another component;
+- the matching semantics, defined and tested on their own rather than copied from another component, including two points from the review of #4:
+  - services, nodes and Advisor results match with PromQL semantics, so a service visible on dashboards and in QAN is visible in the inventory, negative filters included (`UnifiedLabels` drops empty labels, so `{environment!="prod"}` matches a service registered without one);
+  - an alert matches through the service or node it names, with that object's labels, not through its own: PMM's built-in templates aggregate role labels such as `environment` away (`mysql_down` keeps only `service_id`, `service_name`, `node_name`), so an alert's own labels would hide a restricted user's own service;
 - the full list of nginx locations that change, and the ones excluded;
 - what anonymous callers get.
 

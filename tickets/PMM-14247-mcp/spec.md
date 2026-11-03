@@ -312,8 +312,9 @@ Decision: [ADR-15](adr/ADR-15-metrics-tools.md); the caps are in [§8](#8-phase-
 Decision: [ADR-17](adr/ADR-17-alerts.md).
 
 - `pmm_alerts` reads the current alerts from Grafana's alert API through nginx with the caller's credentials, so Grafana's folder permissions apply. Grafana's alert APIs carry no Access Role filter [V]. Which endpoint, and what a Viewer gets from it, is settled on a Feature Build and recorded in ADR-17 before that ADR is accepted.
-- MCP keeps an alert only if every service and node it names is in the caller's list, which holds services and nodes of every type (ADR-08); an alert with no service or node label is kept, as Grafana's UI shows it to the same caller. A service that sent no `up` sample for an hour has left the list, and its alerts are dropped with it ([§13](#13-risks-and-mitigations)). Narrowed, not filtered (ADR-03).
+- MCP keeps an alert only if every service and node it names is in the caller's list, which holds services and nodes of every type (ADR-08); an alert with no service or node label is kept, as Grafana's UI shows it to the same caller. The list used for alerts covers 7 days of `up` samples, not 1 hour, so a service whose pmm-agent went silent keeps its firing alerts, its down alert included, for 7 days ([§13](#13-risks-and-mitigations)). Narrowed, not filtered (ADR-03).
 - It returns firing alerts, silenced or not (and until when), with name, severity, labels, summary, description, start time and a link, and filters by service, node and severity. Summaries and descriptions are untrusted text (ADR-11) and never used for narrowing.
+- The tool description and every result say "Currently firing alerts only; resolved alerts are not shown." Alert history is a follow-up (ADR-17).
 
 ### 7.3 Advisors
 
@@ -361,6 +362,7 @@ Decision: [ADR-11](adr/ADR-11-output-contract.md).
    | `pmm_list_metrics` names, labels, values or series | 100 | 1000; names over the limit grouped by prefix with counts; series also within 16 KiB |
    | `pmm_list_metrics` look-back | 1 h | 7 days, every `kind` |
    | The caller's service list: look-back of the `up` series (ADR-08) | 1 h | — |
+   | The service list that narrows alerts: look-back of the `up` series (ADR-17) | 7 days | — |
    | `pmm_alerts` alerts | 50 | 200 |
    | `pmm_advisors` failed checks | 50 | 200 |
 
@@ -516,7 +518,7 @@ Additionally:
 - **Advisors need an Editor token**, which can also write alerting templates (ADR-18). *Mitigation:* `mcp.md` recommends a separate Editor token used only where Advisor results are needed.
 - **Model-written metric queries** load PMM's own VictoriaMetrics, whose limits (§7.1) are sized for dashboards and don't bound an AI client in a loop. *Mitigation:* the execution budget, the caps per caller and per replica, and the load test on the smallest supported size (ADR-15).
 - **Caps are per token or session and per replica, not per user** (ADR-05). A service account with several tokens, or an HA cluster, gets more. *Accepted*; the per-replica cap and pmm-agent's own limits bound the total.
-- **The service list depends on metrics** (ADR-08). A service with no series in the last hour is not listed, and its alerts and Advisor results are dropped with it, including alerts that fire because its agent is silent. *Accepted*: the first hour of an outage is covered and `last_seen` shows how fresh each entry is; a longer look-back makes the query behind every tool call read more, and plan 06 records its cost.
+- **The service list depends on metrics** (ADR-08). A service with no series in the last hour is not listed, and its Advisor results are dropped with it. Alerts use a 7-day list, so a silent agent's alerts, its down alert included, stay for 7 days. *Accepted*: `last_seen` shows how fresh each entry is; a longer look-back for every tool would make the query behind every call read more, and plan 06 records the cost of the 1-hour, 24-hour and 7-day lists.
 - **Catalog drift.** The built-in signals and the metrics catalog follow exporter metric names. *Mitigation:* the fixture tests catch renames, at the cost of keeping the fixtures current.
 - **A renamed Metrics datasource** breaks the metric reads (ADR-09). *Accepted*; the tools answer `pmm_unavailable` and say why.
 - **Untrusted text reaches the model.** Query text, DDL comments, labels, alert annotations and Advisor texts can carry injected instructions. *Mitigation:* the contract marks them and `Instructions` warn the model; neither stops a client that acts on them, and every tool is read-only (ADR-05).

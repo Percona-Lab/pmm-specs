@@ -1,7 +1,7 @@
 # ADR-08: Service list from Access-Role-filtered metric series
 
 - Status: Proposed
-- Date: 2026-10-22, revised 2026-10-24 and 2026-11-02
+- Date: 2026-10-22, revised 2026-10-24, 2026-11-02 and 2026-11-03
 - Tickets: PMM-14247, PMM-15531, PMM-15536
 - Implemented: Viewer rules in `PMM-MCP-GA` (percona/pmm#5942, D3 in `DECISIONS.md`), to be removed; the service list from series not yet (plan 06)
 
@@ -29,6 +29,6 @@ The Viewer rules from #5942 for `GET /v1/inventory/services` and `/nodes` are re
 
 - A Viewer service-account token covers every tool except `pmm_advisors` (Editor, ADR-18).
 - No PMM-wide permission change: the inventory API keeps its Admin rule. PMM-15536 is not needed by MCP.
-- `pmm_inventory` reports no address or port. A target scraped with `up=0` stays listed with a current `last_seen`. A service leaves the list only when no `up` sample arrived in the look-back window, for example when its pmm-agent stopped; a removed service leaves it the same way. A service that left the list leaves MCP's alerts and Advisor results with it (ADR-17, ADR-18). A longer look-back would keep it, at the cost of a larger query behind every tool call; plan 06 measures it, and the value lives in spec §8.
+- `pmm_inventory` reports no address or port. A target scraped with `up=0` stays listed with a current `last_seen`. A service leaves the list only when no `up` sample arrived in the look-back window, for example when its pmm-agent stopped; a removed service leaves it the same way. A service that left the list leaves MCP's Advisor results with it (ADR-18); alerts are narrowed with a 7-day list instead (ADR-17). A longer look-back would keep it, at the cost of a larger query behind every tool call; plan 06 measures it, and the value lives in spec §8.
 - QAN can show a service the list lacks; detail, explain and schema then answer `not_found` (spec §13).
 - With Access Control off, or a role without a filter, the list is every service with metrics, as on dashboards.

@@ -205,7 +205,7 @@ The `group_by` text keeps pointing to the description, which still lists the dim
 
 **Files:** Create `managed/services/mcp/contract_test.go`, `testdata/tools_list.golden.json`; Modify `api-tests/mcp/mcp_test.go` (`TestListTools`).
 
-The tests of Steps 2 to 5 each keep a list keyed by tool name, and fail when a tool in `tools/list` has no entry, so a new tool can't skip them ([00](00-roadmap.md#branch-and-pr-rules)).
+The tests of Steps 2 to 5 and 7 each keep a list keyed by tool name, and fail when a tool in `tools/list` has no entry, so a new tool can't skip them ([00](00-roadmap.md#branch-and-pr-rules)).
 
 - [ ] **Step 1: Write `TestToolsListGolden`:** list tools, sort by name, marshal name, description, input and output schemas and annotations with indentation, compare with the golden file; `go test ./managed/services/mcp/ -run TestToolsListGolden -update` rewrites it (`var update = flag.Bool("update", false, "rewrite golden files")`).
 - [ ] **Step 2: Write `TestUntrustedFieldsMarked`:** for each pair in a fixed list (`pmm_top_queries` `rows[].fingerprint`, `rows[].dimension`; `pmm_query_detail` `fingerprint`, `example`, `tables`; `pmm_get_explain` `plan`; `pmm_get_schema` `tables[].definition`, `tables[].indexes`; `pmm_get_config` `variables[].value`), the output schema's description starts with `Untrusted.`. A tool with no field in the list has an empty entry.
@@ -213,8 +213,9 @@ The tests of Steps 2 to 5 each keep a list keyed by tool name, and fail when a t
 - [ ] **Step 4: Write `TestRedactionInBothRenderings`:** with `RawSQL` off, for `pmm_top_queries` (`report_raw_fingerprint.json`), `pmm_query_detail` (`example.json`) and `pmm_get_explain` (`action_done_explain.json`), every single-quoted literal found in the fixture's SQL text is absent from the text and from the marshalled structured content. The exemptions are listed in the test with their reason: `pmm_version`, `pmm_inventory`, `pmm_catalog` and `pmm_get_config` return no statement text; `pmm_get_schema` returns DDL unmasked (ADR-07).
 - [ ] **Step 5: Write `TestEmptyAndDegradedResults`:** for every tool, one fake PMM with empty data (no report rows, no samples, `example_empty.json`, `metrics_empty.json`, `vm_empty.json`, `plan_empty.json`) and one where a secondary backing call fails (for example `qan/query:getExample` for `pmm_query_detail`, the version query for `pmm_inventory`). `session.CallTool` returns no Go error, so no JSON-RPC error, and the structured content, when there is any, passes the tool's output schema.
 - [ ] **Step 6: Write `TestSchemaRefusalShape`:** `pmm_top_queries` with `limit: "ten"`: `isError` true, the text starts with `validating "arguments": `, `_meta` has no `com.percona/error`, and there is no structured content. A go-sdk upgrade that changes this shape fails the test, and `tool-contract.md` is updated with it.
-- [ ] **Step 7: Extend api-test `TestListTools`:** every tool has a non-empty `outputSchema`.
-- [ ] **Step 8: Run, generate the golden file, run again, see PASS; commit** `PMM-15530 Freeze the MCP tool contract in contract tests`.
+- [ ] **Step 7: Write `TestResultMapsAreOmitempty`:** walk every tool's result type with `reflect` (the name-keyed list of Steps 2 to 5), recursively through struct, slice, array and pointer fields. Every map field's `json` tag has `omitempty`, unless the field is in a short allow-list of fields their constructors always initialize, each of which `TestEmptyAndDegradedResults` covers. The failure names the type and field. A nil map fails the SDK's output check and turns the call into a JSON-RPC error outside the error envelope (Global Constraints), so this catches it in CI.
+- [ ] **Step 8: Extend api-test `TestListTools`:** every tool has a non-empty `outputSchema`.
+- [ ] **Step 9: Run, generate the golden file, run again, see PASS; commit** `PMM-15530 Freeze the MCP tool contract in contract tests`.
 
 ### Task 9: `Instructions`, docs and the context measurement
 
