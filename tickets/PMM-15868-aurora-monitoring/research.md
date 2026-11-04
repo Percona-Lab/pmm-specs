@@ -16,7 +16,7 @@ File: `percona/pmm` `dashboards/dashboards/MySQL/MySQL_Amazon_Aurora_Details.jso
 
 | Item | State | Cause (verified) |
 |---|---|---|
-| Service dropdown | Empty, so every panel shows "No data" when the dashboard is opened from the menu | Built from `mysql_global_status_auroradb_thread_deadlocks`, which Aurora MySQL 3 does not report |
+| Service and node dropdowns | Empty, so every panel shows "No data" when the dashboard is opened without URL variables (no PMM menu links to it; users reach it through search) | Both are built from `mysql_global_status_auroradb_thread_deadlocks`, which Aurora MySQL 3 does not report |
 | With `var-service_name` in the URL | Grafana keeps the value; the 6 panels draw | |
 | Transaction Commits | Works | |
 | Load | Works | |
@@ -66,7 +66,7 @@ QA test PMM-T1295 passes because it opens the dashboard with `service_name` in t
   `pg_settings_transaction_read_only` (0 on the writer). Values on a reader are inferred (1), not observed.
 - postgres_exporter (`percona/postgres_exporter`) supports Aurora-only queries through a `query_aurora` key in `queries-*.yml`;
   `queries-mr.yaml` already uses `aurora_replica_status()` for `pg_replication_lag`.
-  Aurora detection itself is in `distribution/distribution.go`: it checks for `aurora_version()` once and caches "Standard" on any error, so a transient error hides Aurora until the exporter restarts.
+  Aurora detection itself is in `distribution/distribution.go`: it checks once whether the function exists (`to_regproc('aurora_version')`) and caches "Standard" on any error, so a transient error hides Aurora until the exporter restarts.
 
 ## rds_exporter (percona/rds_exporter `main` at `24b256b`)
 
@@ -75,7 +75,8 @@ The server under test ships rds_exporter 0.7.5, built 2026-11-04; the binary emb
 - **Process and config.** PMM runs one rds_exporter per pmm-agent per AWS credential identity (`percona/pmm` `managed/services/agents/state.go`, `groupRDSExporters`).
   Its config lists, per instance, region, instance ID, credentials, the basic/enhanced switches and labels (`config/config.go`).
   The labels are PMM's node and agent labels, without `region` (`percona/pmm` `managed/services/agents/rds.go`, `mergeLabels`). There is no field for a cluster ID.
-- **AWS instance lookup.** At start, and every 5 minutes from the Enhanced Monitoring scraper, rds_exporter calls `DescribeDBInstances` for every instance the credentials can see (`sessions/sessions.go`, `InstanceStates`; `enhanced/scraper.go`, `resourceIDRefreshInterval`).
+- **AWS instance lookup.** At start, rds_exporter calls `DescribeDBInstances` for every instance the credentials can see (`sessions/sessions.go`, `InstanceStates`); an instance it cannot resolve there is dropped until the process restarts.
+  The Enhanced Monitoring scraper repeats the call every 5 minutes, but only for instances with enhanced metrics on, and keeps the result to itself; `/basic` only uses the start-up result (`enhanced/scraper.go`, `resourceIDRefreshInterval`; `enhanced/collector.go`, `getEnabledInstances`).
   It keeps only `DbiResourceId` and `MonitoringInterval`. The same response carries `DBClusterIdentifier` and `Engine`, so reading them needs no new AWS call or permission.
 - **CloudWatch (basic metrics).** On every scrape of `/basic`, it makes one `GetMetricStatistics` call per metric per instance, for 50 metrics, with the `DBInstanceIdentifier` dimension only (`basic/scraper.go`, `basic/metrics.go`).
   It asks for the Average over a 10-minute window that ends 10 minutes ago and keeps the newest datapoint, so CloudWatch values are about 10 minutes old (see PMM-13912).
