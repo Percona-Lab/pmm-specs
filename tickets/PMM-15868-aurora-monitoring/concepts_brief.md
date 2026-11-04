@@ -273,15 +273,18 @@ No other lens raised this, and it competes with "keep it simple" (D6).
   * `DescribeDBClusters`, and everything that needs it: true cluster size, the writer flag, Serverless mode, Global Database.
   * Role as a label. Environment from AWS tags.
   * Generic RDS dashboard fixes (Disk Space `fstype`, CPU Saturation, InnoDB I/O, WAL Writes, the Tuples filter), which belong in a separate ticket.
+  * Plain RDS monitoring gaps, for example CloudWatch `FreeStorageSpace`, which rds_exporter collects but no dashboard shows. Decided 2026-11-04: this epic stays focused on Aurora; plain RDS goes to a separate ticket.
   * New Aurora alert templates. Converting untouched `graph` panels.
 
 ## Key Decisions & Staging for Next Steps
 
+Decided by the product owner on 2026-11-04: the epic stays focused on Aurora. D1 to D3 follow the reviewers' recommendation; the owner raised no objection and may still veto them in review.
+
 | ID | Decision | Reviewers lean towards |
 |---|---|---|
-| D1 | Info series endpoint and freshness | One endpoint, from memory, start-up data, every resolved instance. Endpoint open. |
-| D2 | Overview row source | Database exporters, with the info series left-joined on `node_id`, plus an "unknown" group. |
-| D3 | Label names and key | `aws_cluster_id`, `aws_engine`. Region and cluster ID, plus account if multi-account is in scope. |
+| D1 | Info series endpoint and freshness | **Accepted.** One endpoint, from memory, start-up data, every resolved instance. Endpoint open. |
+| D2 | Overview row source | **Accepted.** Database exporters, with the info series left-joined on `node_id`, plus an "unknown" group. |
+| D3 | Label names and key | **Accepted.** `aws_cluster_id`, `aws_engine`. Region and cluster ID, plus account if multi-account is in scope. |
 | D4 | Cluster storage | Storage only, `aurora-*` only, `max by`. Per instance or per cluster per process: open. No IOPS without a panel. |
 | D5 | Details dropdown source | A union of mysqld_exporter Aurora counters. |
 | D6 | rds_exporter observability | `build_info` at minimum. The error counter is optional. |
