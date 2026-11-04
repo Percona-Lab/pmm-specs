@@ -263,22 +263,28 @@ No other lens raised this, and it competes with "keep it simple" (D6).
       * Add named new rows.
       * Keep the uid, file path, variable names and panel ids.
     * **QA:** PMM-T1295 opens the dashboard without URL variables.
+  * **Generic fixes on RDS nodes (Release 1; they fix plain RDS too):**
+    * Disk Space: accept the file system name rds_exporter puts in `fstype` for RDS nodes.
+    * CPU Saturation: fall back to `node_cpu_average` when `node_cpu_seconds_total` is missing.
+    * InnoDB data I/O panels on MySQL Instances Overview: say the data does not apply to Aurora instead of showing nothing.
+    * Other plain RDS fixes are in scope when they come from the same code or panel being changed here.
   * **Release 2, Aurora PostgreSQL:**
     * Rows in the same overview.
     * A role signal that does not depend on postgres_exporter detecting Aurora.
     * A details view (D8).
+    * WAL Writes on the PostgreSQL dashboards, empty on Aurora since PMM-14527.
 * **Out-of-Scope Non-Goals:**
   * Changes to discovery, its proto, the add form, inventory labels or the PMM database.
   * Alert and advisor counts per cluster.
   * `DescribeDBClusters`, and everything that needs it: true cluster size, the writer flag, Serverless mode, Global Database.
   * Role as a label. Environment from AWS tags.
-  * Generic RDS dashboard fixes (Disk Space `fstype`, CPU Saturation, InnoDB I/O, WAL Writes, the Tuples filter), which belong in a separate ticket.
-  * Plain RDS monitoring gaps, for example CloudWatch `FreeStorageSpace`, which rds_exporter collects but no dashboard shows. Decided 2026-11-04: this epic stays focused on Aurora; plain RDS goes to a separate ticket.
+  * Plain RDS features that touch nothing this epic changes, for example a new panel for CloudWatch `FreeStorageSpace`, which rds_exporter collects but no dashboard shows. They go to a separate ticket.
+  * The PostgreSQL Tuples panel's `instance=~"$node_name"` filter, which breaks the panel for every PostgreSQL service; it goes to its own bug.
   * New Aurora alert templates. Converting untouched `graph` panels.
 
 ## Key Decisions & Staging for Next Steps
 
-Decided by the product owner on 2026-11-04: the epic stays focused on Aurora. D1 to D3 follow the reviewers' recommendation; the owner raised no objection and may still veto them in review.
+Decided by the product owner on 2026-11-04: the epic stays focused on Aurora, but fixes that also help plain RDS ship in it when they come from the same change (the generic Disk Space and CPU Saturation fixes are in). D1 to D3 follow the reviewers' recommendation; the owner raised no objection and may still veto them in review.
 
 | ID | Decision | Reviewers lean towards |
 |---|---|---|
@@ -312,3 +318,4 @@ Decided by the product owner on 2026-11-04: the epic stays focused on Aurora. D1
 * No label changes on existing instances.
 * No dropdown or up/down cell depends on a metric this epic adds.
 * Keep the dashboard uid `mysql-amazonaurora`.
+* Verify the generic fixes and the info series on a plain RDS MySQL instance as well, since they reach every RDS node.
