@@ -82,6 +82,7 @@ The server under test ships rds_exporter 0.7.5, built 2026-11-04; the binary emb
   It asks for the Average over a 10-minute window that ends 10 minutes ago and keeps the newest datapoint, so CloudWatch values are about 10 minutes old (see PMM-13912).
   A metric with no datapoints is skipped, which is why 36 of the 50 appear for Aurora MySQL and 19 for Aurora PostgreSQL.
   `VolumeBytesUsed`, `VolumeReadIOPs` and `VolumeWriteIOPs` are on the list but never return data for Aurora, because AWS publishes them per cluster; those 3 calls per instance per scrape are wasted.
+  A check on 2026-11-04 (diagnostic build on the test server) confirmed it: per-instance `VolumeBytesUsed` had no datapoints in 6 hours, ListMetrics lists it only with `DBClusterIdentifier`, and the per-cluster series arrives at 5-minute marks but irregularly, often 45 to 70 minutes late.
 - **Labels on CloudWatch series.** `region`, `instance` (the DB instance ID) and the PMM labels from the config (`basic/scraper.go`, `NewScraper`).
 - **Filesystem labels.** `node_filesystem_*` series set both `device` and `fstype` to the AWS file system name on purpose (`enhanced/metrics.go`, `makeNodeFilesystemMetrics`), which the Disk Space panels' `fstype` filter rejects.
 

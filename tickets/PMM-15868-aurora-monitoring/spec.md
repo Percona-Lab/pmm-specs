@@ -84,7 +84,7 @@ Release 2:
 *   **Aurora PostgreSQL role signal and details view (D7, D8).** Release 2.
 *   **Spikes before implementation**, on clusters that have a reader:
     *   Values of `innodb_read_only` and the PostgreSQL role signals on a reader, and during a failover.
-    *   How often AWS publishes `VolumeBytesUsed`, and which query window shows it without gaps.
+    *   ~~How often AWS publishes `VolumeBytesUsed`, and which query window shows it without gaps.~~ Resolved: see Technical Plan 2 (3-hour lookback).
     *   Whether RDS Multi-AZ DB clusters (plain RDS) also set `DBClusterIdentifier`.
     *   What PMM-T1295 in pmm-qa asserts, so the new Details rows don't fail it.
 
@@ -177,7 +177,7 @@ The database exporters, RDS discovery, the PMM API and inventory are untouched.
     The result is published as `aws_rds_volume_bytes_used_average` with the instance's usual labels plus `aws_cluster_id` and `aws_account_id`.
 *   A cluster with N instances in PMM stores N identical copies; dashboards read it with `max by (region, aws_account_id, aws_cluster_id)` and never `sum`.
 *   **Cost:** 48 CloudWatch calls per Aurora instance per scrape instead of 50; 47 per plain RDS instance instead of 50.
-*   **Open (spike):** how often AWS publishes `VolumeBytesUsed`. rds_exporter queries a 10-minute window ending 10 minutes ago; if AWS publishes less often, the panel shows gaps, and the window for this one metric must widen.
+*   **Resolved (spike, 2026-11-04):** AWS publishes `VolumeBytesUsed` per cluster at 5-minute marks but irregularly; on the test clusters the newest datapoint was often 45 to 70 minutes old, so the usual 10-minute window was empty. This one metric looks back 3 hours and keeps the newest datapoint, so the value can be up to about 3 hours old. Per-instance `VolumeBytesUsed` had no datapoints in 6 hours, and ListMetrics shows only the `DBClusterIdentifier` dimension.
 
 ### 3. Aurora overview dashboard (new)
 
@@ -389,7 +389,7 @@ Paths are relative to each repository's root. Line numbers are at the commits na
     *   `NewScraper` keeps the `sessions.Instance` that `GetConfig` already returns, to read `Engine`, `ClusterID` and `AccountID`.
     *   For engines starting with `aurora-` and a non-empty cluster ID, `Scrape` adds one `GetMetricStatistics` call for `VolumeBytesUsed` with the `DBClusterIdentifier` dimension.
         It is published as `aws_rds_volume_bytes_used_average` with the instance's usual labels plus `aws_cluster_id` and `aws_account_id`.
-    *   The query window for this metric stays the same as the others unless the spike shows AWS publishes it less often than every 10 minutes; then this one metric gets a longer window.
+    *   This metric looks back 3 hours (the others keep 10 minutes), because AWS publishes it irregularly and often more than an hour late (spike result, Technical Plan 2).
 
 #### 8. `basic/collector_test.go`, `basic/testdata/all.txt` (Modify)
 
