@@ -37,8 +37,7 @@ QA test PMM-T1295 passes because it opens the dashboard with `service_name` in t
   write forwarding (`aurora_fwd_*`), parallel query (`aurora_pq_*`), `aurora_serverless_current_acu`/`min_acu`/`max_acu`,
   temp-table RAM, `aurora_thread_pool_thread_count`, `aurora_write_throttling_current_status`.
 - Enhanced Monitoring OS metrics (`rdsosmetrics_*`, some `node_*`) arrive for all three instances.
-- No `aws_rds_volume_*` series appeared. AWS publishes volume size and volume IOPS per cluster;
-  rds_exporter queries CloudWatch per instance (inferred from the handoff's reading of `basic/scraper.go`; percona/rds_exporter is not checked out here).
+- No `aws_rds_volume_*` series appeared. AWS publishes volume size and volume IOPS per cluster, and rds_exporter queries CloudWatch per instance only (verified, see the rds_exporter section).
 
 ## Generic dashboards on Aurora nodes
 
@@ -68,6 +67,22 @@ QA test PMM-T1295 passes because it opens the dashboard with `service_name` in t
 - postgres_exporter (`percona/postgres_exporter`) supports Aurora-only queries through a `query_aurora` key in `queries-*.yml`;
   `queries-mr.yaml` already uses `aurora_replica_status()` for `pg_replication_lag`.
   Aurora detection itself is in `distribution/distribution.go`: it checks for `aurora_version()` once and caches "Standard" on any error, so a transient error hides Aurora until the exporter restarts.
+
+## rds_exporter (percona/rds_exporter `main` at `24b256b`)
+
+The server under test ships rds_exporter 0.7.5, built 2026-11-04; the binary embeds no revision, so matching it to `main` is likely but not confirmed.
+
+- **Process and config.** PMM runs one rds_exporter per pmm-agent per AWS credential identity (`percona/pmm` `managed/services/agents/state.go`, `groupRDSExporters`).
+  Its config lists, per instance, region, instance ID, credentials, the basic/enhanced switches and labels (`config/config.go`).
+  The labels are PMM's node and agent labels, without `region` (`percona/pmm` `managed/services/agents/rds.go`, `mergeLabels`). There is no field for a cluster ID.
+- **AWS instance lookup.** At start, and every 5 minutes from the Enhanced Monitoring scraper, rds_exporter calls `DescribeDBInstances` for every instance the credentials can see (`sessions/sessions.go`, `InstanceStates`; `enhanced/scraper.go`, `resourceIDRefreshInterval`).
+  It keeps only `DbiResourceId` and `MonitoringInterval`. The same response carries `DBClusterIdentifier` and `Engine`, so reading them needs no new AWS call or permission.
+- **CloudWatch (basic metrics).** On every scrape of `/basic`, it makes one `GetMetricStatistics` call per metric per instance, for 50 metrics, with the `DBInstanceIdentifier` dimension only (`basic/scraper.go`, `basic/metrics.go`).
+  It asks for the Average over a 10-minute window that ends 10 minutes ago and keeps the newest datapoint, so CloudWatch values are about 10 minutes old (see PMM-13912).
+  A metric with no datapoints is skipped, which is why 36 of the 50 appear for Aurora MySQL and 19 for Aurora PostgreSQL.
+  `VolumeBytesUsed`, `VolumeReadIOPs` and `VolumeWriteIOPs` are on the list but never return data for Aurora, because AWS publishes them per cluster; those 3 calls per instance per scrape are wasted.
+- **Labels on CloudWatch series.** `region`, `instance` (the DB instance ID) and the PMM labels from the config (`basic/scraper.go`, `NewScraper`).
+- **Filesystem labels.** `node_filesystem_*` series set both `device` and `fstype` to the AWS file system name on purpose (`enhanced/metrics.go`, `makeNodeFilesystemMetrics`), which the Disk Space panels' `fstype` filter rejects.
 
 ## Alerts and advisors
 

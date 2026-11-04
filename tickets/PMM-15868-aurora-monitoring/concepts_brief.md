@@ -69,6 +69,8 @@ Either way, the AWS ID must not be emitted under the label name `cluster`. The e
 
 ### 2. The source of the real AWS cluster ID for rds_exporter is not defined (Blocker, five lenses)
 
+> **Resolved after the review:** rds_exporter already calls `DescribeDBInstances`, and the response carries `DBClusterIdentifier` (see D2 and the rds_exporter section of [research.md](research.md)). The analysis below is kept as the reviewers wrote it.
+
 **What the code does today:**
 
 * Each instance's rds_exporter config holds only region, instance ID, access keys, role ARN, two disable flags and labels (`pmm:managed/services/agents/rds.go:33-42,94-103`). There is no cluster field.
@@ -377,8 +379,8 @@ An error counter and a last-success timestamp per cluster would add scope; decid
 | ID | Decision | What the reviewers lean towards |
 |---|---|---|
 | D1 | Overview grouping key | Editable `cluster` label, grouped with `region`, plus an explicit unlabelled row. The AWS ID stays internal to rds_exporter, or appears as display information only. |
-| D2 | Source of the AWS cluster ID for rds_exporter | rds_exporter reads it from `DescribeDBInstances` (Path Y). Confirm by reading rds_exporter first. |
-| D3 | Contract for cluster-level series, or cut them from Release 1 | If kept: a distinct label name (not `cluster`), one fetch per (account, region, cluster), a timer of 300 s or more, `aurora-*` engines only, obey `disable_basic_metrics`, 3 to 5 metrics, `max by` in dashboards. |
+| D2 | Source of the AWS cluster ID for rds_exporter | **Settled by reading rds_exporter:** it already calls `DescribeDBInstances` at start and every 5 minutes, and that response carries `DBClusterIdentifier` and `Engine` (`rds_exporter:sessions/sessions.go`). rds_exporter reads them there; PMM passes nothing new. Open: whether to publish them as an info series (one `aws_rds_instance_info`-style series per instance with the cluster ID and engine), which would also let dashboards find Aurora services of both engines and group instances added before the change. |
+| D3 | Contract for cluster-level series, or cut them from Release 1 | If kept: a distinct label name (not `cluster`), one fetch per (region, cluster) inside each rds_exporter process, `aurora-*` engines only, obey `disable_basic_metrics`, 3 to 5 metrics, `max by` in dashboards. Remove `VolumeBytesUsed`, `VolumeReadIOPs` and `VolumeWriteIOPs` from the per-instance list, where they never return data for Aurora, so the AWS request count goes down per instance rather than up. |
 | D4 | Alert and advisor columns | Cut them, and link to the Alerting and Advisors pages. |
 | D5 | Rebuild or targeted fix of the details dashboard | Targeted fixes plus new rows. Keep the uid and panel titles, or update pmm-qa in the same release. |
 | D6 | Role signal per engine | Aurora MySQL: `innodb_read_only`. Aurora PostgreSQL: open, `pg_settings_transaction_read_only` or `pg_replication_is_replica`. Either way, verify on a cluster with a reader. |
@@ -390,13 +392,14 @@ An error counter and a last-success timestamp per cluster would add scope; decid
 ### Staging
 
 0. **Spikes, before the PRD:**
-   * Read rds_exporter:
-     * Does it call `DescribeDBInstances`?
-     * Which CloudWatch API does it use?
-     * Does it loop over instances or over clusters?
-     * How strict is its config parser?
-     * How does it handle errors?
-     * Does it expose any self-metrics?
+   * Read rds_exporter (done, `main` at `24b256b`; details in [research.md](research.md)):
+     * `DescribeDBInstances`: yes, at start and every 5 minutes; it keeps only the resource ID and monitoring interval.
+     * CloudWatch API: `GetMetricStatistics`, one call per metric per instance on every `/basic` scrape, 50 metrics, values about 10 minutes old.
+       Measured on the test server: about 153 AWS requests per minute for 3 instances.
+     * Loop: over instances only, with the `DBInstanceIdentifier` dimension; nothing per cluster.
+     * Config parser: `yaml.Unmarshal` (yaml.v2), which ignores unknown keys.
+     * Errors: logged per metric at error level.
+     * Self-metrics: `rds_exporter_requests_total`, `rds_exporter_responses_durations_seconds`, `rds_exporter_scrape_duration_seconds`, plus Enhanced Monitoring up and error counters. `rds_exporter_requests_total` answers how to measure the AWS request count before and after.
    * Stand up an Aurora MySQL 3 cluster and an Aurora PostgreSQL cluster, each with at least one reader. Observe the read-only variables, `pg_is_in_recovery()` and the rows of `aurora_replica_status()`. Check the granularity of AWS cluster volume metrics and whether `aurora_db_instance_identifier()` exists.
 1. **Dashboard-only, can ship alone in any server release:** the details dashboard fixes, the new panels for collected metrics, and the PMM-T1295 change.
 2. **Server release with percona/grafana moved in step:** the discovery field, pre-fill and Cluster tooltip; the overview and its menu entry; the docs.
