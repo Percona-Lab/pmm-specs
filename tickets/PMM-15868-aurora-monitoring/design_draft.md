@@ -237,8 +237,84 @@ Same file, uid (`mysql-amazonaurora`), variable names and panel ids, so existing
 *   **Old server, new client:** the extra series are collected but no dashboard uses them.
 *   **Rollback:** reverting either side returns to today's behaviour; nothing is stored or migrated.
 
+## Alternatives Considered
+
+### Alternative A: Pre-fill the `cluster` label at RDS discovery
+
+Discovery returns `DBClusterIdentifier`, and the add-instance form pre-fills the existing Cluster field.
+
+*   **Pros**: The cluster shows in the form before adding; the user can change it; existing dashboards that filter by `cluster` start working.
+*   **Cons**: Changes three places (API proto, pmm-managed, percona/grafana form) and needs a Feature Build across two repositories. Instances added before the change never get it. rds_exporter's series don't carry service labels, so CloudWatch data still could not be grouped by it. Changing a service's cluster label later deletes its scheduled backups.
+*   **Reason for Rejection**: The info series gives the same grouping for all instances, old and new, with one rds_exporter change and no label edits.
+
+### Alternative B: pmm-managed fills the cluster label when an instance is added
+
+When an add request has no cluster, pmm-managed looks the instance up in AWS and fills it.
+
+*   **Pros**: One repository; also covers instances added through the API.
+*   **Cons**: One extra AWS call per add; the user can't see the value before adding; the same gaps as Alternative A for old instances and for CloudWatch series.
+*   **Reason for Rejection**: Same as Alternative A.
+
+### Alternative C: Use `DescribeDBClusters` for the writer flag, true cluster size and Serverless mode
+
+*   **Pros**: Authoritative writer/reader role and the full member list, including members not added to PMM.
+*   **Cons**: Needs `rds:DescribeDBClusters`, which PMM's documented IAM policy does not grant; users who followed the docs would get permission errors. The writer flag changes on failover, so it would need its own refresh.
+*   **Reason for Rejection**: No new permissions. Role comes from `innodb_read_only`, which PMM already collects.
+
+### Alternative D: Copy AWS tags into labels (for example, environment from a tag)
+
+*   **Pros**: Customers' own tags, such as environment or owner, appear in PMM without typing.
+*   **Cons**: Tag names differ per customer, so PMM can't know which one means environment. Labels would be a snapshot taken at add time, stale after the first retag. Many tag keys are not valid label names. Every tag becomes a label on every series.
+*   **Reason for Rejection**: Not needed for grouping by cluster; environment stays a field users type.
+
+### Alternative E: Build overview rows from the info series
+
+*   **Pros**: Simplest query; the cluster key is on every row.
+*   **Cons**: Instances without an info series disappear: those added without rds_exporter, those on an older pmm-client, and those whose start-up lookup failed. Counts and throughput come out low with no sign that anything is missing.
+*   **Reason for Rejection**: Rows come from the database exporters, with an "AWS cluster unknown" group instead.
+
+### Alternative F: Serve the info series on `/basic`, or on a new `/info` endpoint (D1)
+
+*   **Pros**: `/basic` groups it with other AWS data; a new endpoint keeps it separate.
+*   **Cons**: `/basic` responds only after all CloudWatch calls return; a slow or throttled CloudWatch past the 54-second timeout loses the whole response, so instances drop into "unknown" for that minute. A new endpoint needs a PMM server scrape-config change and a version check, because an older pmm-client would answer a newer server with 404.
+*   **Reason for Rejection**: Owner decision D1: `/enhanced`, served from memory every 10 seconds, with no server change.
+
+### Alternative G: Fetch cluster storage once per cluster per process (D4)
+
+*   **Pros**: Fewer duplicate series; 47 calls per instance plus 1 per cluster.
+*   **Cons**: Grouping code in rds_exporter; the series carries no node labels, so node-label filters don't apply; still duplicated when a cluster's instances run under different pmm-agents or credentials.
+*   **Reason for Rejection**: Owner decision D4: one call per Aurora instance, read with `max` by cluster.
+
+### Alternative H: Reuse rds_exporter's 5-minute refresh for the info series
+
+The Enhanced Monitoring scraper already repeats `DescribeDBInstances` every 5 minutes.
+
+*   **Pros**: The cluster ID and engine would refresh without a restart.
+*   **Cons**: That refresh only covers instances with Enhanced Monitoring on, keeps its result private to that scraper, and lives in a 1,300-line file with its own locking. The values it would refresh never change for an instance.
+*   **Reason for Rejection**: Read once at start; pmm-agent restarts rds_exporter on any configuration change.
+
+### Alternative I: Alert and advisor counts per cluster on the overview
+
+*   **Pros**: One screen answers "is anything wrong in this cluster?".
+*   **Cons**: The advisor metric has only `service_type`, `advisor` and `check_name` labels; the Failed Advisors panel fetches every failed check without a filter; Grafana alert state is not stored as metrics; the built-in down templates drop `cluster`.
+*   **Reason for Rejection**: No per-cluster data source exists. The overview links to the Alerting and Advisors pages.
+
+### Alternative J: Rebuild the Aurora details dashboard from scratch
+
+*   **Pros**: A clean layout designed for Aurora 3.
+*   **Cons**: A new uid breaks bookmarks, links and the pmm-qa tests that open it; most of the dashboard needs about eight expression fixes, not a redesign.
+*   **Reason for Rejection**: Targeted fixes plus named new rows, keeping the uid, file, variable names and panel ids.
+
+### Alternative K: Remove the Aurora dashboard
+
+The original handoff named this as the alternative to fixing it, given little recorded demand ([PMM-9191](https://perconadev.atlassian.net/browse/PMM-9191) has been On Hold since 2021).
+
+*   **Pros**: Nothing to maintain.
+*   **Cons**: Aurora users lose the only Aurora-specific view; the fixes are small and the data is already collected.
+*   **Reason for Rejection**: The product owner chose to fix Aurora monitoring (this epic).
+
 --------------------------------------------------------------------------------
 
-<!-- Later sections (Alternatives, Detailed Implementation) are added one at a time after this section is approved. -->
+<!-- Later sections (Detailed Implementation) are added after this section is approved. -->
 
 *Drafted with EGM*
