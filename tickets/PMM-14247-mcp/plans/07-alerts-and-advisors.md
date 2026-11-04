@@ -16,10 +16,12 @@
 - **MCP's narrowing here is consistency, not a security boundary.** Grafana's alert API and the Advisors API don't apply Access Roles. The same caller reads them unfiltered with the same credentials, and in the PMM UI. Tests, docs and tool descriptions never call the narrowing a restriction. Applying Access Roles to these APIs is ADR-16's work, which is deferred.
 - **The caller's service list `L`** is plan 06's `listServices`: services of every `service_type` (ProxySQL, HAProxy and the rest included) and every node in it, hosts with only node_exporter included. For `pmm_alerts`, `L` is `listServicesOver(ctx, auth, alertListLookback)`, 7 days (ADR-17); `pmm_advisors` uses `listServices`, 1 hour.
 - **Alert narrowing** (ADR-17), against `L`:
-  - only four labels count, each checked against one set of `L`: `service_id` against the service IDs, `service_name` against the service names, `node_id` against the node IDs, `node_name` against the node names;
+  - only five labels count: `pmm_provisioned`, and four that are each checked against one set of `L`: `service_id` against the service IDs, `service_name` against the service names, `node_id` against the node IDs, `node_name` against the node names;
+  - an alert labelled `pmm_provisioned="1"` is shown whatever it names: those are PMM's own HA and PMM Server component rules, whose `node_id`, `node_name` and `service_name` name PMM Server replicas and components, never in `L` (ADR-17);
+  - an alert that carries `service_id` or `service_name` is kept only if each service label it carries is in its set; its node labels are not checked, because PMM's `*_down` templates name the node the exporter's pmm-agent runs on (`pmm-server` for RDS and Azure services), not the service's node (ADR-17);
+  - an alert that carries no service label but `node_id` or `node_name` is kept only if each node label it carries is in its set;
   - an alert that carries none of them is shown, as Grafana's UI shows it to the same caller;
-  - an alert that carries any of them is kept only if each one it carries is in its set; one label outside its set drops it;
-  - annotations and other labels are never used for narrowing.
+  - annotations and labels other than these five are never used for narrowing.
 - **Advisor narrowing** (ADR-18): a result is kept when its `service_id` is in `L`. Counts cover kept results only.
 - A failing service list fails the tool call; neither tool ever returns un-narrowed results.
 - `pmm_advisors` needs the Editor Grafana role (`/v1/advisors`, `auth_server.go:84-86`). With a Viewer token the API answers 403, and the tool `unauthorized`.
@@ -83,10 +85,12 @@
   - a service in `L`: kept;
   - a node in `L`: kept;
   - a service outside `L`: dropped;
-  - a service in `L` with a node outside `L`: dropped;
+  - a service in `L` with a node outside `L`: kept, because a service alert's node labels are not checked (an RDS service's down alert with `node_name="pmm-server"`);
+  - a service in `L` with a second service label outside `L` (`service_id` listed, `service_name` not): dropped;
+  - for a restricted caller, `pmm_provisioned="1"` with `node_id` = `PMM_HA_NODE_ID` (`pmm_ha_node_unreachable` on HA), with `service_name="clickhouse"` (`pmm_clickhouse_down` on HA), and with `node_name="pmm-server"` (`pmm_grafana_down` on a standalone server): all kept;
   - no service or node label: shown;
   - an annotation that names a hidden service: no effect;
-  - each of the four labels checked against its own set: a `node_name` equal to a listed service's name is still dropped.
+  - each of the four labels checked against its own set: an alert with only a `node_name` equal to a listed service's name is still dropped.
 - Write `TestAlertsTool` against a fixture with alerts for allowed service A, hidden service B, A's node, a node of B only, a server-level alert and a silenced alert:
   - the result holds A's alert, the node alert of A's node, the server-level alert and the silenced alert with `silenced_until`;
   - the `service_name`, `node_name` and `severity` filters;
@@ -97,7 +101,7 @@
   - every result, an empty one included, carries the note in `note` and as the text's first line;
   - two services on one node, `L` holding one of them: the other service's alerts are dropped, and the node's own alerts are kept;
   - a negative Access Role filter: with `L` as VictoriaMetrics returns it for `{service_name!="B"}` (every node_exporter series, every service but B), B's alerts are dropped and the node-only alert of B's host is kept;
-  - the `mysql_down` template's labels (`service_id`, `service_name`, `node_name`, no `environment`) for a service in `L`, with `L` built under the role `{environment="prod"}`: kept;
+  - the `mysql_down` template's labels (`service_id`, `service_name`, `node_name`, no `environment`) for a service in `L` whose pmm-agent runs on another node, so `node_name` is not in `L`, with `L` built under the role `{environment="prod"}`: kept;
   - Access Control off: with `L` holding a ProxySQL service and a node-only host, the ProxySQL alert and the node-only alert are kept.
 - Run, see FAIL. Implement: `listServices` (plan 06), then `Alerts`, narrowing, filters, order, `paginate`, render.
 - Register the tool; add it to the name list, `TestErrorsCarryNoStructuredContent`, `TestEmptyAndDegradedResults` and the redaction exemptions; regenerate the golden file and the mock; list the Untrusted fields. Run `go test ./managed/services/mcp/...`, see PASS.
