@@ -1,6 +1,7 @@
 # PMM-15868 Aurora monitoring
 
 *   **Status:** design proposed, awaiting review.
+*   **PR:** [Percona-Lab/pmm-specs#7](https://github.com/Percona-Lab/pmm-specs/pull/7) (design review).
 *   **Epic:** [PMM-15868](https://perconadev.atlassian.net/browse/PMM-15868).
 *   **Related:** [PMM-6655](https://perconadev.atlassian.net/browse/PMM-6655), [PMM-1795](https://perconadev.atlassian.net/browse/PMM-1795), [PMM-3050](https://perconadev.atlassian.net/browse/PMM-3050), [PMM-13610](https://perconadev.atlassian.net/browse/PMM-13610) (children of the epic); [PMM-9191](https://perconadev.atlassian.net/browse/PMM-9191), [PMM-14527](https://perconadev.atlassian.net/browse/PMM-14527), [PMM-2288](https://perconadev.atlassian.net/browse/PMM-2288) (related).
 
