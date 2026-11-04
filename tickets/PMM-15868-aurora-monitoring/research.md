@@ -60,16 +60,21 @@ QA test PMM-T1295 passes because it opens the dashboard with `service_name` in t
   (`documentation/docs/install-pmm/install-pmm-client/connect-database/aws.md`).
 - Discovery response proto: `api/management/v1/rds.proto` `DiscoverRDSInstance` (fields 1-8). The add request already has `environment`, `cluster` and `custom_labels`.
 - The add-RDS UI lives in `percona/grafana` `public/app/percona/add-instance/` (discovery list in `components/Discovery/`, form starting values in `components/AddRemoteInstance/AddRemoteInstance.tools.tsx`).
-- Live labels on Aurora series today: `region`, `az`, `node_name`, `service_name`, `node_type`, `service_type`; `cluster` and `environment` are empty.
+- Live labels on Aurora mysqld_exporter and postgres_exporter series today: `region`, `az`, `node_name`, `service_name`, `node_type`, `service_type`; `cluster` and `environment` are empty.
+- rds_exporter series (`aws_rds_*`, `rdsosmetrics_*`, `node_*`) get node and agent labels only (`managed/services/agents/rds.go`, `models.MergeLabels(node, nil, agent)`), so they never carry the service label `cluster`; they join service series through `node_name`.
+- Changing a service's cluster label through `ChangeService` removes the backup and restore tasks scheduled for the related services (`api/inventory/v1/services.proto`).
 - Live role hints already collected: `mysql_global_variables_innodb_read_only`, `read_only`, `super_read_only` (0 on the writers);
   `pg_settings_transaction_read_only` (0 on the writer). Values on a reader are inferred (1), not observed.
 - postgres_exporter (`percona/postgres_exporter`) supports Aurora-only queries through a `query_aurora` key in `queries-*.yml`;
   `queries-mr.yaml` already uses `aurora_replica_status()` for `pg_replication_lag`.
+  Aurora detection itself is in `distribution/distribution.go`: it checks for `aurora_version()` once and caches "Standard" on any error, so a transient error hides Aurora until the exporter restarts.
 
 ## Alerts and advisors
 
 - `percona/pmm` `managed/data/alerting-templates/` has no Aurora template.
-- The Home dashboard shows a "Failed advisors" panel (type `pmm-check-panel`); its source was not found in percona/pmm or percona/grafana, so whether it can filter to a set of services is unknown.
+- The Home dashboard shows a "Failed advisors" panel (type `pmm-check-panel`, source in `percona/grafana` `public/app/plugins/panel/pmm-check/`); it fetches every failed check with no filter.
+- The advisor metric `pmm_managed_advisor_check_insights` has only `service_type`, `advisor` and `check_name` labels (`managed/services/checks/registry.go`), so it can't be narrowed to Aurora services or clusters.
+- The built-in `mysql_down` template groups by `service_id, service_name, node_name`, so its alerts don't carry `cluster`.
 
 ## Related Jira
 
