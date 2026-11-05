@@ -1,6 +1,6 @@
 # ADR-01: In-server endpoint
 
-- Status: Proposed
+- Status: Accepted (2026-11-05), after the review in pmm-specs#4
 - Date: 2026-10-22, revised 2026-11-02
 - Tickets: PMM-14247, PMM-15527, PMM-15532
 - Implemented: `PMM-MCP-GA`, percona/pmm#5942

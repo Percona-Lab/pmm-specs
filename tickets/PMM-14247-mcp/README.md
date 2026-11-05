@@ -1,7 +1,7 @@
 # MCP (Model Context Protocol) endpoint in PMM Server
 
 - **Epic:** [PMM-14247](https://perconadev.atlassian.net/browse/PMM-14247), "PMM is AI Ready - MCP [Tech Preview]"
-- **Status:** phases 0 and 1 merged into the integration branch `PMM-MCP-GA` in percona/pmm; phase 2 in progress; phases 2b to 5 designed here, under review in [pmm-specs#4](https://github.com/Percona-Lab/pmm-specs/pull/4). ADR status per record in the [ADR index](adr/README.md).
+- **Status:** phases 0 and 1 merged into the integration branch `PMM-MCP-GA` in percona/pmm; phase 2 in progress; phases 2b to 5 designed here, reviewed and merged in [pmm-specs#4](https://github.com/Percona-Lab/pmm-specs/pull/4). ADR status per record in the [ADR index](adr/README.md).
 - **Integration branch:** `PMM-MCP-GA` in percona/pmm. Every phase PRs into it; it merges into `main` once, in phase 5.
 
 | Phase | Ticket | Pull requests |

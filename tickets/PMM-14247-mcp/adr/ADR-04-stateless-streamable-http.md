@@ -1,6 +1,6 @@
 # ADR-04: Stateless Streamable HTTP
 
-- Status: Proposed
+- Status: Accepted (2026-11-05), after the review in pmm-specs#4
 - Date: 2026-10-22
 - Tickets: PMM-14247, PMM-15528
 - Implemented: `PMM-MCP-GA`, percona/pmm#5942

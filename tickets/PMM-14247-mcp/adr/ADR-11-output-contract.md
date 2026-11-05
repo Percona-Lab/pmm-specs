@@ -1,6 +1,6 @@
 # ADR-11: Output contract
 
-- Status: Proposed
+- Status: Accepted (2026-11-05), after the review in pmm-specs#4
 - Date: 2026-10-22, revised 2026-10-24, 2026-10-26, 2026-10-30 and 2026-11-02
 - Tickets: PMM-14247, PMM-15530
 - Implemented: not yet (phase 3; the contract is written before the rest of phase 2)

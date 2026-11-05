@@ -1,6 +1,6 @@
 # ADR-02: Base implementation and what to port
 
-- Status: Proposed
+- Status: Accepted (2026-11-05), after the review in pmm-specs#4
 - Date: 2026-10-22
 - Tickets: PMM-14247, PMM-15527, PMM-15529
 - Implemented: `PMM-MCP-GA`, percona/pmm#5942; phase 2 in progress
