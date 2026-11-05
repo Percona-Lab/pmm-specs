@@ -4,7 +4,7 @@
 
 **Goal:** Collect database, OS, application and PMM Server logs, and later traces, through OpenTelemetry Collectors, and store them in ClickHouse next to QAN. The work follows epic [PMM-15567](https://perconadev.atlassian.net/browse/PMM-15567).
 
-**Spec:** [`spec.md`](../spec.md), together with PMM-15567 and its child tickets. The analysis records decisions D1–D24: D1–D17 were decided in the interview on 2026-10-10, and D18–D24 in the review on 2026-10-11. If the epic owner or the architects overturn one when reviewing ADR-19, ADR-20 or the D12 API path, re-plan the tasks that decision lists under "Blocks".
+**Spec:** [`spec.md`](../spec.md), together with PMM-15567 and its child tickets. The analysis records decisions D1–D24: D1–D17 were decided in the interview on 2026-10-10, and D18–D24 in the review on 2026-10-11. If the epic owner or the architects overturn one when reviewing ADR-19, ADR-20 or ADR-24 (the D12 API path), re-plan the tasks that decision lists under "Blocks".
 
 ---
 
@@ -12,7 +12,7 @@
 
 | Plan | Scope | Tickets | Repos | Depends on |
 |---|---|---|---|---|
-| (Phase 0) | ADRs in [`adr/`](../adr/), threat model, capacity harness. These are not code plans; they run alongside plan 01. The ADRs are drafted there: ADR-01..14, plus ADR-17..22. Merge the ADRs and get the threat-model sign-off before plans 01 and 02 merge. | PMM-15590, 15591, 15592 | pmm | — |
+| (Phase 0) | ADRs in [`adr/`](../adr/), threat model, capacity harness. These are not code plans; they run alongside plan 01. The ADRs are drafted there: ADR-01..14, plus ADR-17..24. Merge the ADRs and get the threat-model sign-off before plans 01 and 02 merge. | PMM-15590, 15591, 15592 | pmm | — |
 | [01](01-server-receiver.md) | OCB collector build; server receiver; `otel` schema; ClickHouse users; settings and `PMM_ENABLE_OTEL`; `/otlp/`; redaction; retention, size cap and watermark; status and purge; HA server bits | PMM-15571, 15577 (build, server image), 15594 (server side) | pmm, percona-helm-charts | D1, D4, D5, D6, D14 decided |
 | [02](02-node-collector.md) | `OTEL_COLLECTOR` agent type; `log_sources`; parser presets (backend, built-ins); config params and agent-side rendering; privilege drop; status per source; PMM Server's own logs (all 14 files in `/srv/logs`); self-metrics scrape; telemetry | PMM-15572, 15574 (backend), 15575, 15577 (client packaging), 15593 (scrape) | pmm, grafana (Inventory types) | 01 tasks 1–4 |
 | [03](03-ui-and-grafana.md) | Settings → OTEL tab (settings, presets, log sources); collector health dashboard and alerts. No Grafana OTEL datasource or Logs dashboard (ADR-23) | PMM-15574 (UI), 15593 (dashboard, alerts) | pmm | 01, 02 |
