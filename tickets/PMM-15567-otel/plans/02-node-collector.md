@@ -113,7 +113,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
     ```yaml
     name: mysql_error
     description: …
-    min_agent_version: 3.11.0
+    min_agent_version: 3.12.0
     selectable: true
     operators: [ … ]
     ```
@@ -283,7 +283,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 - [ ] **Step 1: Write the failing tests.**
   ```go
   func TestOtelCollectorConfigIdentity(t *testing.T) {
-      p := otelCollectorConfig(collector, node, []*models.LogSource{svcSource, appSource, osSource}, presets, services, false, v3_11)
+      p := otelCollectorConfig(collector, node, []*models.LogSource{svcSource, appSource, osSource}, presets, services, false, v3_12)
       require.Len(t, p.OtelCollector.LogSources, 3)
       assert.Equal(t, map[string]string{"pmm.node_id": node.NodeID, "pmm.agent_id": collector.AgentID}, p.OtelCollector.ResourceAttributes)
       assert.Equal(t, map[string]string{"pmm.service_id": "svc1", "pmm.service_name": "mysql-1", "service.name": "mysqld"}, byID(p, "src-svc").ResourceAttributes)
@@ -294,8 +294,8 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   }
 
   func TestOtelCollectorConfigDeterministic(t *testing.T) {
-      a := otelCollectorConfig(collector, node, shuffled(sources), presets, services, false, v3_11)
-      b := otelCollectorConfig(collector, node, sources, presets, services, false, v3_11)
+      a := otelCollectorConfig(collector, node, shuffled(sources), presets, services, false, v3_12)
+      b := otelCollectorConfig(collector, node, sources, presets, services, false, v3_12)
       assert.True(t, proto.Equal(a, b))
   }
   ```

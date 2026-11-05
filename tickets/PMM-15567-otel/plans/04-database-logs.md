@@ -73,7 +73,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
 
 1. **`log_error` set to `./host.err` under a `datadir` that is a symlink** (common with LVM and bind mounts). Expected: the resolved path follows the symlink, and is reported as discovered under that resolved path. Test in Task 2 (`TestResolveMySQLLogPath`).
 2. **Two MySQL instances on one host whose error logs sit in one directory.** Expected: one source each, with the rows told apart by `pmm.service_id`. Test in Task 3 (`TestAddTwoLocalMySQLGetSeparateSources`, sqlmock with two services).
-3. **A new pmm-admin talking to an older server** (`DiscardUnknown`, F5). Expected: pmm-admin doesn't send `collect_logs`, and prints "log collection needs PMM Server 3.11 or newer". Test in Task 4 (`TestAddMySQLSkipsCollectLogsOnOldServer`).
+3. **A new pmm-admin talking to an older server** (`DiscardUnknown`, F5). Expected: pmm-admin doesn't send `collect_logs`, and prints "log collection needs PMM Server 3.12 or newer". Test in Task 4 (`TestAddMySQLSkipsCollectLogsOnOldServer`).
 4. **The service is added with `--skip-connection-check`, or the database is down at add time.** Expected: the service is added, the command prints why logs were not set up, and the user can run `pmm-admin add logs --service-name=… --discover` later. Test in Task 3 (`TestAddServiceDiscoveryFailureDoesNotFailAdd`).
 5. **A PostgreSQL `log_filename` with escapes other than `%Y%m%d%H%M%S`** (for example `%a` or `%j`), or none at all. Expected: every escape becomes `*`, and a name without escapes is used as is. Test in Task 2 (`TestPostgresLogGlob`).
 6. **A Valkey instance whose `CONFIG` command is renamed or not permitted.** Expected: the service is added, and the message says to add the log with `pmm-admin add logs --service-name=… --path=…`. Test in Task 6 (`TestDiscoverValkeyConfigDenied`).
@@ -228,7 +228,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
 - Consumes `models.UpsertLogSource` and `FindLogSources` (plan 02, Task 3), and the `LogDiscoveryRequest`/`Response` from Task 2.
 - Produces:
   - `type LogDiscoverer struct{ r *Registry; db *reform.DB }`
-  - `func (d *LogDiscoverer) Discover(ctx context.Context, q *reform.Querier, service *models.Service, agent *models.Agent, kinds []string) ([]*agentv1.LogDiscoveryEntry, error)`. It builds the DSN from the service's exporter agent, the way `ServiceInfoBroker` does (`managed/services/agents/service_info_broker.go:148`), with a 5 s timeout. It is version-gated: an older agent gets the message "log discovery needs pmm-agent 3.11.0 or newer".
+  - `func (d *LogDiscoverer) Discover(ctx context.Context, q *reform.Querier, service *models.Service, agent *models.Agent, kinds []string) ([]*agentv1.LogDiscoveryEntry, error)`. It builds the DSN from the service's exporter agent, the way `ServiceInfoBroker` does (`managed/services/agents/service_info_broker.go:148`), with a 5 s timeout. It is version-gated: an older agent gets the message "log discovery needs pmm-agent 3.12.0 or newer".
   - `func (d *LogDiscoverer) RediscoverOnConnect(ctx context.Context, pmmAgentID string) error`
 
 - [ ] **Step 1: Write the failing tests** (sqlmock, with a fake channel for the agent request):
@@ -261,7 +261,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
 
 **Interfaces:**
 - Consumes the `collect_logs` body fields (Task 3) and `agentlocal.GetStatus().ServerVersion`.
-- Produces `func collectLogsSupported(serverVersion string) bool`, true for 3.11.0-0 and later. When it is false, pmm-admin leaves `collect_logs` unset. If the user passed the flag explicitly, it prints "log collection needs PMM Server 3.11 or newer"; on the default, it prints nothing.
+- Produces `func collectLogsSupported(serverVersion string) bool`, true for 3.12.0-0 and later. When it is false, pmm-admin leaves `collect_logs` unset. If the user passed the flag explicitly, it prints "log collection needs PMM Server 3.12 or newer"; on the default, it prints nothing.
 
 - [ ] **Step 1: Write the failing tests.**
   - `TestAddMySQLDefaultCollectsErrorLog`: the built request body has `CollectLogs == "error"`.

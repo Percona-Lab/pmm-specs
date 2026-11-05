@@ -365,6 +365,7 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 | D22 | Histogram drawing in the explorer | `@mui/x-charts` (MIT, built for MUI v7), themed with peak-ui's chart palette. Plan 06's trace view reuses it. | Plan 08 |
 | D23 | AI-drafted parsers for unknown formats | A follow-up after logs ship, filed as PMM-15725. It must be opt-in, run on redacted samples, use a model the admin configures, validate its output with the same checks as custom presets, and never apply anything without an admin's approval. | Follow-up |
 | D24 | Grafana Logs dashboard alongside the native explorer | Build both. Decide which one to keep after Technical Preview feedback; until then the explorer is the one service dashboards link to. | Plans 03, 08 |
+| D25 | Release target and the default | The Technical Preview targets 3.12.0 (due 14 January 2027) with Phase 0 and plans 01, 02, 03 and 08. OTEL stays on by default (ADR-12), with a go/no-go: if PMM-15592 hasn't passed by 3.12.0 code freeze, 3.12.0 ships with `OtelCollectorEnabledDefault = false`. | Roadmap |
 
 **Interview of 2026-10-10:**
 - Every recommendation above was accepted: D1–D14, and D15–D17 as written.
@@ -373,6 +374,10 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
   - ADR-01..14 as in the ticket; ADR-15 and ADR-16 stay reserved for eBPF (PMM-15588).
   - Then ADR-17 (profiles deferred), ADR-18 (LBAC for OTel data), ADR-19 (default database log collection, D2) and ADR-20 (node collector config rendered by pmm-agent, D11).
 - ADR-19, ADR-20, and the D12 path change differ from the epic as written. They stay **Proposed** until the epic owner and the architects accept them.
+
+**Review of 2026-11-05:**
+- D25–D28 were decided, and D24 is superseded by D26.
+- ADR-23 (logs are read through the explorer only) and ADR-24 (one OTel API domain, D12) were added as Proposed.
 
 ---
 
@@ -384,6 +389,7 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 - **Non-root reads:** on RHEL, MySQL, PostgreSQL and MongoDB logs are not readable by `adm` [I, distro defaults]. Users must add an ACL or group. The `status_reason` and the docs must say how.
 - **A schema written by qan-api2 and a collector built from a pinned version can drift.** A CI contract test runs the pinned collector against the migrated schema (PMM-15571).
 - **The work is large.** 21 tickets, plus the three filed under the epic on 2026-10-11, across pmm, grafana, the helm charts and the build. The prototype took 265 commits without review. Follow the roadmap's order, and merge ADRs and the threat model first.
+- **Schedule.** On 2026-11-05 every epic ticket except PMM-15577 was unassigned. 3.12.0 needs plans 01, 02, 03 and 08 merged by its code freeze.
 
 ## 10. Security-sensitive findings
 

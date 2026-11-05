@@ -22,8 +22,9 @@
 | [07](07-access-hardening.md) | Access hardening of existing surfaces found during research: LBAC on ClickHouse datasources, on QAN detail endpoints and for service-account tokens; LBAC-relevant labels protected from values parsed out of query comments | file in Jira per `SECURITY.md` | pmm, grafana | none: independent of 01–06; can start now |
 | [08](08-log-explorer.md) | Native Logs explorer in the PMM UI with peak-ui: the `LogsService` API (search, context, histogram, facets) and a page with filters, histogram, table, details pane, live tail, export and deep links | PMM-15722 | pmm, grafana (Inventory link) | 01 tasks 2–4, 02 |
 
-**Release gating** (from the epic):
-- Phase 0 and plans 01–03 make up 3.11.0 Technical Preview. Plan 08 (the native explorer, PMM-15722) is meant to ship with them, but needs capacity; without it, 3.11.0 ships with the Grafana dashboard only.
+**Release gating** (D25, decided on 2026-11-05):
+- Phase 0 and plans 01, 02, 03 and 08 make up the **3.12.0** Technical Preview (3.12.0 is due on 14 January 2027). Plan 08 is required: the native explorer is the only log UI (D26, ADR-23).
+- **Default go/no-go:** OTEL is on by default (ADR-12) only if the capacity test (PMM-15592) has passed by 3.12.0 code freeze. If it hasn't, 3.12.0 ships with `OtelCollectorEnabledDefault = false`, and nothing else changes.
 - Plan 04 is Phase 1b.
 - Plan 05 is Phase 2.
 - Plan 06 needs its own epic.
@@ -69,7 +70,7 @@ These names are fixed across all plans. A task that needs a name not listed here
 | Model constant | `models.OtelCollectorType AgentType = "otel-collector"` |
 | CLI type string | `types.AgentTypeOtelCollector = "AGENT_TYPE_OTEL_COLLECTOR"`, display name `"otel_collector"` |
 | Inventory message | `inventory.v1.OtelCollector { agent_id = 1; pmm_agent_id = 2; disabled = 3; map<string,string> custom_labels = 4; AgentStatus status = 10; string process_exec_path = 11; uint32 listen_port = 12; }`. `listen_port` is the collector's self-metrics port. |
-| Version gate | `version.OtelCollectorSupportVersion = version.MustParse("3.11.0-0")` in `version/features.go`. Change it if the target release moves. |
+| Version gate | `version.OtelCollectorSupportVersion = version.MustParse("3.12.0-0")` in `version/features.go`. Change it if the target release moves. |
 
 **Agent channel** (`api/agent/v1/otel.proto`, new file in package `agent.v1`)
 
