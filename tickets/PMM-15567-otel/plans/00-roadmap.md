@@ -77,13 +77,16 @@ These names are fixed across all plans. A task that needs a name not listed here
 ```proto
 enum OtelLogSourceKind { OTEL_LOG_SOURCE_KIND_UNSPECIFIED = 0; OTEL_LOG_SOURCE_KIND_FILE = 1; OTEL_LOG_SOURCE_KIND_JOURNALD = 2; }
 enum LogSourceState { LOG_SOURCE_STATE_UNSPECIFIED = 0; LOG_SOURCE_STATE_COLLECTING = 1; LOG_SOURCE_STATE_NOT_ALLOWED = 2;
-                      LOG_SOURCE_STATE_NOT_READABLE = 3; LOG_SOURCE_STATE_NOT_FOUND = 4; LOG_SOURCE_STATE_JOURNALD_UNAVAILABLE = 5; }
+                      LOG_SOURCE_STATE_NOT_READABLE = 3; LOG_SOURCE_STATE_NOT_FOUND = 4; LOG_SOURCE_STATE_JOURNALD_UNAVAILABLE = 5;
+                      LOG_SOURCE_STATE_AGENT_TOO_OLD = 6; }
 message OtelLogSource { string id = 1; OtelLogSourceKind kind = 2; string path = 3; repeated string units = 4;
                         string operators_yaml = 5; map<string,string> resource_attributes = 6; bool discovered = 7; }
 message OtelCollectorParams { repeated OtelLogSource log_sources = 1; map<string,string> resource_attributes = 2;
                               bool send_to_local_receiver = 3; uint32 sending_queue_mib = 4; }
 message LogSourceStatus { string log_source_id = 1; LogSourceState state = 2; string reason = 3; }
 ```
+
+Only pmm-managed sets `LOG_SOURCE_STATE_AGENT_TOO_OLD`: a source whose preset needs a newer pmm-agent is never sent (plan 02, Task 4).
 
 These messages are referenced from:
 - `SetStateRequest.AgentProcess.otel_collector = 9` (type `OtelCollectorParams`);

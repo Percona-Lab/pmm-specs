@@ -179,12 +179,12 @@ Other agent types keep their current behaviour. The collector reaches the networ
   - `kind` (`file`/`journald`), `path`, `units`, `preset_id` (FK, `ON DELETE RESTRICT`)
   - `service_id` (FK, `ON DELETE CASCADE`), `app_name`
   - `discovery` (`""`, `mysql_error`, `mysql_slow`, `mysql_general`, `postgresql`, `mongodb`)
-  - `custom_labels`, `status`, `status_reason`
+  - `custom_labels`, `state`, `state_reason` (`state` holds the `LogSourceState` enum name)
   - `created_at`, `updated_at`
   - unique (`otel_collector_agent_id`, `kind`, `path`, `units`)
   - check: `service_id` and `app_name` are never both set
 - **One collector per pmm-agent:** a partial unique index on `agents(pmm_agent_id) WHERE agent_type = 'otel-collector'`, not a check-then-insert as in the prototype.
-- **Status flow:** pmm-agent reports `status` and `status_reason` for each source in a new repeated field on `StateChangedRequest`. For example: a path outside the allow-list, a file it can't read, or `journalctl` missing.
+- **State flow:** pmm-agent reports a `state` and `state_reason` for each source in a new repeated field on `StateChangedRequest`. For example: a path outside the allow-list, a file it can't read, or `journalctl` missing.
 - **Allow-list:** pmm-agent checks paths before rendering. It drops sources that fail, and keeps the collector running for the rest.
 
 ### 6.3 Default log collection on `pmm-admin add`
@@ -390,7 +390,7 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 - **Log volume shares ClickHouse and its disk with QAN on the 8 GB profile.** The cap, the watermark and the separate ClickHouse users with resource limits are release blockers (PMM-15571, PMM-15592). The capacity test includes the `PatternHash` insert cost.
 - **On by default after upgrade** means the first upgrade starts a new process, creates a schema and turns on collection of the server's own logs everywhere at once. The capacity test (PMM-15592) must run before the default is final.
 - **Discovery doesn't work in Kubernetes sidecars:** the uid is 1002, there is no `journalctl`, and database log directories are not mounted. The operators must mount them (PMM-15577). Until they do, document that `--collect-logs` reports "file not visible" there.
-- **Non-root reads:** on RHEL, MySQL, PostgreSQL and MongoDB logs are not readable by `adm` [I, distro defaults]. Users must add an ACL or group. The `status_reason` and the docs must say how.
+- **Non-root reads:** on RHEL, MySQL, PostgreSQL and MongoDB logs are not readable by `adm` [I, distro defaults]. Users must add an ACL or group. The `state_reason` and the docs must say how.
 - **A schema written by qan-api2 and a collector built from a pinned version can drift.** A CI contract test runs the pinned collector against the migrated schema (PMM-15571).
 - **The work is large.** 21 tickets, plus the three filed under the epic on 2026-10-11, across pmm, grafana, the helm charts and the build. The prototype took 265 commits without review. Follow the roadmap's order, and merge ADRs and the threat model first.
 - **Schedule.** On 2026-11-05 every epic ticket except PMM-15577 was unassigned. 3.12.0 needs plans 01, 02, 03 and 08 merged by its code freeze.

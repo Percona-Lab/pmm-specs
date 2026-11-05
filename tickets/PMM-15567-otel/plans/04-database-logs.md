@@ -225,7 +225,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - `managed/services/otel/log_sources_grpc.go`: the `DiscoverLogSources` handler.
 
 **Interfaces:**
-- Consumes `models.UpsertLogSource` and `FindLogSources` (plan 02, Task 3), and the `LogDiscoveryRequest`/`Response` from Task 2.
+- Consumes `models.UpsertLogSource` and `FindLogSources` (plan 02, Task 3b), and the `LogDiscoveryRequest`/`Response` from Task 2.
 - Produces:
   - `type LogDiscoverer struct{ r *Registry; db *reform.DB }`
   - `func (d *LogDiscoverer) Discover(ctx context.Context, q *reform.Querier, service *models.Service, agent *models.Agent, kinds []string) ([]*agentv1.LogDiscoveryEntry, error)`. It builds the DSN from the service's exporter agent, the way `ServiceInfoBroker` does (`managed/services/agents/service_info_broker.go:148`), with a 5 s timeout. It is version-gated: an older agent gets the message "log discovery needs pmm-agent 3.12.0 or newer".
