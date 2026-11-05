@@ -4,6 +4,7 @@
 
 **Goal:** Admins search, filter, chart and read logs on a native PMM UI page built with `@percona/peak-ui`, without going through Grafana. The page:
 - shows a severity histogram;
+- groups lines into patterns, with counts and what is new (D27);
 - filters by node, PMM service, app, source, severity and text, with counts;
 - has a details pane with surrounding lines;
 - tails live;
@@ -26,7 +27,7 @@ The same API becomes the LBAC-enforced read path in plan 06.
 - the [roadmap](00-roadmap.md) for the shared names.
 - [PMM-15722](https://perconadev.atlassian.net/browse/PMM-15722) (Logs explorer, under PMM-15567). Where its acceptance criteria differ from this plan, the ticket is current.
 
-**Depends on:** plan 01, Tasks 2–4 (`otel.logs`, `otel_reader`, settings), and plan 02 (data flowing). It can run in parallel with plan 03.
+**Depends on:** plan 01, Tasks 2–4 (`otel.logs` with `PatternHash`, `otel_reader`, settings), and plan 02 (data flowing). It can run in parallel with plan 03.
 
 ## Global Constraints
 
@@ -299,3 +300,43 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
 - [ ] **Step 2: Implement** the links, the Inventory row action (with its Grafana fork test), and run `cleanup-dash.py`.
 - [ ] **Step 3: Run the checks again.** The pytest, `cleanup-dash.py --check-only` on every changed dashboard, and the fork test (`yarn test Services`). Expected: PASS. Then on a Feature Build, check that a link from the MySQL summary opens the explorer filtered to that service and time range.
 - [ ] **Step 4: Commit** in each repo: `git commit -s -m "PMM-15722 Link dashboards and Inventory to Logs"`.
+
+### Task 7: Patterns
+
+**Files:**
+- Modify:
+  - `api/logs/v1/logs.proto`
+  - `managed/services/logs/query.go` and `service.go`, and their tests
+  - `ui/apps/pmm/src/api/logs.ts`, `ui/apps/pmm/src/hooks/api/useLogs.ts`, `ui/apps/pmm/src/pages/logs/filters/useLogsUrlFilters.ts`
+- Create:
+  - `ui/apps/pmm/src/pages/logs/patterns/LogPatterns.tsx` and its test
+
+**Interfaces:**
+- Consumes `otel.logs.PatternHash` and `logpatterns.Expr` (plan 01, Task 3; D27).
+- **Proto** (additive to Task 1's messages):
+  - `Filters`: `uint64 pattern_hash = 9; repeated uint64 exclude_pattern_hashes = 10;`. `BuildSearchQuery` and every other query apply them as `PatternHash = ?` and `PatternHash NOT IN ?`.
+  - `message LogPattern { string pattern = 1; uint64 pattern_hash = 2; uint64 count = 3; uint64 previous_count = 4; bool is_new = 5; Severity max_severity = 6; google.protobuf.Timestamp first_seen = 7; google.protobuf.Timestamp last_seen = 8; string sample = 9; }`
+  - `rpc Patterns(PatternsRequest{Filters filters = 1; uint32 limit = 2;}) returns (PatternsResponse{repeated LogPattern patterns = 1;})` at `POST /v1/logs:patterns`. `limit` defaults to 50 and is capped at 200. Rows are ordered by `count`, highest first.
+- **Semantics:**
+  - Lines are grouped by the stored `PatternHash`. `pattern` is `logpatterns.Expr` applied, in ClickHouse, to one sample `Body` per group, so only returned groups are masked.
+  - `previous_count` covers the window of the same length just before `start`.
+  - `is_new` is `previous_count == 0` while the previous window has rows for the same filters, so a source added in this window doesn't mark everything new.
+- **UI:**
+  - a Lines | Patterns toggle on `/logs`, in the URL as `view=patterns`;
+  - a peak-ui `Table` with the pattern, the count, the change against the previous window, a "New" `Chip`, and the max-severity `Chip`;
+  - a row click switches to Lines filtered by that pattern (URL `pattern`);
+  - a row action "Hide" adds the pattern to `exclude_pattern_hashes` (URL `xpattern`, repeatable).
+
+- [ ] **Step 1: Write the failing tests.**
+  - `TestPatternsQueryGroupsByStoredHash`: the SQL groups by `PatternHash`, and `logpatterns.Expr` appears only around the sample column.
+  - `TestPatternsIsNewNeedsPreviousRows`: no rows in the previous window gives `is_new = false`; rows there but none of this pattern gives `true`.
+  - `TestSearchExcludesPatternHashes`: `exclude_pattern_hashes = [1, 2]` binds `PatternHash NOT IN ?` with both values.
+  - Vitest: `row click filters lines by pattern`, `hide adds xpattern to URL`.
+- [ ] **Step 2: Run them.** `make gen && cd managed && go test ./services/logs/ -run 'Pattern'` and `cd ui && pnpm --filter pmm test -- logs`. Expected: FAIL.
+- [ ] **Step 3: Implement** the RPC, the filters and the Patterns view.
+- [ ] **Step 4: Run them again.** Same commands, then `make prepare-pr` and `make lint format-check` in `ui`. Expected: PASS. Then on a Feature Build, check that the server's own logs group into patterns and that "Hide" removes their lines from Lines.
+- [ ] **Step 5: Commit.**
+  ```bash
+  git add api/logs managed/services/logs ui/apps/pmm/src
+  git commit -s -m "PMM-15722 Group log lines into patterns"
+  ```

@@ -132,6 +132,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `qan-api2/migrations/otel/sql/01_logs.up.sql`
   - `qan-api2/migrations/otel/sql/01_logs.down.sql`
   - `qan-api2/migrations/otel_test.go`
+  - `utils/logpatterns/logpatterns.go` and `logpatterns_test.go` (no license header needed: `utils/` is exempt)
 - Modify:
   - `qan-api2/migrations/migrations.go` (a second `//go:embed otel/sql/*.sql` and `RunOtel`)
   - `qan-api2/db.go` (`NewDB` runs the otel chain after the QAN chain)
@@ -144,8 +145,13 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - Table `otel.logs`:
     - the upstream exporter's columns: `Timestamp DateTime64(9)`, `TimestampTime DateTime DEFAULT toDateTime(Timestamp)`, `TraceId`, `SpanId`, `TraceFlags`, `SeverityText`, `SeverityNumber`, `ServiceName`, `Body`, `ResourceSchemaUrl`, `ResourceAttributes Map(LowCardinality(String), String)`, `ScopeSchemaUrl`, `ScopeName`, `ScopeVersion`, `ScopeAttributes`, `LogAttributes`, with the upstream codecs and indexes (copy them from the pinned exporter's `internal/sqltemplates`);
     - plus `PmmNodeId LowCardinality(String) MATERIALIZED ResourceAttributes['pmm.node_id']` and `PmmServiceId LowCardinality(String) MATERIALIZED ResourceAttributes['pmm.service_id']`;
+    - plus `PatternHash UInt64 MATERIALIZED <logpatterns.HashExpr("Body")> CODEC(ZSTD(1))`, written out literally in `01_logs.up.sql` and not in the sort key (D27, ADR-04);
     - `ENGINE = {{ .engine }} PARTITION BY toDate(TimestampTime) ORDER BY (PmmNodeId, PmmServiceId, ServiceName, TimestampTime) SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1`;
     - no TTL (D1).
+  - `package logpatterns` (`utils/logpatterns`):
+    - `var rules [][2]string`: the 12 rules of `managed/otel/patterns.go` on the prototype branch `tibi-holmes` at `f5a9e9a19`, in that order;
+    - `func Expr(column string) string`: nested `replaceRegexpAll(…)` over the rules, wrapped in `substringUTF8(…, 1, 200)`, with string literals quoted as the prototype's `sqlString` does (`:` written as `\x3A`, because clickhouse-go reads `{…:…}` as a named parameter);
+    - `func HashExpr(column string) string`: `cityHash64(` + `Expr(column)` + `)`.
 
 - [ ] **Step 1: Write the failing test.**
   ```go
@@ -169,10 +175,12 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       assert.Equal(t, []string{"n1", "s1"}, []string{node, svc})
   }
   ```
+  Add `TestPatternHashMatchesRules`: read `otel/sql/*.up.sql` in file order, take the last `PatternHash UInt64 MATERIALIZED ` expression up to ` CODEC(`, and assert it equals `logpatterns.HashExpr("Body")`. On failure, print the expected expression and "add a new migration with ALTER TABLE otel.logs MODIFY COLUMN; never MATERIALIZE COLUMN (ADR-04)". In `logpatterns_test.go`, `TestExprMasksVariableParts`: on the test ClickHouse, `SELECT ` + `Expr("'2026-10-11T10:00:00Z took 15ms id=3f2a9c1e7b user=''bob'''")` returns `? took ? id=? user='?'`.
+
   Add `TestRunOtelOnExistingQANDatabase`: run `Run` (QAN) first, then `RunOtel`, and assert that both `schema_migrations` and `otel_schema_migrations` exist, each in its own database.
-- [ ] **Step 2: Run it.** `cd qan-api2 && go test -run TestRunOtel ./migrations/`. Expected: FAIL, `undefined: RunOtel`.
+- [ ] **Step 2: Run it.** `cd qan-api2 && go test -run 'TestRunOtel|TestPatternHash' ./migrations/` and `go test ./utils/logpatterns/` from the repo root. Expected: FAIL, `undefined: RunOtel` and `undefined: logpatterns`.
 - [ ] **Step 3: Implement `RunOtel`.** Call `createDB` first, because the otel DSN's database may not exist yet. Then wire it into `NewDB`: derive the otel DSN by replacing the database path of the QAN DSN with the constant `otel`, and run the chain after the QAN chain. Add `-chain=otel` to `render-migrations` so CI can pipe the SQL into a container.
-- [ ] **Step 4: Run it again.** Same command, then `go test ./...` in `qan-api2`. Expected: PASS.
+- [ ] **Step 4: Run it again.** Same commands, then `go test ./...` in `qan-api2`. Expected: PASS.
 - [ ] **Step 5: Commit.**
   ```bash
   git add qan-api2
@@ -437,6 +445,8 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       assert.NotContains(t, body, "glsa_abc_123")
       assert.Contains(t, body, "^anchor$")
       assert.Equal(t, "n1", node)
+      // also SELECT PatternHash for the same row
+      assert.NotZero(t, patternHash)
       _, err := net.DialTimeout("tcp", "127.0.0.1:4317", time.Second)
       require.Error(t, err)
   }

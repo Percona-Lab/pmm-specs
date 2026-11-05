@@ -45,6 +45,7 @@ The QA automation ticket (PMM-15578) adds its tests in percona/pmm-qa against ea
 - downgrade behaviour: the `otel` database and the `log_sources` and `log_parser_presets` tables stay in place, unused; an older server ignores them, and an older client never receives the agent type.
 
 **Follow-ups** (not planned here):
+- Open a log line's query in QAN (`findQuery`, D28). Two options: a new qan-api2 RPC that matches a statement or a MongoDB query ID against `pmm.metrics` (preferred: qan-api2 owns that table and its LBAC), or pmm-managed reading `pmm.metrics` directly, as the prototype does. The MongoDB query ID needs pmm-agent's fingerprinter moved to a shared package either way.
 - AI-drafted parsers for unknown formats (D23), filed as [PMM-15725](https://perconadev.atlassian.net/browse/PMM-15725): opt-in, redacted samples, a model the admin configures, admin approval. It is blocked by PMM-15723 and PMM-15574. No ticket yet owns the setting for the admin-configured model; file one, or add it to PMM-15725's scope, before that work starts.
 
 **Outside this repo:**
@@ -111,6 +112,9 @@ Plan 05 adds `OtelTracesReceiver traces_receiver = 5` to `OtelCollectorParams`. 
 | `Context` | `POST /v1/logs:context` | 08 |
 | `Histogram` | `POST /v1/logs:histogram` | 08 |
 | `Facets` | `POST /v1/logs:facets` | 08 |
+| `Patterns` | `POST /v1/logs:patterns` | 08 (Task 7) |
+
+Plan 08, Task 7 adds `uint64 pattern_hash = 9` and `repeated uint64 exclude_pattern_hashes = 10` to `Filters`.
 
 **Settings**
 - **Proto:** `server.v1.OtelSettings { bool collector_enabled = 1; uint32 logs_retention_days = 2; uint32 traces_retention_days = 3; uint32 max_disk_gb = 4; uint32 disk_watermark_percent = 5; }` as `Settings.otel = 22`.
@@ -129,7 +133,7 @@ Plan 05 adds `OtelTracesReceiver traces_receiver = 5` to `OtelCollectorParams`. 
 
 **ClickHouse**
 - Database `otel`, tables `otel.logs` (plan 01), and `otel.otel_traces`, `otel.otel_traces_trace_id_ts`, `otel.otel_traces_service_name` (plan 05).
-- Materialized columns `PmmNodeId` and `PmmServiceId`. Sort key `(PmmNodeId, PmmServiceId, ServiceName, TimestampTime)`. Daily partitions `toDate(TimestampTime)`.
+- Materialized columns `PmmNodeId` and `PmmServiceId`, and `PatternHash` (D27, outside the sort key). Sort key `(PmmNodeId, PmmServiceId, ServiceName, TimestampTime)`. Daily partitions `toDate(TimestampTime)`.
 - Users `otel_writer` (INSERT on `otel.*`) and `otel_reader` (SELECT on `otel.*`), in one `users.d` drop-in: `build/ansible/roles/clickhouse/files/users.d/otel.xml`.
 - Env `PMM_CLICKHOUSE_OTEL_WRITER_USER/PASSWORD` and `PMM_CLICKHOUSE_OTEL_READER_USER/PASSWORD`. Defaults are user = password = the user name, with localhost-only networks, as for the existing `grafana` user. HA overrides them with generated secrets.
 - qan-api2 owns the schema: `migrations.RunOtel(dsn string, templateData map[string]any, isCluster bool, clusterName string) error`, with SQL in `qan-api2/migrations/otel/sql/` and migrations table `otel_schema_migrations`.
@@ -151,6 +155,7 @@ Plan 05 adds `OtelTracesReceiver traces_receiver = 5` to `OtelCollectorParams`. 
 | `managed/services/otel/presets` | built-in YAML, loader, validator |
 | `managed/services/agents/otelcollector.go` | builds `OtelCollectorParams` |
 | `agent/agents/otelcollector` | YAML rendering, allow-list, privilege drop |
+| `utils/logpatterns` | log-pattern masking rules and their ClickHouse expressions (D27), used by qan-api2's migration test and pmm-managed |
 
 **pmm-agent config** (`agent/config/config.go`)
 - `Paths.OtelCollector`: yaml `otelcol`, default `tools/otelcol`.
