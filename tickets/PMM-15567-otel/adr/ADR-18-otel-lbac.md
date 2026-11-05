@@ -38,7 +38,7 @@ Option 1, with node identity verified at ingest.
    - `/v1/logs` and `/v1/traces` are LBAC-covered paths, so a restricted user's request always carries the user's selectors.
    - A request without the header is full access: the auth server sends none when LBAC is off or the user has no filters.
    - Any selector that doesn't parse means deny.
-   - Service-account tokens follow an explicit rule.
+   - Service-account and anonymous credentials, which skip LBAC today, follow an explicit rule (plan 07, Task 3) before these paths open to non-Admins.
 5. **Defaults.** A PMM UI log explorer uses the API. There is no Grafana OTEL datasource (ADR-23).
 
 Options 2–4 were rejected for these reasons:

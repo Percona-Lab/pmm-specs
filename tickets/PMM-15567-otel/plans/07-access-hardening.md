@@ -26,7 +26,7 @@ The roadmap's global constraints apply. In addition:
 
 1. **A restricted user opening one of the six shipped dashboards that use the `ClickHouse` datasource.** Expected: those panels show "not available to users restricted by access roles". Every other panel still works. Test in Task 1.
 2. **LBAC disabled.** Expected: no change for anyone, on every path touched here. Test in each task's "LBAC disabled" case.
-3. **A user with two roles, one of them with an empty filter.** Expected: full access, the same as today (`auth_server.go:446-494`). Test in Task 2.
+3. **A user with two roles, one of them with an empty filter.** Expected: full access, the same as today (`auth_server.go:505-512`). Test in Task 2.
 4. **An external integration using a Viewer service-account token to read `/prometheus/api/v1/query`.** Expected: it gets the default role's filters when LBAC is on. The release notes announce this behaviour change. Test in Task 3.
 5. **A query comment whose label key matches an inventory custom label.** Expected: the inventory value is stored, and the comment value is dropped for that key. Test in Task 4.
 
@@ -43,7 +43,7 @@ The roadmap's global constraints apply. In addition:
 **Interfaces:**
 - Produces `func NewPerconaClickHouseLBACMiddleware() plugins.ClientMiddleware`. For `QueryData` and `CallResource`, when the datasource's plugin type is `grafana-clickhouse-datasource` **and** the incoming HTTP request carries a non-empty `X-Proxy-Filter`, it returns an error that maps to HTTP 403 with the message "ClickHouse data is not available to users restricted by access roles".
   - Read the header from the incoming request in the context, the same way `forwarded_percona_token_middleware.go:30-65` does.
-  - nginx sends the header only for restricted users (`managed/services/grafana/auth_server.go:446-494`), so a full-access user is unaffected.
+  - nginx sends the header only for restricted users (`managed/services/grafana/auth_server.go:395-442`, the `len(filters) == 0` return), so a full-access user is unaffected.
 
 - [ ] **Step 1: Write the failing test.** `TestClickHouseLBACMiddleware`, table-driven:
   - ClickHouse datasource, `X-Proxy-Filter` set: 403, and the next handler is not called.
@@ -68,7 +68,7 @@ PMM-15697 added `/v1/qan:` to `lbacPrefixes`, filters the reads in `qan-api2/mod
 
 **Files:**
 - Modify:
-  - `managed/services/grafana/auth_server.go` (`maybeAddLBACFilters` ~:372-416; the `userID <= 0` early return at :391-396)
+  - `managed/services/grafana/auth_server.go` (`maybeAddLBACFilters` ~:395-442; the `userID <= 0` early return at :415-420)
   - `managed/services/grafana/client.go` (:288-300, :545-560): expose the role of a service-account token
 - Test:
   - `managed/services/grafana/auth_server_test.go`

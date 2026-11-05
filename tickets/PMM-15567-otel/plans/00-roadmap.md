@@ -12,19 +12,19 @@
 
 | Plan | Scope | Tickets | Repos | Depends on |
 |---|---|---|---|---|
-| (Phase 0) | ADRs in [`adr/`](../adr/), threat model, capacity harness. These are not code plans; they run alongside plan 01. The ADRs are drafted there: ADR-01..14, plus ADR-17..24. Merge the ADRs and get the threat-model sign-off before plans 01 and 02 merge. | PMM-15590, 15591, 15592 | pmm | — |
+| (Phase 0) | ADRs in [`adr/`](../adr/), threat model, capacity harness. These are not code plans; they run alongside plan 01. The ADRs are drafted there: ADR-01..14, plus ADR-17..25. Merge the ADRs and get the threat-model sign-off before plans 01 and 02 merge. | PMM-15590, 15591, 15592 | pmm | — |
 | [01](01-server-receiver.md) | OCB collector build; server receiver; `otel` schema; ClickHouse users; settings and `PMM_ENABLE_OTEL`; `/otlp/`; redaction; retention, size cap and watermark; status and purge; HA server bits | PMM-15571, 15577 (build, server image), 15594 (server side) | pmm, percona-helm-charts | D1, D4, D5, D6, D14 decided |
 | [02](02-node-collector.md) | `OTEL_COLLECTOR` agent type; `log_sources`; parser presets (backend, built-ins); config params and agent-side rendering; privilege drop; status per source; PMM Server's own logs (all 14 files in `/srv/logs`); self-metrics scrape; telemetry | PMM-15572, 15574 (backend), 15575, 15577 (client packaging), 15593 (scrape) | pmm, grafana (Inventory types) | 01 Tasks 1–4 and 9 |
 | [03](03-ui-and-grafana.md) | Settings → OTEL tab (settings, presets, log sources); collector health dashboard and alerts. No Grafana OTEL datasource or Logs dashboard (ADR-23) | PMM-15574 (UI), 15593 (dashboard, alerts) | pmm | 01, 02 |
 | [04](04-database-logs.md) | `pmm-admin add/remove logs`; log discovery on the agent; `--collect-logs` on `add mysql/postgresql/mongodb/valkey`, on by default; database presets including `valkey`; the `auto` preset and preset suggestions for unknown formats | PMM-15573, 15584, 15585, 15586, 15587, 15723 (auto-detection), 15724 (Valkey) | pmm | 02; Task 7 also needs 08, Task 1 |
 | [05](05-traces.md) | Trace schema; server traces pipeline; node traces receiver and sampling; `pmm-admin add/remove traces`; trace view (re-plan: ADR-23); correlation | PMM-15579, 15580, 15582 | pmm | 01–03. Re-plan with writing-plans once 02 has merged |
-| [06](06-lbac.md) | LBAC for logs and traces: ingest identity, selector evaluator, logs and traces query API that fails closed, log explorer | none yet: propose a follow-up epic | pmm, grafana | 05 and 08. Design-level; re-plan before execution |
+| [06](06-lbac.md) | LBAC for logs and traces: ingest identity, selector evaluator, logs and traces query API that fails closed, log explorer | none yet: propose a follow-up epic | pmm, grafana | 05, 08, and plan 07, Task 3. Design-level; re-plan before execution |
 | [07](07-access-hardening.md) | Access hardening of existing surfaces found during research: LBAC on ClickHouse datasources, on QAN detail endpoints and for service-account tokens; LBAC-relevant labels protected from values parsed out of query comments | file in Jira per `SECURITY.md`; Task 2 merged as PMM-15697 | pmm, grafana | none: independent of 01–06; can start now |
 | [08](08-log-explorer.md) | Native Logs explorer in the PMM UI with peak-ui: the `LogsService` API (search, context, histogram, facets) and a page with filters, histogram, table, details pane, live tail, export and deep links. The only log UI (ADR-23) | PMM-15722 | pmm, grafana (Inventory link) | 01 tasks 2–4, 02 |
 
 **Release gating** (D25, decided on 2026-11-05):
 - Phase 0 and plans 01, 02, 03 and 08 make up the **3.12.0** Technical Preview (3.12.0 is due on 14 January 2027). Plan 08 is required: the native explorer is the only log UI (D26, ADR-23).
-- **Default go/no-go:** OTEL is on by default (ADR-12) only if the capacity test (PMM-15592) has passed by 3.12.0 code freeze. If it hasn't, 3.12.0 ships with `OtelCollectorEnabledDefault = false`, and nothing else changes.
+- **Default go/no-go:** OTEL is on by default (ADR-12) only if the capacity test (PMM-15592) has passed by 3.12.0 code freeze. If it hasn't, 3.12.0 ships with OTEL off by default; ADR-25 lists what flips (the default constant, the pmm-ha chart value, the tests that assert the default, and the docs).
 - Plan 04 is Phase 1b.
 - Plan 05 is Phase 2.
 - Plan 06 needs its own epic.

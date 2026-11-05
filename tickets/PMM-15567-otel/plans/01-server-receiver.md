@@ -132,7 +132,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `qan-api2/migrations/otel/sql/01_logs.up.sql`
   - `qan-api2/migrations/otel/sql/01_logs.down.sql`
   - `qan-api2/migrations/otel_test.go`
-  - `utils/logpatterns/logpatterns.go` and `logpatterns_test.go` (no license header needed: `utils/` is exempt)
+  - `utils/logpatterns/logpatterns.go` and `logpatterns_test.go`, with the Apache-2.0 header that `.licenserc.yaml` requires for `utils/**/*.go` (copy it from another `utils/` file)
 - Modify:
   - `qan-api2/migrations/migrations.go` (a second `//go:embed otel/sql/*.sql` and `RunOtel`)
   - `qan-api2/db.go` (`NewDB` runs the otel chain after the QAN chain)
@@ -175,7 +175,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       assert.Equal(t, []string{"n1", "s1"}, []string{node, svc})
   }
   ```
-  Add `TestPatternHashMatchesRules`: read `otel/sql/*.up.sql` in file order, take the last `PatternHash UInt64 MATERIALIZED ` expression up to ` CODEC(`, and assert it equals `logpatterns.HashExpr("Body")`. On failure, print the expected expression and "add a new migration with ALTER TABLE otel.logs MODIFY COLUMN; never MATERIALIZE COLUMN (ADR-04)". In `logpatterns_test.go`, `TestExprMasksVariableParts`: on the test ClickHouse, `SELECT ` + `Expr("'2026-10-11T10:00:00Z took 15ms id=3f2a9c1e7b user=''bob'''")` returns `? took ? id=? user='?'`.
+  Add `TestPatternHashMatchesRules`: read `otel/sql/*.up.sql` in file order, take the last `PatternHash UInt64 MATERIALIZED ` expression up to ` CODEC(`, and assert it equals `logpatterns.HashExpr("Body")`. On failure, print the expected expression and "add a new migration with ALTER TABLE otel.logs MODIFY COLUMN; never MATERIALIZE COLUMN (ADR-04)". In `logpatterns_test.go`, pure Go because `make test-common` runs `utils/` without ClickHouse: `TestExprWrapsEveryRule` (`Expr("Body")` starts with `substringUTF8(` and contains one `replaceRegexpAll(` per rule) and `TestExprQuotesColons` (no literal `:` inside a quoted rule). In `otel_test.go`, on the test ClickHouse, `TestPatternExprMasksVariableParts`: `SELECT ` + `logpatterns.Expr("'2026-10-11T10:00:00Z took 15ms id=3f2a9c1e7b user=''bob'''")` returns `? took ? id=? user='?'`.
 
   Add `TestRunOtelOnExistingQANDatabase`: run `Run` (QAN) first, then `RunOtel`, and assert that both `schema_migrations` and `otel_schema_migrations` exist, each in its own database.
 - [ ] **Step 2: Run it.** `cd qan-api2 && go test -run 'TestRunOtel|TestPatternHash' ./migrations/` and `go test ./utils/logpatterns/` from the repo root. Expected: FAIL, `undefined: RunOtel` and `undefined: logpatterns`.
@@ -183,7 +183,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 - [ ] **Step 4: Run it again.** Same commands, then `go test ./...` in `qan-api2`. Expected: PASS.
 - [ ] **Step 5: Commit.**
   ```bash
-  git add qan-api2
+  git add qan-api2 utils/logpatterns
   git commit -s -m "PMM-15571 Create the otel schema in qan-api2"
   ```
 
@@ -338,7 +338,8 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 
 - [ ] **Step 1: Write the failing tests.**
   - A `TestConfig` case with the golden `managed/testdata/supervisord.d/otel-collector.ini`.
-  - `TestUpdateConfigurationStopsDisabledOtelCollector`: with the collector disabled, `UpdateConfiguration` removes `otel-collector.ini` and runs `supervisorctl update otel-collector`. Assert the command through the same seam the other `supervisorctl` tests use; if there is none, add a `supervisorctl` function field to `Service`, set by `New`, that the test replaces.
+  - `TestUpdateConfigurationStopsDisabledOtelCollector`: with the collector disabled, `UpdateConfiguration` removes `otel-collector.ini` and runs `supervisorctl update otel-collector`.
+  - `TestUpdateConfigurationRestoresOtelCollector`: after that, with the collector enabled again, it writes `otel-collector.ini` and runs `supervisorctl update otel-collector`, so the program comes back. Assert the command through the same seam the other `supervisorctl` tests use; if there is none, add a `supervisorctl` function field to `Service`, set by `New`, that the test replaces.
 - [ ] **Step 2: Run them.** `cd managed && go test ./services/supervisord/`. Expected: FAIL.
 - [ ] **Step 3: Implement** the template, the param, the F17 fix and the Ansible task.
 - [ ] **Step 4: Run them again.** Same command. Expected: PASS.
@@ -365,11 +366,11 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `ServerCollectorConfig` (Task 5);
   - `models.GetSettings`, and the `OtelSettings` fields `CollectorEnabled` and `IngestPaused` (Task 4);
   - the program `otel-collector` (Task 6);
-  - from `supervisord.Service`, all of which exist: `RestartSupervisedService(ctx context.Context, name string) error`, `StartSupervisedService(name string) error` and `StopSupervisedService(name string) error`, in the `supervisordService` interface in `deps.go`.
+  - from `supervisord.Service`, both of which exist: `RestartSupervisedService(ctx context.Context, name string) error` and `UpdateConfiguration(settings *models.Settings) error` (`supervisord.go:96`), in the `supervisordService` interface in `deps.go`. Not `StartSupervisedService`: it is a bare `supervisorctl start`, which fails once Task 6 has removed `otel-collector.ini`.
 - Produces:
   - `func New(params Params) *Service`, with `Params{DB *reform.DB; Supervisord supervisordService; ConfigPath string; ClickHouse ServerConfigParams}`;
   - `func (s *Service) UpdateConfiguration(ctx context.Context, settings *models.Settings) error`. It creates the parent directory with `os.MkdirAll`, writes the config atomically with mode 0600 only when the content changed, and restarts the program if it changed while it should run;
-  - `func (s *Service) Run(ctx context.Context)`, a ticker that calls `UpdateConfiguration` when the OTEL settings differ from the last applied ones, and calls `StopSupervisedService("otel-collector")` or `StartSupervisedService("otel-collector")` when the effective running state changes. This is how a replica that didn't make the change stops or starts its collector.
+  - `func (s *Service) Run(ctx context.Context)`, a ticker that calls `UpdateConfiguration` when the OTEL settings differ from the last applied ones, and calls `Supervisord.UpdateConfiguration(settings)` when the effective running state changes. That writes or removes `otel-collector.ini` and runs `supervisorctl update otel-collector` (Task 6), so it both stops and starts the program. This is how a replica that didn't make the change, or the leader after the cleaner pauses or resumes ingest, stops or starts its collector.
   - Two unexported fields exist so tests can drive the loop: `reconcileInterval time.Duration`, set to 30 s by `New`, and `onApplied func(enabled bool)`. The hook is nil in production and is called after each apply with the effective running state.
 
   The collector runs only when `IsOtelCollectorEnabled() && !Otel.IngestPaused`.
@@ -398,7 +399,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       sqlDB := testdb.Open(t, models.SkipFixtures, nil)
       db := reform.NewDB(sqlDB, postgresql.Dialect, nil)
       sv := &mockSupervisordService{}
-      sv.On("StopSupervisedService", "otel-collector").Return(nil)
+      sv.On("UpdateConfiguration", mock.Anything).Return(nil)
       applied := make(chan bool, 4)
       s := New(Params{DB: db, Supervisord: sv, ConfigPath: filepath.Join(t.TempDir(), "config.yaml"), ClickHouse: testCH})
       s.reconcileInterval = 10 * time.Millisecond
@@ -412,9 +413,10 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       _, err := models.UpdateSettings(db, &models.ChangeSettingsParams{Otel: &models.ChangeOtelParams{CollectorEnabled: new(false)}})
       require.NoError(t, err)
       assert.False(t, <-applied)
-      sv.AssertCalled(t, "StopSupervisedService", "otel-collector")
+      sv.AssertCalled(t, "UpdateConfiguration", mock.MatchedBy(func(s *models.Settings) bool { return !s.IsOtelCollectorEnabled() }))
   }
   ```
+  Add `TestRunStartsCollectorAfterIniRemoved`: the same setup, disable, then enable again; the last `UpdateConfiguration` call carries settings with `IsOtelCollectorEnabled()` true. Do the same for `IngestPaused` true then false.
 - [ ] **Step 2: Run them.** `cd managed && go test ./services/otel/`. Expected: FAIL.
 - [ ] **Step 3: Implement** the service and the wiring. Generate the `supervisordService` mock with mockery (`.mockery.yaml`).
 - [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS.

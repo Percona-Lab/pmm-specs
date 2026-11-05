@@ -548,7 +548,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   - `managed/services/agents/registry.go`: in `authenticate` (~:353-405), call `ensureServerOtelCollector` for the server's pmm-agent (`models.PMMServerAgentID`, or the HA UUID) when OTEL is enabled. Copy `addNomadAgentToPMMAgent` (:526-545).
 
 **Interfaces:**
-- Consumes `models.UpsertLogSource` (Task 3) and `SendToLocalReceiver` (Task 4).
+- Consumes `models.UpsertLogSource` (Task 3b) and `SendToLocalReceiver` (Task 4).
 - Produces:
   - `type ServerSource struct { File, Preset, App, ServiceID string; When func(ServerEnv) bool }`
   - `type ServerEnv struct { BuiltinPostgres, BuiltinClickHouse, InternalVictoriaMetrics, NomadEnabled bool }`. It is read from `PMM_DISABLE_BUILTIN_POSTGRES` (`managed/cmd/pmm-managed-init/main.go:74`), `PMM_DISABLE_BUILTIN_CLICKHOUSE`, `VMParams.ExternalVM()` and `settings.IsNomadEnabled()`.

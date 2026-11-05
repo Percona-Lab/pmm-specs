@@ -326,12 +326,13 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
   - a peak-ui `Table` with the pattern, the count, the change against the previous window, a "New" `Chip`, and the max-severity `Chip`;
   - a row click switches to Lines filtered by that pattern (URL `pattern`);
   - a row action "Hide" adds the pattern to `exclude_pattern_hashes` (URL `xpattern`, repeatable).
+  - `pattern_hash` and `exclude_pattern_hashes` are `uint64`. grpc-gateway sends them as JSON strings, and most `cityHash64` values exceed 2⁵³, so the UI keeps them as strings everywhere (types, URL, query keys) and never parses them as numbers.
 
 - [ ] **Step 1: Write the failing tests.**
   - `TestPatternsQueryGroupsByStoredHash`: the SQL groups by `PatternHash`, and `logpatterns.Expr` appears only around the sample column.
   - `TestPatternsIsNewNeedsPreviousRows`: no rows in the previous window gives `is_new = false`; rows there but none of this pattern gives `true`.
   - `TestSearchExcludesPatternHashes`: `exclude_pattern_hashes = [1, 2]` binds `PatternHash NOT IN ?` with both values.
-  - Vitest: `row click filters lines by pattern`, `hide adds xpattern to URL`.
+  - Vitest: `row click filters lines by pattern`, `hide adds xpattern to URL`, and `keeps pattern hashes as strings`: a hash of `"18446744073709551557"` survives the round trip through the table, the URL and the next request unchanged.
 - [ ] **Step 2: Run them.** `make gen && cd managed && go test ./services/logs/ -run 'Pattern'` and `cd ui && pnpm --filter pmm test -- logs`. Expected: FAIL.
 - [ ] **Step 3: Implement** the RPC, the filters and the Patterns view.
 - [ ] **Step 4: Run them again.** Same commands, then `make prepare-pr` and `make lint format-check` in `ui`. Expected: PASS. Then on a Feature Build, check that the server's own logs group into patterns and that "Hide" removes their lines from Lines.

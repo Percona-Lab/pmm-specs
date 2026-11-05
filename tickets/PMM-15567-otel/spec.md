@@ -1,7 +1,7 @@
 # OpenTelemetry in PMM: analysis and design (PMM-15567)
 
 - **Date:** 2026-10-10
-- **Updated:** 2026-11-05 (D25–D28, ADR-23, ADR-24)
+- **Updated:** 2026-11-05 (D25–D28, ADR-23 to ADR-25)
 - **Epic:** [PMM-15567](https://perconadev.atlassian.net/browse/PMM-15567), with 21 child tickets when it was read, plus the tickets filed from this analysis (both listed in [§2](#2-sources)).
 - **Prototype:** [percona/pmm#5118](https://github.com/percona/pmm/pull/5118), branch `tibi-holmes`. It is a reference only.
 - **Code base:** percona/pmm `main` at `3c6cba77c` (percona/grafana `4a94c794`, percona-helm-charts `9dffe16`), rebased on 2026-11-05 from `285cefaf8`. Line numbers below refer to those commits; re-check them before you edit, because `main` moves.
@@ -367,7 +367,7 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 | D22 | Histogram drawing in the explorer | `@mui/x-charts` (MIT, built for MUI v7), themed with peak-ui's chart palette. Plan 06's trace view reuses it. | Plan 08 |
 | D23 | AI-drafted parsers for unknown formats | A follow-up after logs ship, filed as PMM-15725. It must be opt-in, run on redacted samples, use a model the admin configures, validate its output with the same checks as custom presets, and never apply anything without an admin's approval. | Follow-up |
 | D24 | Grafana Logs dashboard alongside the native explorer | Build both. Decide which one to keep after Technical Preview feedback; until then the explorer is the one service dashboards link to. Superseded by D26. | Plans 03, 08 |
-| D25 | Release target and the default | The Technical Preview targets 3.12.0 (due 14 January 2027) with Phase 0 and plans 01, 02, 03 and 08. OTEL stays on by default (ADR-12), with a go/no-go: if PMM-15592 hasn't passed by 3.12.0 code freeze, 3.12.0 ships with `OtelCollectorEnabledDefault = false`. | Roadmap |
+| D25 | Release target and the default | The Technical Preview targets 3.12.0 (due 14 January 2027) with Phase 0 and plans 01, 02, 03 and 08. OTEL stays on by default (ADR-12), with a go/no-go: if PMM-15592 hasn't passed by 3.12.0 code freeze, 3.12.0 ships with OTEL off by default. Recorded as ADR-25, which amends ADR-12 for 3.12.0. | Roadmap |
 | D26 | Read path for logs | The native explorer is the only log UI: no Grafana OTEL datasource, no fork middleware, no Logs dashboard. Recorded as ADR-23, which supersedes ADR-07 once accepted. Supersedes D24 and amends D20. | Plans 03, 08 |
 | D27 | Log patterns in the explorer | In 3.12.0. `otel.logs` stores `PatternHash`, a hash of the line with its variable parts masked. The masking rules live in `utils/logpatterns`, shared by the qan-api2 migration test and pmm-managed. A rules change ships as a new migration with `MODIFY COLUMN` only; old rows keep their old hash until retention drops them (ADR-04). | Plans 01, 08 |
 | D28 | Open a log line's query in QAN (`findQuery`) | A follow-up, not planned. Two options are recorded: a new qan-api2 RPC that matches a statement or a MongoDB query ID against `pmm.metrics` (preferred, because qan-api2 owns that table and its LBAC), or pmm-managed reading `pmm.metrics` directly, as the prototype does. | Follow-up |
@@ -382,7 +382,7 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 
 **Review of 2026-11-05:**
 - D25–D28 were decided, and D24 is superseded by D26.
-- ADR-23 (logs are read through the explorer only) and ADR-24 (one OTel API domain, D12) were added as Proposed.
+- ADR-23 (logs are read through the explorer only), ADR-24 (one OTel API domain, D12) and ADR-25 (the default-off fallback for 3.12.0, D25) were added as Proposed.
 
 ---
 

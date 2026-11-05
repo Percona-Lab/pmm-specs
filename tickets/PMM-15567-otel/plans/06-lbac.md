@@ -23,7 +23,7 @@
   - a role with an empty filter means full access;
   - a missing label equals `""`;
   - regexes are anchored.
-- **Fail closed.** A request without `X-Proxy-Filter` is full access: `auth_server` sends no header when LBAC is off or the user has no filters (the `len(filters) == 0` return after `getLBACFilters` in `managed/services/grafana/auth_server.go`), and refuses the request itself when a selector doesn't parse. The guard against serving a restricted user unfiltered is that `/v1/logs` and `/v1/traces` are in `lbacPrefixes`. Service-account tokens get an explicit decision.
+- **Fail closed.** A request without `X-Proxy-Filter` is full access: `auth_server` sends no header when LBAC is off or the user has no filters (the `len(filters) == 0` return after `getLBACFilters` in `managed/services/grafana/auth_server.go`), and passes selectors through unparsed, so `LogsService` denies a selector that doesn't parse. The guard against serving a restricted user unfiltered is that `/v1/logs` and `/v1/traces` are in `lbacPrefixes`. Service-account and anonymous credentials skip LBAC today (the `userID <= 0` return in `maybeAddLBACFilters`), so `/v1/logs` opens to non-Admins only after plan 07, Task 3 gives them an explicit rule.
 - No raw SQL from clients. Every filter is a bound parameter.
 - Admins are not exempt from LBAC, consistent with today.
 
@@ -81,12 +81,13 @@ Plan 08 builds `LogsService` (`Search`, `Context`, `Histogram`, `Facets`) for Ad
   - `pmm.conf`: a `/v1/logs` location that sets `X-Proxy-Filter`, like `/v1/qan` (:339-344)
 - **Produces:**
   - `func AllowedIDs(q *reform.Querier, s lbac.Selectors) (pairs []ServiceNode, nodes []string, err error)`, cached on the inventory TTL;
-  - the predicate `(PmmServiceId, PmmNodeId) IN {pairs} OR (PmmServiceId = '' AND PmmNodeId IN {nodes})`, added by `BuildSearchQuery` and by the histogram, facets and context queries, all through bound parameters.
+  - the predicate `(PmmServiceId, PmmNodeId) IN {pairs} OR (PmmServiceId = '' AND PmmNodeId IN {nodes})`, added by `BuildSearchQuery` and by the histogram, facets, context and patterns queries, all through bound parameters. Patterns returns a sample line per group, so it must be filtered too.
 - **Tests:**
   - `TestLBACPrefixesCoverOtelReadPaths` (auth_server unit test: `/v1/logs:search` and `/v1/traces:search` get the header), `TestSearchDeniesBadSelector`;
   - api-test `TestRestrictedUserGetsFilterHeader`: a user with a filtered role gets only the allowed services from `/v1/logs:search`, and a user with the full-access role gets everything;
   - `TestSearchHidesSpoofedServiceRow`, `TestSearchNodeLogsNeedNodeLabel`;
   - `TestFacetsRespectLBAC`: a restricted user doesn't see facet values for hidden services;
+  - `TestPatternsRespectLBAC`: a restricted user sees no pattern, and no sample line, from a hidden service;
   - an api-test with two roles and two users.
 
 ### Task 4: `TracesService.Search` and `GetTrace`
