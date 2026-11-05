@@ -117,8 +117,8 @@ Plan 05 adds `OtelTracesReceiver traces_receiver = 5` to `OtelCollectorParams`. 
 Plan 08, Task 7 adds `uint64 pattern_hash = 9` and `repeated uint64 exclude_pattern_hashes = 10` to `Filters`.
 
 **Settings**
-- **Proto:** `server.v1.OtelSettings { bool collector_enabled = 1; uint32 logs_retention_days = 2; uint32 traces_retention_days = 3; uint32 max_disk_gb = 4; uint32 disk_watermark_percent = 5; }` as `Settings.otel = 22`.
-- **Partial updates:** `server.v1.ChangeOtelSettings` holds the same fields, each `optional`, as `ChangeSettingsRequest.otel = 16`.
+- **Proto:** `server.v1.OtelSettings { bool collector_enabled = 1; uint32 logs_retention_days = 2; uint32 traces_retention_days = 3; uint32 max_disk_gb = 4; uint32 disk_watermark_percent = 5; }` as `Settings.otel = 23` (22 is `om_enabled`).
+- **Partial updates:** `server.v1.ChangeOtelSettings` holds the same fields, each `optional`, as `ChangeSettingsRequest.otel = 17` (15 is reserved, 16 is `enable_om`).
 - **Model:** `models.OtelSettings` (JSON key `otel`), with `(*Settings).IsOtelCollectorEnabled() bool`.
 
 | Default | Value |
@@ -178,7 +178,7 @@ Every task follows `AGENTS.md`; the rules agents most often miss are repeated he
 - **Generated code:** run `make gen` after any `.proto`, reform model or mocked interface change; never hand-edit generated files. Run `make prepare-pr` before a Go task is called done.
 - **Compatibility:**
   - proto changes are additive only (`buf breaking`);
-  - managed migrations are forward-only and numbered after `main`'s latest at merge time (120 today);
+  - managed migrations are forward-only and numbered after `main`'s latest at merge time (125 today);
   - qan-api2 `otel` migrations are a separate chain starting at `01`;
   - older pmm-agents get a clear `FailedPrecondition` and never receive the new type.
 - **Security** (from the epic and PMM-15591):

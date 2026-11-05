@@ -34,7 +34,7 @@ The roadmap's **Shared contract** and **Global constraints** apply to every task
 
 These inputs and conditions are implied by the spec but no task naturally tests them. Each line names the task that adds the test.
 
-1. **Upgrade from a release whose stored settings have no `otel` key.** Expected: OTEL is on, with the defaults, and needs no manual step. Test in Task 4 (`TestOtelSettingsDefaultsOnUpgrade`).
+1. **Upgrade from a release whose stored settings have no `otel` key.** Expected: OTEL is on, with the defaults, and needs no manual step. Test in Task 4 (`TestSettings/otel_defaults_on_upgrade`).
 2. **A ClickHouse password or address containing `$`, `'`, `"` or `#`.** Expected: the collector receives it verbatim, with no confmap expansion and no YAML breakage. Test in Task 5 (`TestServerCollectorConfigEscapesSecrets`).
 3. **External ClickHouse (`PMM_DISABLE_BUILTIN_CLICKHOUSE`) without the `otel_*` users.** Expected: `GET /v1/otel/status` says `otel_writer` can't authenticate, instead of the collector failing silently. Test in Task 9 (`TestGetStatusReportsWriterAuthFailure`).
 4. **Clients pushing while the collector is disabled or paused.** Expected: `/otlp/` answers 502, the clients keep the data queued, and nothing reaches ClickHouse. Test in Task 7 (api-test `TestOTLPWhenCollectorDisabled`).
@@ -91,7 +91,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `qan-api2/otel_users_test.go`
 - Modify:
   - `build/ansible/roles/clickhouse/tasks/main.yml` (copy the drop-in to `/etc/clickhouse-server/users.d/otel.xml`, owner `pmm`, mode 0640)
-  - `qan-api2/Makefile` (`start-clickhouse`: mount `../build/ansible/roles/clickhouse/files/users.d` read-only at `/etc/clickhouse-server/users.d`)
+  - `qan-api2/Makefile` (`start-clickhouse`: mount the one file `../build/ansible/roles/clickhouse/files/users.d/otel.xml` at `/etc/clickhouse-server/users.d/otel.xml:ro`. Not the whole directory: the image writes `users.d/default-user.xml` when `CLICKHOUSE_USER` is set [I, upstream image].)
 
 **Interfaces:**
 - Produces the users `otel_writer` and `otel_reader`, both with `password_sha256_hex` of their own name and networks `::1`, `127.0.0.1`.
@@ -191,7 +191,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 
 **Files:**
 - Modify:
-  - `api/server/v1/server.proto` (`OtelSettings` as `Settings.otel = 22`; `ChangeOtelSettings` as `ChangeSettingsRequest.otel = 16`)
+  - `api/server/v1/server.proto` (`OtelSettings` as `Settings.otel = 23`; `ChangeOtelSettings` as `ChangeSettingsRequest.otel = 17`. Field 22 is `om_enabled` and 16 is `enable_om` (PMM-15299); 15 is reserved)
   - `managed/models/settings.go` (defaults consts ~:26-37, struct ~:63-126, `IsOtelCollectorEnabled`, `fillDefaults` ~:219-251)
   - `managed/models/settings_helpers.go` (`ChangeSettingsParams` ~:54-108, `UpdateSettings`, `ValidateSettings`)
   - `managed/utils/envvars/parser.go` (a `case "PMM_ENABLE_OTEL":` like `PMM_ENABLE_ALERTING` at :201-207)
@@ -215,20 +215,17 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `disk_watermark_percent` 50–95;
   - an out-of-range value returns `codes.InvalidArgument`, naming the field.
 
-- [ ] **Step 1: Write the failing tests.**
+- [ ] **Step 1: Write the failing tests.** In `managed/models/settings_helpers_test.go`, inside the existing `TestSettings` (it uses `testdb.Open(t, models.SkipFixtures, nil)` at :31), add the subtests below. Defaults are applied by the unexported `fillDefaults`, which `GetSettings` calls, so the upgrade case goes through the database:
   ```go
-  func TestOtelSettingsDefaultsOnUpgrade(t *testing.T) {
-      s := &models.Settings{}
-      require.NoError(t, json.Unmarshal([]byte(`{"data_retention":2592000000000000}`), s))
-      s.FillDefaults()
+  t.Run("otel defaults on upgrade", func(t *testing.T) {
+      _, err := sqlDB.Exec(`UPDATE settings SET settings = '{"data_retention":2592000000000000}'`)
+      require.NoError(t, err)
+      s, err := models.GetSettings(sqlDB)
+      require.NoError(t, err)
       assert.True(t, s.IsOtelCollectorEnabled())
       assert.Equal(t, models.OtelSettings{CollectorEnabled: s.Otel.CollectorEnabled, LogsRetentionDays: 7,
           TracesRetentionDays: 7, MaxDiskGB: 10, DiskWatermarkPercent: 80}, s.Otel)
-  }
-
-  ```
-  In `managed/models/settings_helpers_test.go`, inside the existing `TestSettings` (it uses `testdb.Open(t, models.SkipFixtures, nil)` at :31), add:
-  ```go
+  })
   t.Run("otel retention change keeps collector_enabled", func(t *testing.T) {
       _, err := models.UpdateSettings(sqlDB, &models.ChangeSettingsParams{Otel: &models.ChangeOtelParams{CollectorEnabled: new(false)}})
       require.NoError(t, err)
@@ -247,7 +244,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   Also add:
   - `TestParseEnvVars` cases: `PMM_ENABLE_OTEL=false` gives `envSettings.Otel.CollectorEnabled=false`; an invalid value gives an error naming the variable.
   - In `server_test.go`, `TestValidateChangeSettingsRequest`: with env `PMM_ENABLE_OTEL=false`, a request with `otel.collector_enabled=true` gets `FailedPrecondition`.
-- [ ] **Step 2: Run them.** `cd managed && go test ./models/ ./utils/envvars/ ./services/server/ -run 'Otel|ParseEnvVars|ValidateChangeSettings'`. Expected: FAIL to compile, `undefined: models.OtelSettings`.
+- [ ] **Step 2: Run them.** `cd managed && go test ./models/ ./utils/envvars/ ./services/server/ -run 'Otel|TestSettings|ParseEnvVars|ValidateChangeSettings'`. Expected: FAIL to compile, `undefined: models.OtelSettings`.
 - [ ] **Step 3: Implement.** Add the proto messages and run `make gen`. Add the model, the defaults, validation, the env case and the env lock. Then add the response conversion: `IngestPaused` is not exported in `Settings`.
 - [ ] **Step 4: Run them again.** Same command. Expected: PASS. Then write the api-test (`api-tests/server/settings/otel_settings_test.go`):
   - `GET /v1/server/settings` has `otel.collector_enabled=true` and `logs_retention_days=7`;
@@ -306,7 +303,11 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   }
 
   func TestServerCollectorConfigHasNoGRPC(t *testing.T) {
-      // unmarshal, assert receivers.otlp.protocols has only "http"
+      b, err := ServerCollectorConfig(testParams)
+      require.NoError(t, err)
+      var cfg struct{ Receivers struct{ OTLP struct{ Protocols map[string]any } `yaml:"otlp"` } }
+      require.NoError(t, yaml.Unmarshal(b, &cfg))
+      assert.Equal(t, []string{"http"}, slices.Collect(maps.Keys(cfg.Receivers.OTLP.Protocols)))
   }
   ```
   Use the golden-file helper this repo already uses, if there is one (`grep -rn golden managed --include=*_test.go`). Otherwise compare against `os.ReadFile`, with an `-update` flag.
@@ -319,58 +320,85 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   git commit -s -m "PMM-15571 Generate the server collector config"
   ```
 
-### Task 6: `otel.Service`: supervisord program, runtime toggle, HA reconcile
+### Task 6: supervisord program `otel-collector` and its stop path
+
+**Files:**
+- Create: `managed/testdata/supervisord.d/otel-collector.ini`
+- Modify:
+  - `managed/services/supervisord/supervisord.go`:
+    - a `{{define "otel-collector"}}` block in `templates`, with command `/usr/local/percona/pmm/tools/otelcol --config=/etc/otel-collector/config.yaml`, `autostart = {{ .OtelCollectorEnabled }}`, `stdout_logfile = /srv/logs/otel-collector.log`, `stopsignal = INT`, `stopwaitsecs = 30`;
+    - in `UpdateConfiguration` (~:96-147), when the collector is disabled or paused, remove `otel-collector.ini` **and** run `supervisorctl update otel-collector` (F17);
+    - the `OtelCollectorEnabled` param in `marshalConfig` (~:417-486): `IsOtelCollectorEnabled() && !Otel.IngestPaused`.
+  - `build/ansible/roles/pmm-images/tasks/main.yml`: a `file` task for `/etc/otel-collector`, `state: directory`, owner `pmm`, group `root`, mode `0700`, next to the `/etc/victoriametrics-promscrape.yml` task. The image runs as `USER 1000` (`build/docker/server/Dockerfile.el9:46`), so the directory can't be created at runtime, and `entrypoint.sh` creates `/srv` directories on first boot only.
+- Test: `managed/services/supervisord/supervisord_test.go`
+
+**Interfaces:**
+- Consumes the `OtelSettings` fields `CollectorEnabled` and `IngestPaused` (Task 4).
+- Produces the supervisord program `otel-collector`, which Task 6b starts and stops.
+
+- [ ] **Step 1: Write the failing tests.**
+  - A `TestConfig` case with the golden `managed/testdata/supervisord.d/otel-collector.ini`.
+  - `TestUpdateConfigurationStopsDisabledOtelCollector`: with the collector disabled, `UpdateConfiguration` removes `otel-collector.ini` and runs `supervisorctl update otel-collector`. Assert the command through the same seam the other `supervisorctl` tests use; if there is none, add a `supervisorctl` function field to `Service`, set by `New`, that the test replaces.
+- [ ] **Step 2: Run them.** `cd managed && go test ./services/supervisord/`. Expected: FAIL.
+- [ ] **Step 3: Implement** the template, the param, the F17 fix and the Ansible task.
+- [ ] **Step 4: Run them again.** Same command. Expected: PASS.
+- [ ] **Step 5: Commit.**
+  ```bash
+  git add managed/services/supervisord managed/testdata build/ansible/roles/pmm-images
+  git commit -s -m "PMM-15571 Add the otel-collector supervisord program"
+  ```
+
+### Task 6b: `otel.Service`: config file, runtime toggle, HA reconcile
 
 **Files:**
 - Create:
   - `managed/services/otel/service.go`
   - `managed/services/otel/deps.go`
   - `managed/services/otel/service_test.go`
-  - `managed/testdata/supervisord.d/otel-collector.ini`
 - Modify:
-  - `managed/services/supervisord/supervisord.go`:
-    - a `{{define "otel-collector"}}` block in `templates`, with command `/usr/local/percona/pmm/tools/otelcol --config=/etc/otel-collector/config.yaml`, `autostart = {{ .OtelCollectorEnabled }}`, `stdout_logfile = /srv/logs/otel-collector.log`, `stopsignal = INT`, `stopwaitsecs = 30`;
-    - in `UpdateConfiguration` (~:96-147), when the collector is disabled or paused, remove `otel-collector.ini` **and** run `supervisorctl update otel-collector` (F17);
-    - the `OtelCollectorEnabled` param in `marshalConfig` (~:417-486).
   - `managed/services/server/deps.go` and `server.go` `UpdateConfigurations` (~:791-819): call `otel.UpdateConfiguration` after nomad and before supervisord.
   - `managed/services/server/logs.go` (~:185-200): add `otel-collector.ini` and the collector config, with the password replaced by `[REDACTED]`.
   - `managed/cmd/pmm-managed/main.go`: construct `otel.Service`, pass it to `server.Params`, and run `Run` for every replica (not as a leader service).
-  - `build/docker/server/entrypoint.sh` (~:80-84): create `/etc/otel-collector`, owner `pmm`, mode 0700.
 
 **Interfaces:**
 - Consumes:
   - `ServerCollectorConfig` (Task 5);
   - `models.GetSettings`, and the `OtelSettings` fields `CollectorEnabled` and `IngestPaused` (Task 4);
-  - the `supervisord` interface `RestartSupervisedService(ctx context.Context, name string) error`.
+  - the program `otel-collector` (Task 6);
+  - from `supervisord.Service`, all of which exist: `RestartSupervisedService(ctx context.Context, name string) error`, `StartSupervisedService(name string) error` and `StopSupervisedService(name string) error`, in the `supervisordService` interface in `deps.go`.
 - Produces:
   - `func New(params Params) *Service`, with `Params{DB *reform.DB; Supervisord supervisordService; ConfigPath string; ClickHouse ServerConfigParams}`;
-  - `func (s *Service) UpdateConfiguration(ctx context.Context, settings *models.Settings) error`. It writes the config atomically with mode 0600, only when the content changed, and restarts the program if it changed while enabled;
-  - `func (s *Service) Run(ctx context.Context)`, a ticker that calls `UpdateConfiguration` when the OTEL settings differ from the last applied ones.
+  - `func (s *Service) UpdateConfiguration(ctx context.Context, settings *models.Settings) error`. It creates the parent directory with `os.MkdirAll`, writes the config atomically with mode 0600 only when the content changed, and restarts the program if it changed while it should run;
+  - `func (s *Service) Run(ctx context.Context)`, a ticker that calls `UpdateConfiguration` when the OTEL settings differ from the last applied ones, and calls `StopSupervisedService("otel-collector")` or `StartSupervisedService("otel-collector")` when the effective running state changes. This is how a replica that didn't make the change stops or starts its collector.
   - Two unexported fields exist so tests can drive the loop: `reconcileInterval time.Duration`, set to 30 s by `New`, and `onApplied func(enabled bool)`. The hook is nil in production and is called after each apply with the effective running state.
 
   The collector runs only when `IsOtelCollectorEnabled() && !Otel.IngestPaused`.
 - Credentials: `PMM_CLICKHOUSE_OTEL_WRITER_USER/PASSWORD` with defaults `otel_writer`/`otel_writer`, read once at startup through `envvars.GetEnv` and added to the parser allow-list (`parser.go:118-125`).
 
-- [ ] **Step 1: Write the failing tests.**
+- [ ] **Step 1: Write the failing tests.** Build settings explicitly, because `Settings.fillDefaults` is unexported:
   ```go
+  func enabledSettings() *models.Settings {
+      return &models.Settings{Otel: models.OtelSettings{CollectorEnabled: new(true), LogsRetentionDays: 7,
+          TracesRetentionDays: 7, MaxDiskGB: 10, DiskWatermarkPercent: 80}}
+  }
+
   func TestUpdateConfigurationWritesOnceWith0600(t *testing.T) {
-      dir := t.TempDir()
+      dir := filepath.Join(t.TempDir(), "etc", "otel-collector")
       sv := &mockSupervisordService{}
       s := New(Params{Supervisord: sv, ConfigPath: filepath.Join(dir, "config.yaml"), ClickHouse: testCH})
-      settings := &models.Settings{}
-      settings.FillDefaults()
-      require.NoError(t, s.UpdateConfiguration(t.Context(), settings))
+      require.NoError(t, s.UpdateConfiguration(t.Context(), enabledSettings()))
       fi, err := os.Stat(filepath.Join(dir, "config.yaml"))
       require.NoError(t, err)
       assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm())
-      require.NoError(t, s.UpdateConfiguration(t.Context(), settings))
+      require.NoError(t, s.UpdateConfiguration(t.Context(), enabledSettings()))
       sv.AssertNumberOfCalls(t, "RestartSupervisedService", 0)
   }
 
-  func TestRunAppliesSettingsChangedByAnotherReplica(t *testing.T) {
+  func TestRunStopsCollectorDisabledByAnotherReplica(t *testing.T) {
       sqlDB := testdb.Open(t, models.SkipFixtures, nil)
       db := reform.NewDB(sqlDB, postgresql.Dialect, nil)
       sv := &mockSupervisordService{}
+      sv.On("StopSupervisedService", "otel-collector").Return(nil)
       applied := make(chan bool, 4)
       s := New(Params{DB: db, Supervisord: sv, ConfigPath: filepath.Join(t.TempDir(), "config.yaml"), ClickHouse: testCH})
       s.reconcileInterval = 10 * time.Millisecond
@@ -384,16 +412,16 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       _, err := models.UpdateSettings(db, &models.ChangeSettingsParams{Otel: &models.ChangeOtelParams{CollectorEnabled: new(false)}})
       require.NoError(t, err)
       assert.False(t, <-applied)
+      sv.AssertCalled(t, "StopSupervisedService", "otel-collector")
   }
   ```
-  Add `managed/testdata/supervisord.d/otel-collector.ini` and a case in `supervisord_test.go` `TestConfig`. Add a test that a disabled collector removes the `.ini` and calls `update otel-collector`: either inject the command runner, or assert through the existing reload seam in the test.
-- [ ] **Step 2: Run them.** `cd managed && go test ./services/otel/ ./services/supervisord/`. Expected: FAIL.
-- [ ] **Step 3: Implement** the service, the template, the F17 fix, the wiring, `logs.go` and the entrypoint directory. Generate the `supervisordService` mock with mockery (`.mockery.yaml`).
+- [ ] **Step 2: Run them.** `cd managed && go test ./services/otel/`. Expected: FAIL.
+- [ ] **Step 3: Implement** the service and the wiring. Generate the `supervisordService` mock with mockery (`.mockery.yaml`).
 - [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS.
 - [ ] **Step 5: Commit.**
   ```bash
-  git add managed build/docker/server/entrypoint.sh
-  git commit -s -m "PMM-15571 Run otel-collector under supervisord"
+  git add managed
+  git commit -s -m "PMM-15571 Reconcile otel-collector on every replica"
   ```
 
 ### Task 7: `/otlp/` behind `auth_request` with the Admin role
@@ -403,7 +431,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `build/ansible/roles/nginx/files/conf.d/pmm.conf`:
     - an upstream `otel-collector { server 127.0.0.1:4318; keepalive 32; }` next to the others (:1-48);
     - `location /otlp/ { proxy_pass http://otel-collector/; proxy_http_version 1.1; proxy_set_header Connection ""; client_body_buffer_size 10m; }`, modelled on `/victoriametrics/api/v1/write` (:244-250). It inherits the server-level `auth_request`.
-  - `managed/services/grafana/auth_server.go`: `"/otlp/": admin` in `rules` (:54-133).
+  - `managed/services/grafana/auth_server.go`: `"/otlp": admin` in `rules` (:54-133). The key has no trailing slash: `resolveRule` walks prefixes with `nextPrefix`, and `/otlp` would never reach `"/otlp/"`.
 - Test:
   - `managed/services/grafana/auth_server_test.go` (`TestResolveRule` ~:108)
   - `api-tests/server/otlp_test.go`
@@ -476,7 +504,8 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 **Interfaces:**
 - Produces:
   - `rpc GetStatus(GetStatusRequest) returns (GetStatusResponse)` at `GET /v1/otel/status`. The response: `bool collector_enabled = 1; bool collector_running = 2; bool ingest_paused = 3; string ingest_paused_reason = 4; uint64 disk_bytes = 5; float disk_used_percent = 6; string last_error = 7;`.
-  - `rpc Purge(PurgeRequest) returns (PurgeResponse)` at `POST /v1/otel:purge`. It truncates every `MergeTree`-family table in `system.tables WHERE database = 'otel'`.
+  - `rpc Purge(PurgeRequest) returns (PurgeResponse)` at `POST /v1/otel:purge`. It truncates exactly the tables in `dataTables`.
+  - `var dataTables = []string{"logs"}` in `managed/services/otel/tables.go`. Plan 05 appends its trace tables. Purge and the cleaner use only this list, so `otel_schema_migrations` is never touched.
   - `type ClickHouse interface { QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row; ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error); QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) }` in `deps.go`. The existing ClickHouse client (`main.go:1098`) satisfies it.
   - `last_error` says "otel_writer cannot authenticate to ClickHouse" when a probe as `otel_writer` (`SELECT 1`, 5 s timeout) fails.
   - Every ClickHouse call uses a context with a 10 s timeout.
@@ -484,7 +513,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 - [ ] **Step 1: Write the failing tests** (`grpc_test.go`, with `go-sqlmock` standing in for ClickHouse):
   - `TestGetStatusSumsOtelParts`: mock `SELECT sum(bytes_on_disk) FROM system.parts WHERE database = 'otel' AND active` → 1024, and the `system.disks` free and total query. Assert `DiskBytes == 1024` and a correct `DiskUsedPercent`.
   - `TestGetStatusReportsWriterAuthFailure`: the injected writer probe returns an auth error, and `LastError` contains `otel_writer`.
-  - `TestPurgeTruncatesOnlyOtelTables`: mock the `system.tables` query → `logs`. Expect exactly `TRUNCATE TABLE otel.logs`, and no statement touching `pmm.`.
+  - `TestPurgeTruncatesOnlyOtelTables`: mock the `system.tables` query → `logs`. Expect exactly `TRUNCATE TABLE otel.logs`, and no statement touching `pmm.` or `otel_schema_migrations`.
 - [ ] **Step 2: Run them.** `cd managed && go test ./services/otel/ -run 'GetStatus|Purge'`. Expected: FAIL.
 - [ ] **Step 3: Implement.** Write the proto, run `make gen`, then write the handlers, the registration and the auth rule.
 - [ ] **Step 4: Run them again.** Same command: PASS. Then the api-test: `GET /v1/otel/status` as Admin gets 200 with `collector_enabled`; as a Viewer it gets 403. Purge as Admin leaves `count()`, read back through status `disk_bytes` after the parts merge, at 0. Run it against a Feature Build.
@@ -511,8 +540,8 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `type CleanupPlan struct { Drop []Partition; Pause bool; Resume bool; Reason string }`
   - `func PlanCleanup(in CleanupInput) CleanupPlan`, a pure function.
   - `func NewCleaner(db *reform.DB, ch ClickHouse, interval time.Duration) *Cleaner` and `func (c *Cleaner) Run(ctx context.Context) error`, with interval 10 minutes and a first pass at start.
-  - The cleaner reads partitions with `SELECT table, partition_id, partition, sum(bytes_on_disk) FROM system.parts WHERE database = 'otel' AND active GROUP BY 1,2,3`, and the disk with `SELECT free_space, total_space FROM system.disks WHERE name = 'default'`. It runs `ALTER TABLE otel.<table> DROP PARTITION ID '<id>'` for each planned drop.
-  - It writes `IngestPaused` and `IngestPausedReason` into the settings row. Task 6's reconcile loop then stops or starts the collector on every replica.
+  - The cleaner reads partitions with `SELECT table, partition_id, partition, sum(bytes_on_disk) FROM system.parts WHERE database = 'otel' AND table IN dataTables AND active GROUP BY 1,2,3` (the list bound as a parameter), and the disk with `SELECT free_space, total_space FROM system.disks WHERE name = 'default'`. It runs `ALTER TABLE otel.<table> DROP PARTITION ID '<id>'` for each planned drop.
+  - It writes the pause flag with `models.SetOtelIngestPaused(tx *reform.TX, paused bool, reason string) error` (new, in `managed/models/settings_helpers.go`). That helper runs `SELECT settings FROM settings FOR UPDATE`, changes only `otel.ingest_paused` and `otel.ingest_paused_reason`, and writes back in the same transaction, so it can't overwrite a concurrent settings change (see PMM-15600). Task 6b's reconcile loop then stops or starts the collector on every replica.
   - It exports `pmm_managed_otel_ingest_paused` (gauge) and `pmm_managed_otel_dropped_partitions_total{reason}` (counter).
 - The algorithm, which the tests determine:
   1. Drop each partition whose `Day` is older than `Now` minus the retention for its table. `logs` uses the logs retention; tables starting with `otel_traces` use the traces retention.
@@ -564,7 +593,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       }
   }
   ```
-  Add `TestCleanerNeverTouchesQAN` (`cleaner_test.go`, sqlmock): after one pass, every executed statement starts with `ALTER TABLE otel.`.
+  Add `TestSetOtelIngestPausedKeepsOtherSettings` (`testdb`, in `settings_helpers_test.go`): change retention, set the pause flag, and assert that the retention change is kept. Add `TestCleanerNeverTouchesQAN` (`cleaner_test.go`, sqlmock): after one pass, every executed statement starts with `ALTER TABLE otel.logs`, and none mentions `otel_schema_migrations`.
 - [ ] **Step 2: Run them.** `cd managed && go test ./services/otel/ -run 'PlanCleanup|Cleaner'`. Expected: FAIL.
 - [ ] **Step 3: Implement** `PlanCleanup` and the `Cleaner` (queries, drops, the settings write, metrics), and register the leader service.
 - [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS.
@@ -576,7 +605,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 
 ### Task 11: pmm-ha chart (percona/percona-helm-charts)
 
-**Files** (in `/srv/runner/2/percona/percona-helm-charts`, on branch `PMM-15594-otel-ha`):
+**Files** (in percona/percona-helm-charts, on branch `PMM-15594-otel-ha`):
 - Modify:
   - `charts/pmm-ha/values.yaml` (`otel.enabled: true` and `clickhouse.otelUsers`)
   - `charts/pmm-ha/templates/clickhouse-cluster.yaml`: a `users.d/otel-users.xml` drop-in, copying the datasource-user drop-in at ~:91-129, with grants `INSERT ON otel.*` and `SELECT ON otel.*`
