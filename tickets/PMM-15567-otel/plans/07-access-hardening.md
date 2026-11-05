@@ -19,7 +19,8 @@
 The roadmap's global constraints apply. In addition:
 - **Fail closed.** A restricted request that can't be filtered is denied, never served unfiltered.
 - **Full-access users see no change:** Admins with the default "Full access" role, and every user when LBAC is disabled.
-- **Each task merges on its own:** one ticket and one PR, in this order: Task 2, Task 1, Task 4, Task 3. That order puts the narrowest behaviour change first.
+- **Each task merges on its own:** one ticket and one PR. Task 2 has merged (PMM-15697); the rest go in this order: Task 1, Task 4, Task 3. That order puts the narrowest behaviour change first.
+- **`<KEY>`** is the Jira key filed per `SECURITY.md` before the task starts; the branch is `<KEY>-<words>`.
 
 ## Review Focus
 
@@ -33,7 +34,7 @@ The roadmap's global constraints apply. In addition:
 
 ### Task 1: ClickHouse datasources honour LBAC
 
-**Files** (in `/srv/runner/3/percona/grafana`, branch `PMM-XXXX-clickhouse-lbac`):
+**Files** (in percona/grafana, branch `<KEY>-clickhouse-lbac`):
 - Create:
   - `pkg/services/pluginsintegration/clientmiddleware/percona_clickhouse_lbac_middleware.go`
   - `pkg/services/pluginsintegration/clientmiddleware/percona_clickhouse_lbac_middleware_test.go`
@@ -55,35 +56,13 @@ The roadmap's global constraints apply. In addition:
   - `POST /graph/api/ds/query` to the `ClickHouse` datasource returns 403;
   - the Metrics panels still render;
   - as Admin with full access, the ClickHouse panels render.
-- [ ] **Step 5: Commit.** `git commit -s -m "PMM-XXXX Apply access roles to ClickHouse datasources"`
+- [ ] **Step 5: Commit.** `git commit -s -m "<KEY> Apply access roles to ClickHouse datasources"`
 
-### Task 2: LBAC on every QAN endpoint
+### Task 2: LBAC on every QAN endpoint (done by PMM-15697, `a98506570`)
 
-**Files:**
-- Modify:
-  - `managed/services/grafana/auth_server.go` (`lbacPrefixes` :146-160): add `"/v1/qan:"` next to `"/v1/qan/"`. Then `/v1/qan:getMetrics`, `:getLabels`, `:getHistogram` and `:explainFingerprint` (`api/qan/v1/service.proto:63-98`) receive the header.
-  - `qan-api2/models/metrics.go`: apply the reporter's LBAC filter to `Get` (:59), `SelectSparklines` (:501), `SelectQueryExamples` (:630), `SelectObjectDetailsLabels` (:744), `SelectHistogram` (:941), `GetSelectedQueryMetadata` (:1203), and the service-scoped lookups `QueryExists` (:1038), `SchemaByQueryID` (:1077) and `ExplainFingerprintByQueryID` (:1122).
-    - Reuse `headersToLbacFilter` (`qan-api2/models/reporter.go:780-874`), and append its SQL the same way the reporter does (:143-149).
-    - For the service-scoped lookups, a service the filter excludes returns `codes.NotFound`, so whether the service exists is not revealed.
-  - `qan-api2/models/reporter.go` (:808-818): when any selector fails to parse or convert, deny with `codes.PermissionDenied` instead of skipping it.
-- Test:
-  - `managed/services/grafana/auth_server_test.go`
-  - `qan-api2/models/metrics_test.go` (integration, test ClickHouse with the fixture data)
-  - `api-tests/qan/lbac_test.go`
+PMM-15697 added `/v1/qan:` to `lbacPrefixes`, filters the reads in `qan-api2/models/metrics.go`, and denies a selector that doesn't parse.
 
-**Interfaces:**
-- Consumes `headersToLbacFilter(ctx context.Context) (string, []any, error)`. If its actual signature differs, keep that signature and adapt the callers.
-
-- [ ] **Step 1: Write the failing tests.**
-  - `TestShallAddLBACFiltersQANColonPaths`: each of the four paths returns true.
-  - `TestMetricsGetAppliesLBAC`: with a context carrying the filter `{environment="dev"}`, `Get` for a `service_id` whose fixture rows are `environment="prod"` returns no rows. With no filter, it returns them.
-  - `TestExplainFingerprintHiddenServiceIsNotFound`.
-  - `TestUnparsableSelectorDenies`.
-  - `TestTwoRolesOneEmptyIsFullAccess`.
-- [ ] **Step 2: Run them.** `cd managed && go test ./services/grafana/ -run LBAC` and `cd qan-api2 && go test ./models/ -run 'LBAC|NotFound|Unparsable'`. Expected: FAIL.
-- [ ] **Step 3: Implement** the prefix, the filtering, and the fail-closed parse.
-- [ ] **Step 4: Run them again.** Same commands, then `make prepare-pr`. Expected: PASS. Then run an api-test with two services in different environments and a restricted user. Every QAN endpoint returns only the allowed service, or 404 for the other one.
-- [ ] **Step 5: Commit.** `git commit -s -m "PMM-XXXX Apply access roles to every QAN endpoint"`
+- [ ] **Step 1: Check the rest.** The three service-scoped lookups (`QueryExists`, `SchemaByQueryID`, `ExplainFingerprintByQueryID`) return `NotFound` for a service the user's filter hides. If they don't, that is the only remaining change; give it its own ticket.
 
 ### Task 3: An explicit LBAC rule for service-account and anonymous credentials
 
@@ -112,7 +91,7 @@ The roadmap's global constraints apply. In addition:
 - [ ] **Step 2: Run them.** `cd managed && go test ./services/grafana/ -run 'ServiceAccount|Anonymous|LBACDisabled'`. Expected: FAIL.
 - [ ] **Step 3: Implement** the rule.
 - [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS. Then run an api-test with a Viewer service-account token against `/prometheus/api/v1/query`: with LBAC on, only series the default role allows come back.
-- [ ] **Step 5: Commit.** `git commit -s -m "PMM-XXXX Apply the default role to non-Admin tokens"`
+- [ ] **Step 5: Commit.** `git commit -s -m "<KEY> Apply the default role to non-Admin tokens"`
 
 ### Task 4: LBAC-relevant labels come only from inventory
 
@@ -137,4 +116,4 @@ The roadmap's global constraints apply. In addition:
 - [ ] **Step 2: Run it.** `cd managed && go test ./services/qan/ -run 'MergeCommentLabels|Collect'`. Expected: FAIL.
 - [ ] **Step 3: Implement** `mergeCommentLabels` and use it.
 - [ ] **Step 4: Run it again.** Same command, then `make prepare-pr`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -s -m "PMM-XXXX Keep inventory labels over query comment labels"`
+- [ ] **Step 5: Commit.** `git commit -s -m "<KEY> Keep inventory labels over query comment labels"`

@@ -43,7 +43,7 @@ The roadmap's constraints apply. In addition, from PMM-15579:
   - `qan-api2/migrations/otel/sql/02_traces.up.sql` and `02_traces.down.sql`
   - `qan-api2/migrations/otel_test.go`
 - **Produces:**
-  - `otel.otel_traces`: the upstream exporter's columns, plus `PmmNodeId` and `PmmServiceId` materialized from `ResourceAttributes`. `PARTITION BY toDate(Timestamp)`, `ORDER BY (PmmNodeId, ServiceName, SpanName, toDateTime(Timestamp))`.
+  - `otel.otel_traces`: the upstream exporter's columns, plus `PmmNodeId` and `PmmServiceId` materialized from `ResourceAttributes`. `PmmServiceId` stays empty, because Task 3 deletes `pmm.service_id` at ingest; plan 06 filters spans by node and by correlated service. `PARTITION BY toDate(Timestamp)`, `ORDER BY (PmmNodeId, ServiceName, SpanName, toDateTime(Timestamp))`.
   - `otel.otel_traces_trace_id_ts (TraceId String, Start DateTime, End DateTime)`, a `ReplacingMergeTree` filled by a materialized view `otel_traces_trace_id_ts_mv`, copied from the pinned exporter's templates.
   - `otel.otel_traces_service_name (ServiceName LowCardinality(String), PmmNodeId LowCardinality(String), LastSeen DateTime)`, a `ReplacingMergeTree(LastSeen)` filled by `otel_traces_service_name_mv`.
 - **Tests:**

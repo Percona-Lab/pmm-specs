@@ -23,7 +23,7 @@
   - a role with an empty filter means full access;
   - a missing label equals `""`;
   - regexes are anchored.
-- **Fail closed.** A non-Admin request without the header is denied, a selector that doesn't parse is denied, and service-account tokens get an explicit decision.
+- **Fail closed.** A request without `X-Proxy-Filter` is full access: `auth_server` sends no header when LBAC is off or the user has no filters (the `len(filters) == 0` return after `getLBACFilters` in `managed/services/grafana/auth_server.go`), and refuses the request itself when a selector doesn't parse. The guard against serving a restricted user unfiltered is that `/v1/logs` and `/v1/traces` are in `lbacPrefixes`. Service-account tokens get an explicit decision.
 - No raw SQL from clients. Every filter is a bound parameter.
 - Admins are not exempt from LBAC, consistent with today.
 
@@ -83,7 +83,8 @@ Plan 08 builds `LogsService` (`Search`, `Context`, `Histogram`, `Facets`) for Ad
   - `func AllowedIDs(q *reform.Querier, s lbac.Selectors) (pairs []ServiceNode, nodes []string, err error)`, cached on the inventory TTL;
   - the predicate `(PmmServiceId, PmmNodeId) IN {pairs} OR (PmmServiceId = '' AND PmmNodeId IN {nodes})`, added by `BuildSearchQuery` and by the histogram, facets and context queries, all through bound parameters.
 - **Tests:**
-  - `TestSearchFailsClosedWithoutHeader`, `TestSearchDeniesBadSelector`;
+  - `TestLBACPrefixesCoverOtelReadPaths` (auth_server unit test: `/v1/logs:search` and `/v1/traces:search` get the header), `TestSearchDeniesBadSelector`;
+  - api-test `TestRestrictedUserGetsFilterHeader`: a user with a filtered role gets only the allowed services from `/v1/logs:search`, and a user with the full-access role gets everything;
   - `TestSearchHidesSpoofedServiceRow`, `TestSearchNodeLogsNeedNodeLabel`;
   - `TestFacetsRespectLBAC`: a restricted user doesn't see facet values for hidden services;
   - an api-test with two roles and two users.
@@ -91,6 +92,7 @@ Plan 08 builds `LogsService` (`Search`, `Context`, `Histogram`, `Facets`) for Ad
 ### Task 4: `TracesService.Search` and `GetTrace`
 
 - The same predicate, applied to each span. `GetTrace` returns `partial: true` when spans were filtered out.
+- Traces store no `PmmServiceId`: plan 05 deletes `pmm.service_id` at ingest. So the span predicate is node-only, plus the services that plan 05's correlation assigns. Decide at re-plan.
 - **Tests:** `TestGetTracePartial`, plus the fail-closed tests from Task 3.
 
 ### Task 5: Open the Logs explorer to restricted users, and add a trace view
