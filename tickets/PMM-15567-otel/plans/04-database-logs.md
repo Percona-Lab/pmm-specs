@@ -149,7 +149,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - `agent/logdiscovery/*_test.go`
 - Modify:
   - `api/agent/v1/agent.proto`: add `LogDiscoveryRequest` to the `ServerMessage` request oneof and `LogDiscoveryResponse` to the `AgentMessage` response oneof, next to `ServiceInfoRequest` (:465-481)
-  - `agent/client/client.go` (the dispatch at ~:652-761): handle `LogDiscoveryRequest`
+  - `agent/client/client.go` (the dispatch in `processChannelRequests`, ~:568-890): handle `LogDiscoveryRequest`
   - `agent/agents/mongodb/mongolog/internal/mongolog.go` (:241-267): move `getLogFilePath` to `agent/utils/mongodb/logpath.go` so both callers use it, and handle `--logpath=<x>` as well as `--logpath <x>`
   - `agent/agents/supervisor/supervisor.go`: pass `logdiscovery.Cache.Paths()` as `RenderInput.DiscoveredPaths` and `Cache.Units()` as `RenderInput.DiscoveredUnits`
 
@@ -220,7 +220,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - `api/management/v1/mysql.proto`: `string collect_logs` at the next free number in `AddMySQLServiceParams`. Its values are a comma list of `error`, `slow` and `general`, or `none`. Add `repeated otel.v1.LogSource log_sources` and `repeated string log_collection_messages` at the next free numbers in `MySQLServiceResult` (:104-111).
   - `api/management/v1/postgresql.proto` and `api/management/v1/mongodb.proto`: `bool collect_logs` and the same two result fields.
   - `api/otel/v1/otel.proto`: `DiscoverLogSources(DiscoverLogSourcesRequest{service_id, kinds}) → {log_sources, messages}`
-  - `managed/services/management/mysql.go` (:37-205), `postgresql.go` and `mongodb.go`: after `GetInfoFromService` (:116-128), when `collect_logs` is set, call `logDiscovery.Discover`. Upsert the collectable entries through `models.UpsertLogSource` with `Discovery = "mysql_" + kind` (MySQL), `"postgresql"` or `"mongodb"`. Put the reasons in `log_collection_messages`. **A discovery error never fails the add.**
+  - `managed/services/management/mysql.go` (:37-208), `postgresql.go` and `mongodb.go`: after `GetInfoFromService` (`mysql.go:122`, `mongodb.go:107`), when `collect_logs` is set, call `logDiscovery.Discover`. Upsert the collectable entries through `models.UpsertLogSource` with `Discovery = "mysql_" + kind` (MySQL), `"postgresql"` or `"mongodb"`. Put the reasons in `log_collection_messages`. **A discovery error never fails the add.**
   - `managed/services/agents/registry.go` (`authenticate`): after the agent is registered, rediscover each service that has sources with `discovery != ""` on this pmm-agent, and update a source's path when it changed. Then `RequestStateUpdate`.
   - `managed/services/otel/log_sources_grpc.go`: the `DiscoverLogSources` handler.
 

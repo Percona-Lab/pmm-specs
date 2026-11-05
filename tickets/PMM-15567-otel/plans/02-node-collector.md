@@ -70,7 +70,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   - `managed/services/inventory/grpc/agents_server.go` (:44-60 enum map, `ListAgents` :71-128, Change :240-282)
   - `managed/services/inventory/agents.go` (`ChangeOtelCollector`, following `ChangeNomadAgent` :1774-1800)
   - `admin/commands/list.go` (:300-312, :556-620)
-  - `admin/commands/inventory/list_agents.go` (:46,55,134-144,200,302)
+  - `admin/commands/inventory/list_agents.go` (:46,55,134-144,200,304)
   - `admin/commands/inventory/change_agent_otel_collector.go` (new, following `change_agent_nomad_agent.go`)
   - `managed/services/management/agent.go` (`agentToAPI` :141-240)
   - `api-tests/management/helpers.go` (`removeAllAgentsInList`, :125-170)
@@ -516,7 +516,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 
 **Files:**
 - Modify:
-  - `agent/agents/supervisor/supervisor.go`: keep the statuses `Render` returns on the agent's process info, and send `StateChangedRequest.LogSourceStatuses` together with the process status (:822-829), and again whenever the statuses change.
+  - `agent/agents/supervisor/supervisor.go`: keep the statuses `Render` returns on the agent's process info, and send `StateChangedRequest.LogSourceStatuses` together with the process status (:833), and again whenever the statuses change.
   - `managed/services/agents/handler.go` (`stateChanged` ~:129,223): convert each `agentv1.LogSourceStatus` to `models.LogSourceStateUpdate` and store them with `models.UpdateLogSourceStates`.
   - `managed/models/log_source_helpers.go`
 

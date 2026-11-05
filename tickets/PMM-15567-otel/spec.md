@@ -4,7 +4,7 @@
 - **Updated:** 2026-11-05 (D25–D28, ADR-23, ADR-24)
 - **Epic:** [PMM-15567](https://perconadev.atlassian.net/browse/PMM-15567), with 21 child tickets when it was read, plus the tickets filed from this analysis (both listed in [§2](#2-sources)).
 - **Prototype:** [percona/pmm#5118](https://github.com/percona/pmm/pull/5118), branch `tibi-holmes`. It is a reference only.
-- **Code base:** `main` at `285cefaf8`. Line numbers below refer to that commit; re-check them before you edit, because `main` moves.
+- **Code base:** percona/pmm `main` at `3c6cba77c` (percona/grafana `4a94c794`, percona-helm-charts `9dffe16`), rebased on 2026-11-05 from `285cefaf8`. Line numbers below refer to those commits; re-check them before you edit, because `main` moves.
 - **Plans that implement this document:** [`plans/00-roadmap.md`](plans/00-roadmap.md) and plans 01 to 08 next to it.
 
 Marks used below:
@@ -50,7 +50,7 @@ Marks used below:
   - Separate epic: PMM-15588 (eBPF).
   - Also returned as a child: PMM-4180 (PostgreSQL slowlog agent, On Hold). It is unrelated.
   - Filed from this analysis on 2026-10-11: [PMM-15722](https://perconadev.atlassian.net/browse/PMM-15722) (Logs explorer, D20), [PMM-15723](https://perconadev.atlassian.net/browse/PMM-15723) (`auto` preset and suggestions, D21) and [PMM-15724](https://perconadev.atlassian.net/browse/PMM-15724) (Valkey, D18) under the epic; [PMM-15725](https://perconadev.atlassian.net/browse/PMM-15725) (AI-drafted parsers, D23) is linked to it as a follow-up.
-- **Prototype:** PR #5118. 491 files, +76k lines, 265 commits, far behind `main`. It mixes OTel with ADRE/Holmes AI work. Nobody has reviewed it: every review thread comes from the lint bot, and the codecov patch coverage is 2.88 %. [V]
+- **Prototype:** PR #5118. On 2026-11-03 it was a draft based on `pmm-3.10.0`: 614 files, +112k lines, 413 commits. Earlier it had 491 files and +76k lines. It mixes OTel with ADRE/Holmes AI work. Nobody has reviewed it: every review thread comes from the lint bot, and the codecov patch coverage is 2.88 %. [V]
 - **Older prior art, also unmerged:** branch `PMM-14689-logs-and-traces-phase1` (last merge 2026-08-27) [V].
   - It ships `otelcol-contrib` 0.120.0 through an Ansible role.
   - pmm-managed owns the schema there, in its own migration chain (`logs_schema_migrations`), with tables `pmm.logs` and `pmm.traces` and retention through `MODIFY TTL`.
@@ -124,10 +124,10 @@ PMM Server node (its own pmm-agent):                                 otel.otel_t
 6. **The ClickHouse superuser shared** by the collector, Grafana and ADRE. Its password sits in a 0644 file.
 7. **Retention set only at CREATE.** Changing it later does nothing, and DDL runs on every `UpdateConfiguration` with `context.Background()`.
 8. **`start_at: end` with no `file_storage`**, so lines are lost across restarts. `memory_limiter` is not first in the pipeline, and multi-line entries are not handled.
-9. **No version gate.** An older pmm-agent logs "unhandled agent type" and does nothing (`agent/agents/supervisor/supervisor.go:628-633,1164-1165` on `main`).
+9. **No version gate.** An older pmm-agent logs "unhandled agent type" and does nothing (`agent/agents/supervisor/supervisor.go:1022-1023,1164-1165` on `main`).
 10. **The prebuilt `otelcol-contrib` 0.148.0** downloaded without a checksum, and two ~95 MB `pmm-managed` binaries committed.
 11. **A textbox dashboard variable interpolated into SQL** (`'${trace_id}'`). There is also an unsigned service-map panel plugin.
-12. **Migrations numbered 127–142,** which collide with `main` (latest is 120, `managed/models/database.go:1202`).
+12. **Migrations numbered 127–150** (127–142 in earlier builds). `main`'s latest is 125 (`managed/models/database.go:1304`), so the next migrations `main` adds collide with them.
 
 ---
 
@@ -138,14 +138,14 @@ PMM Server node (its own pmm-agent):                                 otel.otel_t
 | F1 | Packaged pmm-agent runs as **root**: the unit has no `User=`. Child processes inherit its uid, because `exec.Cmd` gets no `SysProcAttr.Credential`. | `build/packages/config/pmm-agent.service`; `agent/agents/process/process.go:150-178` | "Run as `pmm-agent`" (PMM-15572) needs a new privilege drop in pmm-agent, for this one process type, chosen on the client ([§6.1](#61-running-the-collector-as-pmm-agent)). |
 | F2 | The pmm-agent temp dir is **wiped** on every start and on every re-render. | `agent/commands/run.go:101,156`; `agent/utils/templates/template.go:65-74` | Checkpoints and the disk queue need a persistent `paths.otelcol_data_dir`, like `paths.nomad_data_dir` (`agent/config/config.go:128,304-306`). |
 | F3 | Child processes get an **empty environment**, and `Dir` is `/`. | `process.go:160-164` | The journald receiver must be given an absolute `journalctl` path, or a `PATH`. |
-| F4 | An older pmm-agent **silently ignores** unknown agent types. | `supervisor.go:628-633,1164-1165` | The server must withhold the type and reject `add` (`models.PMMAgentSupported`, `managed/models/agent_helpers.go:1143-1151`; `managed/services/agents/state.go:304-309`). |
-| F5 | The JSON gateway **drops unknown fields** (`DiscardUnknown: true`). So a new pmm-admin sending `collect_logs` to an old server gets no error. | `managed/cmd/pmm-managed/main.go:400-406` | pmm-admin checks the server version from local pmm-agent status before sending new fields (`admin/agentlocal/agentlocal.go:77`). |
+| F4 | An older pmm-agent **silently ignores** unknown agent types. | `supervisor.go:1022-1023,1164-1165` | The server must withhold the type and reject `add` (`models.PMMAgentSupported`, `managed/models/agentversion.go:48`; `managed/services/agents/state.go:304-309`). |
+| F5 | The JSON gateway **drops unknown fields** (`DiscardUnknown: true`). So a new pmm-admin sending `collect_logs` to an old server gets no error. | `managed/cmd/pmm-managed/main.go:411` | pmm-admin checks the server version from local pmm-agent status before sending new fields (`admin/agentlocal/agentlocal.go:77`). |
 | F6 | `pmm-admin remove` takes positional arguments `<service-type> <service-name>`. | `admin/commands/management/remove.go:41-45` | `remove logs` and `remove traces` need a restructured command (D9). |
 | F7 | PMM Server's inventory fixtures run **only on first boot**. | `managed/models/database.go:1737-1748` | The server node's collector is ensured on connect (the Nomad pattern, `managed/services/agents/registry.go:353-405,526-545`), not in fixtures. |
 | F8 | nginx strips the body from the auth subrequest. | `build/ansible/roles/nginx/files/conf.d/pmm.conf:133-136` | PMM-15576's plan to "reject queries to the OTEL datasource from non-Admins" in `auth_server` can't see which datasource a `/graph/api/ds/query` body targets. Enforce it in the Grafana fork instead, as a plugin-client middleware next to the existing `X-Proxy-Filter` forwarder (`grafana/pkg/services/pluginsintegration/pluginsintegration.go:222-223`). Superseded by ADR-23: there is no OTEL datasource. |
-| F9 | Every node's service account has the **Admin** role. | `managed/services/grafana/client.go:657-674` | `"/otlp": admin` admits pmm-agents (PMM-15571 holds). Any node can claim any `pmm.node_id`, which matters for LBAC later ([§7](#7-lbac)). |
-| F10 | pmm-managed already has a privileged ClickHouse client. | `managed/cmd/pmm-managed/main.go:1098` | The leader-only retention, cap and watermark job can live in pmm-managed without a new ClickHouse user (D5). |
-| F11 | QAN retention runs in qan-api2 on **every replica**. That is harmless only because a time-based `DROP PARTITION` is idempotent. | `qan-api2/main.go:290-303,447` | A size-cap or watermark drop is not idempotent across replicas. It must run on the leader only (PMM-15594), so not in qan-api2. |
+| F9 | Every node's service account has the **Admin** role. | `managed/services/grafana/client.go:668-680` | `"/otlp": admin` admits pmm-agents (PMM-15571 holds). Any node can claim any `pmm.node_id`, which matters for LBAC later ([§7](#7-lbac)). |
+| F10 | pmm-managed already has a privileged ClickHouse client. | `managed/cmd/pmm-managed/main.go:1113` | The leader-only retention, cap and watermark job can live in pmm-managed without a new ClickHouse user (D5). |
+| F11 | QAN retention runs in qan-api2 on **every replica**. That is harmless only because a time-based `DROP PARTITION` is idempotent. | `qan-api2/main.go:298,442` | A size-cap or watermark drop is not idempotent across replicas. It must run on the leader only (PMM-15594), so not in qan-api2. |
 | F12 | Server inventory (Agents tab) is rendered in the **Grafana fork**, not in `ui/`. | `grafana/public/app/percona/inventory/Inventory.types.ts:28-50` | A new agent type also needs a Grafana fork PR, or the Agents tab shows an unknown type. |
 | F13 | The upstream exporter fills `ServiceName` from `service.name`. | exporter README [I] | PMM-15571's "`ServiceName` column filled from the identity attributes" would clash with it. Use `PmmServiceId`/`PmmNodeId` materialized columns, and keep `ServiceName` = `service.name` (D4). |
 | F14 | PMM Server's own pmm-agent is set up with `--skip-registration` and has **no token**. It is admitted only for Connect and RTA from 127.0.0.1. | `build/docker/server/entrypoint.sh:302-311`; `auth_server.go:567-609` | The server node's collector can't authenticate to `/otlp/`. It must send to `http://127.0.0.1:4318` directly, which PMM-15575 already intends. |
@@ -157,8 +157,8 @@ PMM Server node (its own pmm-agent):                                 otel.otel_t
 | F21 | PMM Server runs PostgreSQL 18 with `logging_collector=off`, and supervisord writes its output to `/srv/logs/postgresql.log`. | `managed/services/supervisord/pmm_config.go:106-128` | PMM-15575's `postgresql14.log` is stale. The server source is `postgresql.log`, and a test ties the source list to the shipped log files. |
 | F22 | PMM-15587 explicitly leaves Valkey out ("Not in this ticket: Valkey and audit logs"). PMM's documented Valkey user has `+config\|get`, and pmm-agent already talks to Valkey with redigo. | PMM-15587; `documentation/docs/install-pmm/install-pmm-client/connect-database/valkey-redis.md:35`; `agent/serviceinfobroker/service_info_broker.go:288-296` | Valkey log discovery is filed as PMM-15724. It needs no new grants and no new dependency: `CONFIG GET` of `logfile`, `dir`, `daemonize`, `syslog-enabled`, `log-format` and `log-timestamp-format`. |
 | F23 | 14 log files are written to `/srv/logs`. Besides PMM-15575's 10, there are `victoriametrics.log`, `vmalert.log`, `pmm-init.log` (Ansible output) and `nomad-server.log` (when Nomad is on). In HA, PostgreSQL, ClickHouse and VictoriaMetrics are external, so their files don't exist. | grep of `stdout_logfile = /srv/logs/` across `managed/services/supervisord/` and `build/ansible/roles/supervisord/files/` | The server sources are derived from what actually runs, and a test ties the list to the shipped programs. |
-| F24 | The PMM UI uses peak-ui 1.0.26 and material-react-table, and has no chart library. peak-ui provides `Table`, `Chip`, `CodeBlock`, `AutoCompleteInput`, `DateTimePickerInput`, `useDetailsPaneNavigation`, `usePerconaTableUrlState`, illustrations and a chart colour palette, but no chart components. The RTA overview page (table, details pane, auto-refresh, export) is the closest precedent. | `ui/apps/pmm/package.json:29-41`; peak-ui `llms.txt`; `ui/apps/pmm/src/pages/rta/overview/` | The native explorer is mostly peak-ui. The histogram needs a decision (D22). |
-| F20 | In HA, every pmm-server pod runs the same supervisord programs, and HAProxy sends external traffic to the leader only. Leader-only work is registered with `haService.AddLeaderService`. | `percona-helm-charts/charts/pmm-ha/templates/haproxy-configmap.yaml:55-61`; `managed/cmd/pmm-managed/main.go:1247-1324` | Every pod runs `otel-collector`; only the leader's gets client traffic, and each pod's own pmm-agent ships its own server logs. The cleanup job is a leader service. |
+| F24 | The PMM UI uses peak-ui 1.0.26 and material-react-table, and has no chart library. peak-ui provides `Table`, `Chip`, `CodeBlock`, `AutoCompleteInput`, `DateTimePickerInput`, `useDetailsPaneNavigation`, `usePerconaTableUrlState`, illustrations and a chart colour palette, but no chart components. The RTA overview page (table, details pane, auto-refresh, export) is the closest precedent. | `ui/apps/pmm/package.json:30-42`; peak-ui `llms.txt`; `ui/apps/pmm/src/pages/rta/overview/` | The native explorer is mostly peak-ui. The histogram needs a decision (D22). |
+| F20 | In HA, every pmm-server pod runs the same supervisord programs, and HAProxy sends external traffic to the leader only. Leader-only work is registered with `haService.AddLeaderService`. | `percona-helm-charts/charts/pmm-ha/templates/haproxy-configmap.yaml:62-90`; `managed/cmd/pmm-managed/main.go:1274-1366` | Every pod runs `otel-collector`; only the leader's gets client traffic, and each pod's own pmm-agent ships its own server logs. The cleanup job is a leader service. |
 
 ---
 
@@ -276,11 +276,11 @@ So it would have to:
   - A filter is a PromQL series selector; matchers inside one role are ANDed, and a user's roles are ORed.
   - A role with an empty filter means full access.
   - LBAC is switched on by `settings.access_control.enabled` or `PMM_ENABLE_ACCESS_CONTROL`. It is on by default in the pmm-ha chart.
-- **Header:** for paths in `lbacPrefixes` (`managed/services/grafana/auth_server.go:146-160`), the nginx `auth_request` handler returns the user's selectors in the `X-Proxy-Filter` header.
+- **Header:** for paths in `lbacPrefixes` (`managed/services/grafana/auth_server.go:168-184`), the nginx `auth_request` handler returns the user's selectors in the `X-Proxy-Filter` header.
 - **Enforcement:**
   - vmproxy replaces `extra_filters[]` for VictoriaMetrics.
   - qan-api2 turns the selectors into a ClickHouse `WHERE` clause.
-  - QAN can do this because pmm-managed denormalizes the service and node labels into every QAN row at ingest (`managed/services/qan/client.go:288-411`).
+  - QAN can do this because pmm-managed denormalizes the service and node labels into every QAN row at ingest (`managed/services/qan/client.go:307-456`).
 - **Labels that can be filtered** come from `models.MergeLabels(node, service, agent)` (`managed/models/models.go:58-86`):
   - node: `node_id`, `node_name`, `region`, `az`, …
   - service: `service_id`, `service_name`, `environment`, `cluster`, `replication_set`, …

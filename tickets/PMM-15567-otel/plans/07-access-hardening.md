@@ -97,7 +97,7 @@ PMM-15697 added `/v1/qan:` to `lbacPrefixes`, filters the reads in `qan-api2/mod
 
 **Files:**
 - Modify:
-  - `managed/services/qan/client.go` (~:397-411): replace `maps.Copy(labels, m.Common.Comments)` with a merge that never overwrites a key that already exists in `labels`, which holds the inventory custom labels.
+  - `managed/services/qan/client.go` (~:425-432, the `maps.Copy` of query comments): replace `maps.Copy(labels, m.Common.Comments)` with a merge that never overwrites a key that already exists in `labels`, which holds the inventory custom labels.
   - The same function: drop comment labels whose key is a standard label (`environment`, `cluster`, `replication_set`, `region`, `az`, `node_model`, `machine_id`, `container_id`, `container_name`, and the identity keys deleted at :397-405). Those are columns filled from inventory.
 - Test: `managed/services/qan/client_test.go`
 

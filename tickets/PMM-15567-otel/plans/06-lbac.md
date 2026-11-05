@@ -14,7 +14,7 @@
 - **Ingest:** identity is checked, so a node can't claim to be another node.
 - **UI:** the native Logs explorer from plan 08 already uses this API. This plan opens it to restricted users and adds a trace view.
 
-**Spec:** analysis §7.1–§7.4 and F8, F9; the existing LBAC model (`managed/models/role_*`, `managed/services/grafana/auth_server.go:146-160,446-494`).
+**Spec:** analysis §7.1–§7.4 and F8, F9; the existing LBAC model (`managed/models/role_*`, `managed/services/grafana/auth_server.go:168-184,446-494`).
 
 ## Global Constraints
 
@@ -63,7 +63,7 @@
 ### Task 2: Verified node identity at ingest
 
 - **Files:**
-  - `managed/services/grafana/auth_server.go`: for `/otlp/` requests carrying a per-node service-account token, set the `X-PMM-Node-Id` response header. Resolve the node from the service account the token belongs to, recording that mapping at registration if it isn't stored yet (`client.go:657-674`).
+  - `managed/services/grafana/auth_server.go`: for `/otlp/` requests carrying a per-node service-account token, set the `X-PMM-Node-Id` response header. Resolve the node from the service account the token belongs to, recording that mapping at registration if it isn't stored yet (`client.go:668-680`).
   - `pmm.conf` `/otlp/`: `auth_request_set $pmm_node_id $upstream_http_x_pmm_node_id; proxy_set_header X-PMM-Node-Id $pmm_node_id;`. Any client-sent header of that name is dropped.
   - `managed/services/otel/server_config.go`: OTLP HTTP `include_metadata: true`, plus a processor that upserts `pmm.node_id` from `metadata.x-pmm-node-id` when it is present, and otherwise sets `pmm.identity_verified=false`.
 - **Spike first:** confirm in the pinned collector which processor can read client metadata into resource attributes: `resource` with `from_context`, or `transform` with OTTL request context. Record the result in the ADR.

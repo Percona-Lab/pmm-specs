@@ -54,7 +54,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `build/scripts/vars` (next to `nomad_commit_hash`, ~:59-63)
   - `build/scripts/build-client-binary` (~:71, :135-136, :169-170)
   - `build/scripts/install_tarball` (~:83-90, the `pt-*|nomad` case)
-  - `build/packages/rpm/client/pmm-client.spec` (~:94-111 and `%files`)
+  - `build/packages/rpm/client/pmm-client.spec` (~:113 and `%files`, ~:212)
   - `build/packages/deb/install`
   - `build/packages/deb/files`
 
@@ -196,7 +196,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `managed/models/settings_helpers.go` (`ChangeSettingsParams` ~:54-108, `UpdateSettings`, `ValidateSettings`)
   - `managed/utils/envvars/parser.go` (a `case "PMM_ENABLE_OTEL":` like `PMM_ENABLE_ALERTING` at :201-207)
   - `managed/utils/env/env.go`
-  - `managed/services/server/server.go` (`convertSettings` ~:420-454, `validateChangeSettingsRequest` ~:514-566, `ChangeSettings`)
+  - `managed/services/server/server.go` (`convertSettings` ~:427-461, `validateChangeSettingsRequest` ~:523-575, `ChangeSettings`)
 - Test:
   - `managed/models/settings_test.go`
   - `managed/utils/envvars/parser_test.go`
@@ -239,7 +239,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       tests.AssertGRPCError(t, status.New(codes.InvalidArgument, "Invalid argument: otel.logs_retention_days must be between 1 and 365."), err)
   })
   ```
-  `new(value)` is the `new(expr)` form from Go 1.26. The repo is on Go 1.27, and `registry.go:526` already uses it (`new(models.NomadAgentType)`). Use the error helper that the surrounding subtests use.
+  `new(value)` is the `new(expr)` form from Go 1.26. The repo is on Go 1.27, and `registry.go:530` already uses it (`new(models.NomadAgentType)`). Use the error helper that the surrounding subtests use.
 
   Also add:
   - `TestParseEnvVars` cases: `PMM_ENABLE_OTEL=false` gives `envSettings.Otel.CollectorEnabled=false`; an invalid value gives an error naming the variable.
@@ -356,7 +356,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `managed/services/otel/deps.go`
   - `managed/services/otel/service_test.go`
 - Modify:
-  - `managed/services/server/deps.go` and `server.go` `UpdateConfigurations` (~:791-819): call `otel.UpdateConfiguration` after nomad and before supervisord.
+  - `managed/services/server/deps.go` and `server.go` `UpdateConfigurations` (~:853-881): call `otel.UpdateConfiguration` after nomad and before supervisord.
   - `managed/services/server/logs.go` (~:185-200): add `otel-collector.ini` and the collector config, with the password replaced by `[REDACTED]`.
   - `managed/cmd/pmm-managed/main.go`: construct `otel.Service`, pass it to `server.Params`, and run `Run` for every replica (not as a leader service).
 
@@ -431,7 +431,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `build/ansible/roles/nginx/files/conf.d/pmm.conf`:
     - an upstream `otel-collector { server 127.0.0.1:4318; keepalive 32; }` next to the others (:1-48);
     - `location /otlp/ { proxy_pass http://otel-collector/; proxy_http_version 1.1; proxy_set_header Connection ""; client_body_buffer_size 10m; }`, modelled on `/victoriametrics/api/v1/write` (:244-250). It inherits the server-level `auth_request`.
-  - `managed/services/grafana/auth_server.go`: `"/otlp": admin` in `rules` (:54-133). The key has no trailing slash: `resolveRule` walks prefixes with `nextPrefix`, and `/otlp` would never reach `"/otlp/"`.
+  - `managed/services/grafana/auth_server.go`: `"/otlp": admin` in `rules` (:54-145). The key has no trailing slash: `resolveRule` walks prefixes with `nextPrefix`, and `/otlp` would never reach `"/otlp/"`.
 - Test:
   - `managed/services/grafana/auth_server_test.go` (`TestResolveRule` ~:108)
   - `api-tests/server/otlp_test.go`
@@ -497,8 +497,8 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `managed/services/otel/grpc_test.go`
   - `api-tests/otel/status_test.go`
 - Modify:
-  - `api/Makefile` (register the domain the way realtimeanalytics is registered at :22,38,57,75,118)
-  - `managed/cmd/pmm-managed/main.go` (gRPC and gateway registration, ~:352-355,454)
+  - `api/Makefile` (register the domain the way realtimeanalytics is registered at :22,39,59,78,122)
+  - `managed/cmd/pmm-managed/main.go` (gRPC and gateway registration, next to the realtimeanalytics service at ~:358-359)
   - `managed/services/grafana/auth_server.go` (`"/v1/otel": admin`)
 
 **Interfaces:**
@@ -506,7 +506,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `rpc GetStatus(GetStatusRequest) returns (GetStatusResponse)` at `GET /v1/otel/status`. The response: `bool collector_enabled = 1; bool collector_running = 2; bool ingest_paused = 3; string ingest_paused_reason = 4; uint64 disk_bytes = 5; float disk_used_percent = 6; string last_error = 7;`.
   - `rpc Purge(PurgeRequest) returns (PurgeResponse)` at `POST /v1/otel:purge`. It truncates exactly the tables in `dataTables`.
   - `var dataTables = []string{"logs"}` in `managed/services/otel/tables.go`. Plan 05 appends its trace tables. Purge and the cleaner use only this list, so `otel_schema_migrations` is never touched.
-  - `type ClickHouse interface { QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row; ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error); QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) }` in `deps.go`. The existing ClickHouse client (`main.go:1098`) satisfies it.
+  - `type ClickHouse interface { QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row; ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error); QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) }` in `deps.go`. The existing ClickHouse client (`main.go:1113`) satisfies it.
   - `last_error` says "otel_writer cannot authenticate to ClickHouse" when a probe as `otel_writer` (`SELECT 1`, 5 s timeout) fails.
   - Every ClickHouse call uses a context with a 10 s timeout.
 
@@ -531,7 +531,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `managed/services/otel/cleanup_plan.go`
   - `managed/services/otel/cleanup_plan_test.go`
   - `managed/services/otel/cleaner_test.go`
-- Modify: `managed/cmd/pmm-managed/main.go`: `haService.AddLeaderService(ha.NewContextService("otel-cleaner", cleaner.Run))`, next to `"cleaner"` (~:1324).
+- Modify: `managed/cmd/pmm-managed/main.go`: `haService.AddLeaderService(ha.NewContextService("otel-cleaner", cleaner.Run))`, next to `"cleaner"` (~:1366).
 
 **Interfaces:**
 - Produces:
@@ -608,8 +608,8 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 **Files** (in percona/percona-helm-charts, on branch `PMM-15594-otel-ha`):
 - Modify:
   - `charts/pmm-ha/values.yaml` (`otel.enabled: true` and `clickhouse.otelUsers`)
-  - `charts/pmm-ha/templates/clickhouse-cluster.yaml`: a `users.d/otel-users.xml` drop-in, copying the datasource-user drop-in at ~:91-129, with grants `INSERT ON otel.*` and `SELECT ON otel.*`
-  - `charts/pmm-ha/templates/_helpers.tpl`: secrets generated with the lookup-or-`randAlphaNum 32` pattern at ~:269-281
+  - `charts/pmm-ha/templates/clickhouse-cluster.yaml`: a `users.d/otel-users.xml` drop-in, copying the datasource-user drop-in at ~:96-139, with grants `INSERT ON otel.*` and `SELECT ON otel.*`
+  - `charts/pmm-ha/templates/_helpers.tpl`: secrets generated the way `pmm.clickhouse.datasourcePassword` does at ~:821-845: lookup first, else `randAlphaNum 32` memoised on `.Values`, so every caller gets the same value
   - `charts/pmm-ha/templates/statefulset.yaml`: `PMM_ENABLE_OTEL` and `PMM_CLICKHOUSE_OTEL_*` env entries from values and secrets
   - `charts/pmm-ha/README.md`: ClickHouse shards must be 1; size the ClickHouse volume (20 Gi default) against `max_disk_gb`
   - `Chart.yaml`: version bump

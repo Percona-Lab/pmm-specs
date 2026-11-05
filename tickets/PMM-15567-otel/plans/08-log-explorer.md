@@ -84,7 +84,7 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
   - `managed/services/logs/*_test.go`
   - `api-tests/logs/search_test.go`
 - Modify:
-  - `api/Makefile` (register the domain the way realtimeanalytics is registered at :22,38,57,75,118)
+  - `api/Makefile` (register the domain the way realtimeanalytics is registered at :22,39,59,78,122)
   - `managed/cmd/pmm-managed/main.go`: an `otel_reader` ClickHouse pool from `PMM_CLICKHOUSE_OTEL_READER_USER/PASSWORD` (max 4 connections), and gRPC and gateway registration
   - `managed/services/grafana/auth_server.go`: `"/v1/logs": admin`
 
