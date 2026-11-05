@@ -1,10 +1,11 @@
 # OpenTelemetry in PMM: analysis and design (PMM-15567)
 
 - **Date:** 2026-10-10
+- **Updated:** 2026-11-05 (D25–D28, ADR-23, ADR-24)
 - **Epic:** [PMM-15567](https://perconadev.atlassian.net/browse/PMM-15567), with 21 child tickets when it was read, plus the tickets filed from this analysis (both listed in [§2](#2-sources)).
 - **Prototype:** [percona/pmm#5118](https://github.com/percona/pmm/pull/5118), branch `tibi-holmes`. It is a reference only.
 - **Code base:** `main` at `285cefaf8`. Line numbers below refer to that commit; re-check them before you edit, because `main` moves.
-- **Plans that implement this document:** [`plans/00-roadmap.md`](plans/00-roadmap.md) and plans 01 to 06 next to it.
+- **Plans that implement this document:** [`plans/00-roadmap.md`](plans/00-roadmap.md) and plans 01 to 08 next to it.
 
 Marks used below:
 - **[V]** means verified by reading the code or the ticket.
@@ -66,7 +67,7 @@ Marks used below:
 PMM Client node                                          PMM Server
 ───────────────                                          ──────────
 pmm-agent (root in packages, uid 1002 in Docker)         nginx :443
- └─ otel-collector  (agent type OTEL_COLLECTOR,           └─ /otlp/  auth_request → rule "/otlp/": admin
+ └─ otel-collector  (agent type OTEL_COLLECTOR,           └─ /otlp/  auth_request → rule "/otlp": admin
     runs as user pmm-agent, see §6.1)                          │ proxy_pass http://127.0.0.1:4318/
      receivers: filelog/<source-id> per file source            ▼
                 journald/<source-id> per journald src    otel-collector (supervisord program, user pmm)
@@ -110,7 +111,7 @@ PMM Server node (its own pmm-agent):                                 otel.otel_t
 **Keep** [V]:
 - **Server shape:** a supervisord program behind nginx `/otlp/`, writing to the dedicated ClickHouse database `otel`, with `create_schema: false`.
 - **Schema:** DDL that mirrors the upstream exporter (codecs, bloom and tokenbf indexes, `ttl_only_drop_parts`), and the cluster pattern copied from qan-api2 (`ReplicatedMergeTree`, `ON CLUSTER`).
-- **Delivery:** the collector as a pmm-agent `AgentProcess`. pmm-managed renders the config into `TextFiles`, and pmm-agent fills in the server URL and credentials (the vmagent precedent, `managed/services/agents/vmagent.go:52-54`).
+- **Delivery:** the collector as a pmm-agent `AgentProcess`, pushed in `SetStateRequest` like vmagent (`managed/services/agents/vmagent.go:52-54`). Unlike the prototype, which sent rendered YAML in `TextFiles`, pmm-managed sends typed `OtelCollectorParams`, and pmm-agent renders the YAML and fills in the server URL and credentials itself (D11, ADR-20, §6.6).
 - **Presets:** an API with an "in use" guard, and the built-in operator chains as a starting set (mysql_error, nginx, grafana, pmm logfmt, postgres, clickhouse, supervisord). Re-test every one.
 - **UI:** a Settings → OTEL tab using TanStack Query hooks.
 
@@ -142,7 +143,7 @@ PMM Server node (its own pmm-agent):                                 otel.otel_t
 | F6 | `pmm-admin remove` takes positional arguments `<service-type> <service-name>`. | `admin/commands/management/remove.go:41-45` | `remove logs` and `remove traces` need a restructured command (D9). |
 | F7 | PMM Server's inventory fixtures run **only on first boot**. | `managed/models/database.go:1737-1748` | The server node's collector is ensured on connect (the Nomad pattern, `managed/services/agents/registry.go:353-405,526-545`), not in fixtures. |
 | F8 | nginx strips the body from the auth subrequest. | `build/ansible/roles/nginx/files/conf.d/pmm.conf:133-136` | PMM-15576's plan to "reject queries to the OTEL datasource from non-Admins" in `auth_server` can't see which datasource a `/graph/api/ds/query` body targets. Enforce it in the Grafana fork instead, as a plugin-client middleware next to the existing `X-Proxy-Filter` forwarder (`grafana/pkg/services/pluginsintegration/pluginsintegration.go:222-223`). Superseded by ADR-23: there is no OTEL datasource. |
-| F9 | Every node's service account has the **Admin** role. | `managed/services/grafana/client.go:657-674` | `"/otlp/": admin` admits pmm-agents (PMM-15571 holds). Any node can claim any `pmm.node_id`, which matters for LBAC later ([§7](#7-lbac)). |
+| F9 | Every node's service account has the **Admin** role. | `managed/services/grafana/client.go:657-674` | `"/otlp": admin` admits pmm-agents (PMM-15571 holds). Any node can claim any `pmm.node_id`, which matters for LBAC later ([§7](#7-lbac)). |
 | F10 | pmm-managed already has a privileged ClickHouse client. | `managed/cmd/pmm-managed/main.go:1098` | The leader-only retention, cap and watermark job can live in pmm-managed without a new ClickHouse user (D5). |
 | F11 | QAN retention runs in qan-api2 on **every replica**. That is harmless only because a time-based `DROP PARTITION` is idempotent. | `qan-api2/main.go:290-303,447` | A size-cap or watermark drop is not idempotent across replicas. It must run on the leader only (PMM-15594), so not in qan-api2. |
 | F12 | Server inventory (Agents tab) is rendered in the **Grafana fork**, not in `ui/`. | `grafana/public/app/percona/inventory/Inventory.types.ts:28-50` | A new agent type also needs a Grafana fork PR, or the Agents tab shows an unknown type. |
@@ -205,13 +206,13 @@ Other agent types keep their current behaviour. The collector reaches the networ
 ### 6.4 Parsers in the UI
 
 - Presets are added in Settings → OTEL → Parser presets. Built-ins are read-only and can be cloned.
-- Settings → OTEL → Log sources lists every node's sources with their status. The same tab adds, edits and removes a source (node, file or journald, path, preset, owner) through the same `LogSourcesService` API that pmm-admin uses. The path is still checked against the node's allow-list, so the UI can't widen what a node exposes.
+- Settings → OTEL → Log sources lists every node's sources with their status. The same tab adds, edits and removes a source (node, file or journald, path, preset, owner) through the same `OtelService` API that pmm-admin uses (ADR-24). The path is still checked against the node's allow-list, so the UI can't widen what a node exposes.
 - A change reaches the node's collector through the normal `SetState` push. Only the agents that use the preset get it.
 - **Not in scope:** a preview that runs a preset on sample lines. It needs a parser on the server, either the stanza library in pmm-managed or a debug pipeline in the collector. Do it as a follow-up if users ask for it.
 
 ### 6.5 Retention, size cap and watermark
 
-- Retention is enforced by a **daily partition drop**, as QAN does, run by pmm-managed on the leader. The same job enforces `max_disk_gb` and the watermark by dropping the oldest `otel` partitions first. One mechanism covers all three limits, and a retention change applies to stored data on the next pass, with no `MODIFY TTL` and no part rewrites (D1).
+- Retention is enforced by **dropping daily partitions**, as QAN does, in a job that pmm-managed runs on the leader every 10 minutes (ADR-05). The same job enforces `max_disk_gb` and the watermark by dropping the oldest `otel` partitions first. One mechanism covers all three limits, and a retention change applies to stored data on the next pass, with no `MODIFY TTL` and no part rewrites (D1).
 - **A single day bigger than the cap.** If only today's partition is left and the cap is still exceeded, pmm-managed stops `otel-collector` and raises a health warning. The node queues buffer on disk until the next pass, or until an admin raises the cap (D6).
 
 ### 6.6 Who renders the node collector's config
@@ -295,7 +296,7 @@ So it would have to:
 
 ### 7.3 Phase 1 (this epic): Admin-only, enforced in three places
 
-1. **Ingest:** `"/otlp/": admin` in the auth rules. Nobody else can write.
+1. **Ingest:** `"/otlp": admin` in the auth rules. Nobody else can write.
 2. **Read** (ADR-23):
    - Logs are read only through `LogsService`, under the rule `"/v1/logs": admin`.
    - `LogsService` reads as the `otel_reader` ClickHouse user, which has `SELECT` on `otel.*` only.
@@ -318,7 +319,7 @@ A user restricted by LBAC sees no logs in Phase 1. That is fail-closed, and it m
 3. **Resolution.**
    - Parse the selectors with the Prometheus parser.
    - Evaluate them with `labels.Matcher.Matches` against `MergeLabels(node, svc, nil)` for each service, and `MergeLabels(node, nil, nil)` for each node. A missing label counts as `""`, the VictoriaMetrics semantics, including anchored regexes.
-   - Bind the resulting ID lists as query parameters: `PmmServiceId IN {s} OR (PmmServiceId = '' AND PmmNodeId IN {n})`.
+   - Bind the resulting lists as query parameters: `(PmmServiceId, PmmNodeId) IN {allowed pairs} OR (PmmServiceId = '' AND PmmNodeId IN {allowed nodes})` (ADR-18). The pairs mean that a record claiming another node's service never matches that service.
 4. **Fail closed.**
    - `/v1/logs` and `/v1/traces` are in `lbacPrefixes`, so a restricted user's request always carries the header. A request without it is full access, because the auth server sends none when LBAC is off or the user has no filters.
    - Any selector that doesn't parse means deny.
@@ -342,7 +343,7 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 
 | # | Decision | Recommendation | Blocks |
 |---|---|---|---|
-| D1 | Retention mechanism (ADR-05) | A daily partition drop by pmm-managed on the leader. The same job enforces the cap and the watermark. | Plan 01 |
+| D1 | Retention mechanism (ADR-05) | Daily partitions dropped by a pmm-managed job on the leader, every 10 minutes. The same job enforces the cap and the watermark. | Plan 01 |
 | D2 | `--collect-logs` default | On for local services (MySQL: `error`; PostgreSQL and MongoDB: their one log), with `none` to opt out. Slow and general logs stay opt-in. This changes the epic, so the epic owner must agree. | Plan 04 |
 | D3 | Collector uid when pmm-agent is root | pmm-agent drops to user `pmm-agent` for this process type only ([§6.1](#61-running-the-collector-as-pmm-agent)). | Plan 02 |
 | D4 | Columns and sort key (ADR-04; it can't change after release) | Keep `ServiceName` = `service.name`. Add `PmmNodeId` and `PmmServiceId` as materialized columns. `ORDER BY (PmmNodeId, PmmServiceId, ServiceName, TimestampTime)`. Database sources set `service.name` to the program (`mysqld`, `postgres`, `mongod`). | Plan 01 |
