@@ -113,6 +113,7 @@ Release 2:
 *   **Given**: PMM Server from Release 1, and Aurora instances whose rds_exporter runs on an older pmm-client.
 *   **When**: The user opens the Aurora overview.
 *   **Then**: Those instances appear in "AWS cluster unknown", with up/down and throughput still shown. Nothing errors, and they move to their cluster once the client is upgraded.
+*   **Note**: instances added through RDS discovery run rds_exporter on PMM Server's own pmm-agent by default (`managed/services/management/rds.go`, `models.PMMServerAgentID`), so for them upgrading PMM Server is enough; this CUJ applies to instances attached to another pmm-agent. Instances added with `pmm-admin add mysql` have no rds_exporter and stay in "AWS cluster unknown".
 
 ### CUJ 5: Disk and CPU on an RDS node
 
@@ -193,7 +194,7 @@ The database exporters, RDS discovery, the PMM API and inventory are untouched.
     | Monitored instances | count of `mysql_up` rows | live |
     | Exporters connected (N of M) | `mysql_up` | live |
     | Throughput (queries/s) | `mysql_global_status_queries` | live |
-    | Storage used | `aws_rds_volume_bytes_used_average`, `max` | about 10 minutes behind |
+    | Storage used | `aws_rds_volume_bytes_used_average`, `max` | up to about 3 hours old (AWS publishes it irregularly; see Technical Plan 2) |
 
 *   **Per instance (table under each cluster):** name, role (`innodb_read_only`: 0 writer, 1 reader, missing "unknown"), up/down, throughput, link to Details with `var-service_name`.
     A cluster whose writer count is not exactly 1 shows "changing", not an error, because role is sampled every 60 seconds.
@@ -232,7 +233,7 @@ Same file, uid (`mysql-amazonaurora`), variable names and panel ids, so existing
 
 ### Rollout
 
-*   **Dashboards ship with PMM Server; rds_exporter ships with pmm-client.** No version gate is needed: there is no API, database or configuration change.
+*   **Dashboards ship with PMM Server; rds_exporter ships with pmm-client.** Instances added through RDS discovery run rds_exporter on PMM Server's own pmm-agent by default, so a PMM Server upgrade updates it for them. No version gate is needed: there is no API, database or configuration change.
 *   **New server, old client:** instances appear in "AWS cluster unknown", with up/down and throughput. Storage, and Disk Space on RDS nodes, stay missing until the client is upgraded.
 *   **Old server, new client:** the extra series are collected but no dashboard uses them.
 *   **Rollback:** reverting either side returns to today's behaviour; nothing is stored or migrated.
@@ -460,12 +461,12 @@ Paths are relative to each repository's root. Line numbers are at the commits na
 #### 17. `documentation/docs/reference/dashboards/dashboard-mysql-amazon-aurora-details.md` (Modify) and `dashboard-amazon-aurora-overview.md` (Create)
 
 *   **Type / Scope**: User docs.
-*   **Proposed Changes**: Describe the fixed and new panels, what "AWS cluster unknown" means, and that storage is about 10 minutes behind. Register the new page in the docs navigation, following [documentation/AGENTS.md](https://github.com/percona/pmm/blob/main/documentation/AGENTS.md).
+*   **Proposed Changes**: Describe the fixed and new panels, what "AWS cluster unknown" means, and that storage can be up to about 3 hours old. Register the new page in the docs navigation, following [documentation/AGENTS.md](https://github.com/percona/pmm/blob/main/documentation/AGENTS.md).
 
 #### 18. `documentation/docs/install-pmm/install-pmm-client/connect-database/aws.md` (Modify)
 
 *   **Type / Scope**: User docs.
-*   **Proposed Changes**: One paragraph: Aurora instances are grouped by AWS cluster automatically after upgrading pmm-client; no permission change is needed.
+*   **Proposed Changes**: One paragraph: Aurora instances added through RDS discovery are grouped by AWS cluster automatically after upgrading PMM Server (instances on another pmm-agent need that pmm-client upgraded; `pmm-admin`-added ones stay in "AWS cluster unknown"); no permission change is needed.
 
 #### percona/pmm-qa (tests)
 

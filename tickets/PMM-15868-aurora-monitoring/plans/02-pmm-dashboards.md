@@ -167,6 +167,8 @@ U = max by (node_id, service_name) (mysql_up) or max by (node_id, service_name) 
 
 `U` keeps a service whose exporter stopped reporting, as 0, for an hour.
 
+> **As built (final review):** the unknown branch is `group by (node_id, region) (last_over_time(mysql_global_status_auroradb_commits[1h])) unless on (node_id) aws_rds_instance_info` — `max by` of the counter returned the counter value instead of 1 — and every selector also carries `region=~"$region"`. The committed dashboard is the reference.
+
 - [ ] **Step 2: Build the dashboard**
 
 Variable: `region`, `label_values(mysql_up, region)`, include All. No other variable.
