@@ -1,6 +1,6 @@
 # ADR-07: Redaction of SQL literals
 
-- Status: Proposed
+- Status: Accepted (2026-11-05), after the review in pmm-specs#4
 - Date: 2026-10-22
 - Tickets: PMM-14247, PMM-15528, PMM-15529
 - Implemented: `PMM-MCP-GA`, percona/pmm#6068 (D9 in `DECISIONS.md`); D10 on `PMM-15529-top-queries-reporting`

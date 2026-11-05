@@ -1,6 +1,6 @@
 # ADR-08: Service list from Access-Role-filtered metric series
 
-- Status: Proposed
+- Status: Accepted (2026-11-05), after the review in pmm-specs#4
 - Date: 2026-10-22, revised 2026-10-24, 2026-11-02 and 2026-11-03
 - Tickets: PMM-14247, PMM-15531, PMM-15536
 - Implemented: Viewer rules in `PMM-MCP-GA` (percona/pmm#5942, D3 in `DECISIONS.md`), to be removed; the service list from series not yet (plan 06)

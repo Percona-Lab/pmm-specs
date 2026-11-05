@@ -1,6 +1,6 @@
 # ADR-12: Service-account tokens are principals
 
-- Status: Proposed
+- Status: Accepted (2026-11-05), after the review in pmm-specs#4
 - Date: 2026-10-22, revised 2026-10-24, 2026-10-30 and 2026-11-02
 - Tickets: PMM-14247, PMM-15531, PMM-15534
 - Implemented: not yet; lands on `main` through PMM-15534, then merges into `PMM-MCP-GA`

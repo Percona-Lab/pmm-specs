@@ -1,6 +1,6 @@
 # MCP endpoint: roadmap and shared rules
 
-- **Spec:** [spec.md](../spec.md), ADRs in [adr/](../adr/README.md); the folder is under review in [pmm-specs#4](https://github.com/Percona-Lab/pmm-specs/pull/4).
+- **Spec:** [spec.md](../spec.md), ADRs in [adr/](../adr/README.md); the folder was reviewed and merged in [pmm-specs#4](https://github.com/Percona-Lab/pmm-specs/pull/4).
 - **Code base:** percona/pmm `PMM-MCP-GA` at `826945906`, plus the phase 2 pull requests in [spec §3](../spec.md#3-where-the-work-stands).
 - **Epic:** PMM-14247.
 - **Marks:** [V] and [I] as defined at the top of [spec.md](../spec.md): verified, and inferred or not run.

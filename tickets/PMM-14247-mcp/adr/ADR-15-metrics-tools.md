@@ -1,6 +1,6 @@
 # ADR-15: Metrics tools
 
-- Status: Proposed
+- Status: Accepted (2026-11-05), after the review in pmm-specs#4
 - Date: 2026-10-24, revised 2026-10-26, 2026-10-30 and 2026-11-02
 - Tickets: PMM-14247, PMM-15790
 - Implemented: not yet (plan 05)

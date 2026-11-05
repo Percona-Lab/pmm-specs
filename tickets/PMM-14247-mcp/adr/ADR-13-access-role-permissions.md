@@ -1,6 +1,6 @@
 # ADR-13: Access-Role permissions
 
-- Status: Proposed
+- Status: Accepted (2026-11-05), after the review in pmm-specs#4
 - Date: 2026-10-22, revised 2026-10-24
 - Tickets: PMM-14247, PMM-15531, PMM-15744, PMM-15791
 - Implemented: not yet; PMM-15791, after the MCP release

@@ -1,6 +1,6 @@
 # ADR-06: Off by default, switched per request
 
-- Status: Proposed
+- Status: Accepted (2026-11-05), after the review in pmm-specs#4
 - Date: 2026-10-22
 - Tickets: PMM-14247, PMM-15528
 - Implemented: `PMM-MCP-GA`, percona/pmm#6068 (D5 in `DECISIONS.md`)

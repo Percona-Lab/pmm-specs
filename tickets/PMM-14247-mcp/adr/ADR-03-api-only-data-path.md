@@ -1,6 +1,6 @@
 # ADR-03: Data only through the public API; MCP narrows, never widens
 
-- Status: Proposed
+- Status: Accepted (2026-11-05), after the review in pmm-specs#4
 - Date: 2026-10-22, revised 2026-11-02
 - Tickets: PMM-14247, PMM-15528, PMM-15529, PMM-15531, PMM-15790
 - Implemented: the API-only path in `PMM-MCP-GA` (percona/pmm#5942); the narrowing not yet (plans 04, 06, 07)
