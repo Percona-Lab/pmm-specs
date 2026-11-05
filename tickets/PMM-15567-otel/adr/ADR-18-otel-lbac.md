@@ -38,9 +38,7 @@ Option 1, with node identity verified at ingest.
    - No header for a non-Admin means deny.
    - Any selector that doesn't parse means deny.
    - Service-account tokens follow an explicit rule.
-5. **Defaults.**
-   - The Grafana `pmm-otel` datasource stays Admin-only.
-   - A PMM UI log explorer uses the API.
+5. **Defaults.** A PMM UI log explorer uses the API. There is no Grafana OTEL datasource (ADR-23).
 
 Options 2–4 were rejected for these reasons:
 - Labels stamped at ingest freeze access at write time.

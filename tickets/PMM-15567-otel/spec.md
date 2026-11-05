@@ -20,7 +20,7 @@ Marks used below:
   - on every PMM Client node, as a new pmm-agent–managed agent type: file and journald log sources → OTLP/HTTP → `https://<server>/otlp/`.
 - pmm-managed owns the node collector's config, log sources and parser presets.
 - qan-api2 migrations own the ClickHouse schema.
-- Grafana reads the data through a read-only ClickHouse datasource.
+- pmm-managed's `LogsService` reads the data as the read-only `otel_reader` user, for the native Logs explorer in the PMM UI. There is no Grafana OTEL datasource (ADR-23).
 - The epic already records most of the design decisions (24 Sep 2026, ADR list in PMM-15590). This document builds on them and does not reopen them, except where the code on `main` makes a decision unworkable as written ([§5](#5-findings-on-main-that-change-the-tickets)).
 
 **Where the requested goal and the epic differ.** The goal in the planning request and the epic don't match on five points:
@@ -32,8 +32,8 @@ Marks used below:
 | `pmm-admin add mysql/postgresql/mongodb/valkey` collects the database log by default, from the default location or from the database | It is opt-in through `--collect-logs`, and paths come from the database (PMM-15584/85/86). PMM-15584 says "(default `error`)" but its tests pass the flag explicitly, so the ticket is ambiguous. | Collect the **error log by default** when the service is on the same host as pmm-agent. `--collect-logs=none` opts out. Slow and general logs stay opt-in, because they contain SQL text and personal data, and QAN already reads the slow log. Read paths **from the database only**; don't guess distro defaults ([§6.3](#63-default-log-collection-on-pmm-admin-add)). Valkey is included (D18), although PMM-15587 left it out. **Decided: D2, D18.** |
 | Parsers can be added in the PMM UI for any log file, and pmm-client uses them | Custom presets are managed through the API and Settings → OTEL (PMM-15574). The tickets don't say whether the UI can add or bind log sources. | Add a log-source editor to Settings → OTEL that uses the same API as `pmm-admin add logs`. The node's allow-list still checks every hand-typed path. A "test this preset on sample lines" preview is a follow-up, not part of this work ([§6.4](#64-parsers-in-the-ui)). A log in an unknown format gets the `auto` preset (a timestamp and a severity when they can be found, otherwise the raw line), and PMM suggests a matching preset from stored lines. An admin confirms the suggestion; nothing is applied silently ([§6.9](#69-logs-in-unknown-formats)). **Decided: D7, D21.** |
 | PMM Server's internal logs from `/srv/logs` | PMM-15575 lists 10 files. | Collect **all 14** files PMM Server writes there, each only when its component runs (built-in PostgreSQL and ClickHouse, internal VictoriaMetrics, Nomad). A test fails CI when a new program logs to `/srv/logs` without a source (F23). **Decided: D19.** |
-| Our own UI for reading logs, built with `@percona/peak-ui`, not only Grafana | Grafana datasource and Logs dashboard only (PMM-15576). | Build a native Logs explorer in the PMM UI, on a new `LogsService` API in pmm-managed: search, histogram, facets, surrounding lines, live tail, deep links. It is Admin-only now, and plan 06 adds LBAC to the same API. The Grafana dashboard stays for ad-hoc queries ([plan 08](plans/08-log-explorer.md)). **Decided: D20.** |
-| How LBAC works with this | Admins only, until LBAC covers logs. | Phase 1: Admin-only, enforced in the Grafana fork; PMM-15576's approach can't work ([§5](#5-findings-on-main-that-change-the-tickets)). Later: a PMM logs query API that turns the user's LBAC selectors into an allow-list of service and node IDs and fails closed ([§7](#7-lbac)). |
+| Our own UI for reading logs, built with `@percona/peak-ui`, not only Grafana | Grafana datasource and Logs dashboard only (PMM-15576). | Build a native Logs explorer in the PMM UI, on a new `LogsService` API in pmm-managed: search, histogram, facets, surrounding lines, live tail, deep links. It is Admin-only now, and plan 06 adds LBAC to the same API ([plan 08](plans/08-log-explorer.md)). It is the only log UI: no Grafana datasource or Logs dashboard. **Decided: D20, D26 (ADR-23).** |
+| How LBAC works with this | Admins only, until LBAC covers logs. | Phase 1: Admin-only, enforced by the `"/v1/logs": admin` rule on the explorer's API (ADR-23); PMM-15576's approach can't work ([§5](#5-findings-on-main-that-change-the-tickets)). Later: a PMM logs query API that turns the user's LBAC selectors into an allow-list of service and node IDs and fails closed ([§7](#7-lbac)). |
 
 **Decisions:** [§8](#8-decisions). D1–D17 were decided in the interview on 2026-10-10, and D18–D24 in the review on 2026-10-11. D2, D11 and D12 change the epic or its tickets, so they go to the epic owner and the architects as Proposed ADRs (ADR-19, ADR-20, and an amendment to PMM-15574/15571) before coding.
 
@@ -82,8 +82,8 @@ PMM Server node (its own pmm-agent):                                 otel.otel_t
     → http://127.0.0.1:4318 directly (no nginx hop)      │ pmm-managed (leader only): retention, size cap,
                                                          │ watermark: ALTER TABLE otel.* DROP PARTITION
                                                          │
-                                         Grafana ── datasource "ClickHouse-OTEL" (user otel_reader)
-                                         (fork middleware: Admins only)  ── Logs dashboard
+                               pmm-managed LogsService (user otel_reader)
+                               ── PMM UI Logs explorer (Admins only, ADR-23)
 ```
 
 **Identity contract** (ADR-02, PMM-15582) [V, ticket]. pmm-managed writes these into the `resource` processor of the node collector's config. Log-source config is never copied onto records.
@@ -96,7 +96,7 @@ PMM Server node (its own pmm-agent):                                 otel.otel_t
 | `service.name` | app sources and server components; senders set it themselves for OTLP | the application or component name, never the PMM service |
 | `log.file.path` | file sources | set by filelog `include_file_path: true` |
 
-**Table layout** (ADR-04, see D4). Keep the upstream exporter's column set, so the exporter and the Grafana plugin work unchanged. Add materialized identity columns and sort by them:
+**Table layout** (ADR-04, see D4). Keep the upstream exporter's column set, so the exporter works against the table unchanged. Add materialized identity columns and sort by them:
 - `PmmNodeId LowCardinality(String) MATERIALIZED ResourceAttributes['pmm.node_id']`
 - `PmmServiceId LowCardinality(String) MATERIALIZED ResourceAttributes['pmm.service_id']`
 - `ORDER BY (PmmNodeId, PmmServiceId, ServiceName, TimestampTime)`
@@ -140,7 +140,7 @@ PMM Server node (its own pmm-agent):                                 otel.otel_t
 | F5 | The JSON gateway **drops unknown fields** (`DiscardUnknown: true`). So a new pmm-admin sending `collect_logs` to an old server gets no error. | `managed/cmd/pmm-managed/main.go:400-406` | pmm-admin checks the server version from local pmm-agent status before sending new fields (`admin/agentlocal/agentlocal.go:77`). |
 | F6 | `pmm-admin remove` takes positional arguments `<service-type> <service-name>`. | `admin/commands/management/remove.go:41-45` | `remove logs` and `remove traces` need a restructured command (D9). |
 | F7 | PMM Server's inventory fixtures run **only on first boot**. | `managed/models/database.go:1737-1748` | The server node's collector is ensured on connect (the Nomad pattern, `managed/services/agents/registry.go:353-405,526-545`), not in fixtures. |
-| F8 | nginx strips the body from the auth subrequest. | `build/ansible/roles/nginx/files/conf.d/pmm.conf:133-136` | PMM-15576's plan to "reject queries to the OTEL datasource from non-Admins" in `auth_server` can't see which datasource a `/graph/api/ds/query` body targets. Enforce it in the Grafana fork instead, as a plugin-client middleware next to the existing `X-Proxy-Filter` forwarder (`grafana/pkg/services/pluginsintegration/pluginsintegration.go:222-223`). |
+| F8 | nginx strips the body from the auth subrequest. | `build/ansible/roles/nginx/files/conf.d/pmm.conf:133-136` | PMM-15576's plan to "reject queries to the OTEL datasource from non-Admins" in `auth_server` can't see which datasource a `/graph/api/ds/query` body targets. Enforce it in the Grafana fork instead, as a plugin-client middleware next to the existing `X-Proxy-Filter` forwarder (`grafana/pkg/services/pluginsintegration/pluginsintegration.go:222-223`). Superseded by ADR-23: there is no OTEL datasource. |
 | F9 | Every node's service account has the **Admin** role. | `managed/services/grafana/client.go:657-674` | `"/otlp/": admin` admits pmm-agents (PMM-15571 holds). Any node can claim any `pmm.node_id`, which matters for LBAC later ([§7](#7-lbac)). |
 | F10 | pmm-managed already has a privileged ClickHouse client. | `managed/cmd/pmm-managed/main.go:1098` | The leader-only retention, cap and watermark job can live in pmm-managed without a new ClickHouse user (D5). |
 | F11 | QAN retention runs in qan-api2 on **every replica**. That is harmless only because a time-based `DROP PARTITION` is idempotent. | `qan-api2/main.go:290-303,447` | A size-cap or watermark drop is not idempotent across replicas. It must run on the leader only (PMM-15594), so not in qan-api2. |
@@ -295,10 +295,10 @@ So it would have to:
 ### 7.3 Phase 1 (this epic): Admin-only, enforced in three places
 
 1. **Ingest:** `"/otlp/": admin` in the auth rules. Nobody else can write.
-2. **Read:**
-   - The Grafana fork denies `QueryData` and `CallResource` for the datasource UID `pmm-otel` unless the user's org role is Admin.
-   - The Logs dashboard sits in a folder with Admin-only permissions.
-   - The `otel_reader` ClickHouse user has `SELECT` on `otel.*` only.
+2. **Read** (ADR-23):
+   - Logs are read only through `LogsService`, under the rule `"/v1/logs": admin`.
+   - `LogsService` reads as the `otel_reader` ClickHouse user, which has `SELECT` on `otel.*` only.
+   - There is no Grafana OTEL datasource and no Logs dashboard.
 3. **Content:** a redaction `transform` on the server masks bearer and `glsa_` tokens, `Authorization` headers and `password=` values before they are stored.
 
 A user restricted by LBAC sees no logs in Phase 1. That is fail-closed, and it matches the epic.
@@ -322,7 +322,7 @@ A user restricted by LBAC sees no logs in Phase 1. That is fail-closed, and it m
    - No header for a non-Admin means deny.
    - Any selector that doesn't parse means deny.
    - Service-account tokens get an explicit decision rather than today's skip.
-5. **UI.** A log explorer and a trace view in the PMM UI built on this API. The Grafana `pmm-otel` datasource stays Admin-only.
+5. **UI.** A log explorer and a trace view in the PMM UI built on this API.
 6. **Semantics to document.**
    - Access follows current labels. Revoking a role hides old logs at once, and the logs of a deleted service become invisible to restricted users.
    - Node-level logs are visible only through node labels, as node metrics are today.
@@ -360,12 +360,13 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 | D17 | Existing access gaps found during research | Fixed in this programme, in plan 07, worded as fixes without exploit detail. | Plan 07 |
 | D18 | Valkey logs | In scope: discovery through `CONFIG GET`, a `valkey` preset, and collection on by default on `pmm-admin add valkey`, like the other databases. Ticket: PMM-15724. | Plan 04 |
 | D19 | Which PMM Server logs are collected | Every file in `/srv/logs`, conditional on the component running, with a completeness test. | Plan 02 |
-| D20 | How users read logs | A native PMM UI Logs explorer built with peak-ui on a new `LogsService` API. It is Admin-only until plan 06; the Grafana datasource and dashboard stay. Ticket: PMM-15722. | Plan 08 |
+| D20 | How users read logs | A native PMM UI Logs explorer built with peak-ui on a new `LogsService` API. It is Admin-only until plan 06, and it is the only log UI (D26). Ticket: PMM-15722. | Plan 08 |
 | D21 | Logs in unknown formats | The `auto` preset becomes the default for file sources, and an admin confirms preset suggestions computed from stored lines. Parsers are never applied silently. Ticket: PMM-15723. | Plan 04 |
 | D22 | Histogram drawing in the explorer | `@mui/x-charts` (MIT, built for MUI v7), themed with peak-ui's chart palette. Plan 06's trace view reuses it. | Plan 08 |
 | D23 | AI-drafted parsers for unknown formats | A follow-up after logs ship, filed as PMM-15725. It must be opt-in, run on redacted samples, use a model the admin configures, validate its output with the same checks as custom presets, and never apply anything without an admin's approval. | Follow-up |
-| D24 | Grafana Logs dashboard alongside the native explorer | Build both. Decide which one to keep after Technical Preview feedback; until then the explorer is the one service dashboards link to. | Plans 03, 08 |
+| D24 | Grafana Logs dashboard alongside the native explorer | Build both. Decide which one to keep after Technical Preview feedback; until then the explorer is the one service dashboards link to. Superseded by D26. | Plans 03, 08 |
 | D25 | Release target and the default | The Technical Preview targets 3.12.0 (due 14 January 2027) with Phase 0 and plans 01, 02, 03 and 08. OTEL stays on by default (ADR-12), with a go/no-go: if PMM-15592 hasn't passed by 3.12.0 code freeze, 3.12.0 ships with `OtelCollectorEnabledDefault = false`. | Roadmap |
+| D26 | Read path for logs | The native explorer is the only log UI: no Grafana OTEL datasource, no fork middleware, no Logs dashboard. Recorded as ADR-23, which supersedes ADR-07 once accepted. Supersedes D24 and amends D20. | Plans 03, 08 |
 
 **Interview of 2026-10-10:**
 - Every recommendation above was accepted: D1–D14, and D15–D17 as written.

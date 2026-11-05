@@ -4,7 +4,7 @@
 > 1. Get the ADR in Task 0 accepted.
 > 2. Re-run superpowers:writing-plans against the merged code from plans 01–05.
 
-**Goal:** Users restricted by LBAC see the logs and traces of exactly the services and nodes their roles allow, with the same semantics as metrics. Everyone else keeps today's behaviour, where the raw `pmm-otel` Grafana datasource stays Admin-only.
+**Goal:** Users restricted by LBAC see the logs and traces of exactly the services and nodes their roles allow, with the same semantics as metrics. Everyone else keeps today's behaviour: logs are Admin-only (ADR-23).
 
 **Architecture** ([analysis §7](../spec.md#7-lbac)):
 - **Enforcement:** a PMM query API, not the Grafana datasource.
@@ -97,7 +97,7 @@ Plan 08 builds `LogsService` (`Search`, `Context`, `Histogram`, `Facets`) for Ad
 
 - **Files:**
   - `ui/apps/pmm/src/pages/logs/LogsExplorer.tsx`: drop the Admin-only `roles`;
-  - `navigation.constants.ts`: `NAV_LOGS` becomes visible to every role when LBAC is enabled, and to Admins only otherwise (ADR-07 still applies without LBAC);
+  - `navigation.constants.ts`: `NAV_LOGS` becomes visible to every role when LBAC is enabled, and to Admins only otherwise (ADR-23 still applies without LBAC);
   - a new `ui/apps/pmm/src/pages/traces/*` view on `TracesService`, built the same way as plan 08's explorer.
 - **Content:** a "partial trace" notice.
 - **Tests:** Vitest for role visibility and the partial notice. A pmm-qa e2e test with a restricted user.

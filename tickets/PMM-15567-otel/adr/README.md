@@ -46,3 +46,4 @@ ADR-01 to ADR-14 record the OpenTelemetry decisions of the 24 Sep 2026 architect
 | [20](ADR-20-collector-config-rendered-by-agent.md) | Node collector config rendered by pmm-agent | Proposed |
 | [21](ADR-21-native-log-explorer.md) | Native log explorer in the PMM UI | Proposed |
 | [22](ADR-22-unknown-log-formats.md) | Logs in unknown formats | Proposed |
+| [23](ADR-23-explorer-only-read-path.md) | Logs are read through the PMM explorer only | Proposed |

@@ -22,18 +22,17 @@ The PMM UI already has native data pages built with `@percona/peak-ui` (for exam
 ## Decision
 
 Option 3:
-- **API:** pmm-managed exposes `LogsService` (`Search`, `Context`, `Histogram`, `Facets`) under `/v1/logs`.
+- **API:** pmm-managed exposes `LogsService` (`Search`, `Context`, `Histogram`, `Facets`, `Patterns`) under `/v1/logs`.
   - It reads `otel.logs` as `otel_reader`, and binds every filter value as a parameter.
   - It caps the time range, result size and execution time.
   - It resolves node and service names from inventory.
 - **Page:** a PMM UI page, `/logs`, built with peak-ui and TanStack Query, offers filters with counts, a severity histogram, a table, a details pane with surrounding lines, live tail, export, and shareable URLs.
 - **Links:** service dashboards and Inventory link into it.
 - **Access:** Admins only until ADR-18 is implemented. Then the same API applies LBAC and the page opens to every role.
-- **Grafana:** the datasource and dashboard are built too, Admin-only. Which of the two log UIs to keep is decided after Technical Preview feedback; until then, service dashboards link to the explorer.
+- **Grafana:** no OTEL datasource or Logs dashboard (ADR-23).
 
 ## Consequences
 
 - One read path that PMM controls: the place where LBAC (ADR-18) is enforced later, with no SQL from clients.
-- **Two ways to read logs to maintain:** the explorer is the primary one, and the dashboard is secondary.
 - **The histogram uses `@mui/x-charts`** (MIT, built for MUI v7). It is a new UI dependency, and later charts, such as the trace view, reuse it.
-- New UI work in a release that also ships the collector. If it can't ship with 3.11.0, logs are available through Grafana first.
+- It ships with 3.12.0 and is the only log UI, so it is on the release's critical path.

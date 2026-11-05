@@ -1,6 +1,8 @@
 # OTel 05: Traces Implementation Plan (task level, re-plan before execution)
 
 > **For agentic workers:** this plan is at **task level**. Its interfaces depend on code that plans 01–04 create. Before executing it, re-run superpowers:writing-plans on this file against the merged code to expand each task into steps. Then use superpowers:subagent-driven-development.
+>
+> **Re-plan note:** ADR-23 removes the Grafana OTEL datasource, so Task 4's dashboard needs a native trace view instead (plan 06, Task 5 sketches one).
 
 **Goal:** Applications instrumented with OpenTelemetry send traces to their node's collector. PMM samples them, stores them in `otel.otel_traces`, shows them in a Traces dashboard with a service map, and links spans to PMM services, QAN and logs.
 
@@ -84,7 +86,7 @@ The roadmap's constraints apply. In addition, from PMM-15579:
   - On a CHAOS VM: a port clash shows in `pmm-admin list`; `telemetrygen traces --otlp-insecure` at 100 % sampling lands in `otel.otel_traces`, and at the default about 10 % does.
 - **Commit:** `PMM-15579 Add pmm-admin add/remove traces`
 
-### Task 4: Traces dashboard with a service map
+### Task 4: Traces dashboard with a service map (re-plan: ADR-23)
 
 - **Files:**
   - `dashboards/dashboards/OTel/Traces.json` (uid `pmm-otel-traces`). Start from `git show origin/tibi-holmes:dashboards/dashboards/Experimental/OTel_ClickHouse_Traces_and_Service_Map.json`, and remove the `pmm-service-map-panel` panels and the coroot recording-rule panels.

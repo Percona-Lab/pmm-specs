@@ -16,13 +16,13 @@ The same API becomes the LBAC-enforced read path in plan 06.
 - A new `LogsService` in pmm-managed builds parameterized ClickHouse SQL from structured filters. It reads `otel.logs` as the read-only `otel_reader` user and resolves node and service names from inventory.
 - The PMM UI page `/logs` uses TanStack Query hooks over that API, and peak-ui components (`Table`, `Chip`, `CodeBlock`, `AutoCompleteInput`, `DateTimePickerInput`, `useDetailsPaneNavigation`, `usePerconaTableUrlState`, illustrations).
 - The page follows the RTA overview page (`ui/apps/pmm/src/pages/rta/overview/`).
-- It is Admin-only in this phase (ADR-07). Plan 06 opens it to restricted users once LBAC applies.
+- It is Admin-only in this phase (ADR-23). Plan 06 opens it to restricted users once LBAC applies.
 
 **Tech Stack:** Go (pmm-managed, clickhouse-go), protobuf/grpc-gateway, React, MUI v7, `@percona/peak-ui` 1.0.26+, `@mui/x-charts`, TanStack Query, Vitest.
 
 **Spec:**
 - [analysis](../spec.md) §7 and decision D20;
-- ADR-07, ADR-18, and ADR-21 (proposed);
+- ADR-18, ADR-21 and ADR-23 (proposed);
 - the [roadmap](00-roadmap.md) for the shared names.
 - [PMM-15722](https://perconadev.atlassian.net/browse/PMM-15722) (Logs explorer, under PMM-15567). Where its acceptance criteria differ from this plan, the ticket is current.
 
@@ -290,9 +290,8 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
 
 **Files:**
 - Modify:
-  - the service summary dashboards and Node Summary (the same files as plan 03, Task 6): their log links open the native explorer, `/logs?service=${service_id}&from=${__from}&to=${__to}`, or `node=${node_id}` from Node Summary;
-  - `dashboards/dashboards/OTel/Logs.json`: a panel link "Open in Logs explorer" with the same filters;
-  - the Grafana fork's Inventory Services tab (`/srv/runner/4/percona/grafana/public/app/percona/inventory/`): a "Logs" row action for services that have log sources.
+  - the service summary dashboards `dashboards/dashboards/MySQL/MySQL_Instance_Summary.json`, `PostgreSQL/PostgreSQL_Instance_Summary.json` and `MongoDB/MongoDB_Instance_Summary.json`, and `OS/Node_Summary.json` (check the names with `ls dashboards/dashboards/*/`): their log links open the native explorer, `/logs?service=${service_id}&from=${__from:date:iso}&to=${__to:date:iso}`, or `node=${node_id}` from Node Summary. Use `:date:iso`, because `useLogsUrlFilters` accepts ISO or relative times only;
+  - the Inventory Services tab: a "Logs" row action for services that have log sources. If PMM-15002 has moved Inventory into `ui/apps/pmm` by then, add it there; otherwise in percona/grafana, `public/app/percona/inventory/`.
 
   Use the PMM UI base path for the URL (`PMM_NEW_NAV_PATH` in `ui/apps/pmm/src/lib/constants.ts`, and the path Grafana uses to reach the PMM UI). Check it on a Feature Build.
 
