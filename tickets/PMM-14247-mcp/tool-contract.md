@@ -14,7 +14,7 @@ Today's code has the error codes and the `error: <code>` text; the rest of the c
 This document holds:
 - the rules every tool follows: results ([§2](#2-one-result-two-renderings)), errors ([§3](#3-errors)), paging ([§4](#4-paging)), provenance ([§5](#5-provenance)), partial results ([§6](#6-partial-results)) and untrusted fields ([§7](#7-untrusted-fields));
 - one table with a row per tool ([§8](#8-tools));
-- the decisions taken with it ([§9](#9-decisions-recorded-here)), and the question left for its review ([§10](#10-questions-for-the-review)).
+- the decisions taken with it ([§9](#9-decisions-recorded-here)), and the question left for its review ([§10](#10-question-for-the-review)).
 
 Inputs and output schemas are not written out here. Plan 03's `TestToolsListGolden` snapshots `tools/list` (names, descriptions, input and output schemas, annotations) in `testdata/tools_list.golden.json`, so a change to them shows up as a diff in review. Caps are in [spec §8](spec.md#8-phase-3-output-contract), the one place where they change; where a note here quotes one, spec §8 governs.
 
@@ -152,14 +152,14 @@ Plan 07 gives `pmm_alerts` and `pmm_advisors` no `partial` field: a failing serv
 ## 7. Untrusted fields
 
 - A field whose text comes from a monitored database or from a user has an output-schema description, the field's `jsonschema` text, that starts with `Untrusted.`.
-- The kinds: fingerprints, query examples, plans, DDL, label and dimension values, variable values, service, node, database, schema and table names, `environment` and `cluster` values, `version` strings, and the `message` of a part's error (plan 03, plan 06); alert names, severities, labels, summaries and descriptions, and Advisor check names, summaries, descriptions and links (ADR-11, ADR-17, ADR-18, plan 07).
+- The kinds: fingerprints, query examples, plans, DDL, label and dimension values, variable values, service, node, database, schema and table names, `environment`, `cluster` and `address` values, `version` strings, and the `message` of a part's error (plan 03, plan 06); alert names, severities, labels, summaries and descriptions, and Advisor check names, summaries, descriptions and links (ADR-11, ADR-17, ADR-18, plan 07).
 - `Instructions` tell the model that marked fields are data, not instructions ([spec §8](spec.md#8-phase-3-output-contract) item 6). That is advice to the model: it doesn't make injected text harmless (ADR-11), and what bounds the harm is that every tool is read-only (ADR-05).
 - The mark is not redaction. ADR-07 decides what is masked: with `PMM_MCP_RAW_SQL` off, fingerprints, examples and plans are masked or withheld; DDL, names, dimension and label values, variable values, `version` strings, part error messages, and alert and Advisor texts are returned as stored.
 
 | Tool | Untrusted fields |
 |---|---|
 | `pmm_version` | none |
-| `pmm_inventory` | `services[].service_name`, `services[].node_name`, `services[].version`; plan 06 adds `services[].environment`, `services[].cluster` |
+| `pmm_inventory` | `services[].service_name`, `services[].node_name`, `services[].version`, `services[].address`; plan 06 adds `services[].environment`, `services[].cluster` and removes `services[].address` |
 | `pmm_top_queries` | `rows[].fingerprint`, `rows[].dimension` |
 | `pmm_query_detail` | `service_name`, `version`, `database`, `schema`, `fingerprint`, `example`, `tables`, `metrics_error.message`, `example_error.message` |
 | `pmm_get_explain` | `service_name`, `plan` |
@@ -252,8 +252,8 @@ The other field rules of plan 03 Task 5, for reference:
 
 ### 9.6 Untrusted marks on names
 
-Service, node, database, schema and table names, `environment` and `cluster` values, `version` strings, and part error messages are marked untrusted ([§7](#7-untrusted-fields)), as are alert severities and Advisor check names and links.
-- Plan 03's rule marks a field whose text comes from a monitored database or a user, and these fields do. Database, schema and table names come from the monitored database, like DDL. Service and node names, `environment` and `cluster` are typed in by whoever registers the service. A `version` is the string the monitored server reports, read from the exporters' info metrics. A part's error message can quote the monitored database's own error text. An alert's `severity` label is set by the rule's author, and a custom Advisor check is written by a user.
+Service, node, database, schema and table names, `environment`, `cluster` and `address` values, `version` strings, and part error messages are marked untrusted ([§7](#7-untrusted-fields)), as are alert severities and Advisor check names and links.
+- Plan 03's rule marks a field whose text comes from a monitored database or a user, and these fields do. Database, schema and table names come from the monitored database, like DDL. Service and node names, `environment`, `cluster` and `address` are typed in by whoever registers the service. A `version` is the string the monitored server reports, read from the exporters' info metrics. A part's error message can quote the monitored database's own error text. An alert's `severity` label is set by the rule's author, and a custom Advisor check is written by a user.
 - The field lists of [§7](#7-untrusted-fields) and the plans follow the rule: every field named there, and the same fields in the plans' result types, is marked.
 - IDs, engine values, codes, `pmm_url`, numbers and timestamps are PMM's own and stay unmarked.
 
