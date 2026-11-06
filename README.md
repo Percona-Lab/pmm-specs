@@ -10,4 +10,4 @@ Layout and rules: [AGENTS.md](AGENTS.md).
 |---|---|---|
 | [PMM-15567-otel](tickets/PMM-15567-otel/) | OpenTelemetry logs and traces | Design; ADRs partly accepted |
 | [PMM-15785-qan-clickhouse-db](tickets/PMM-15785-qan-clickhouse-db/) | QAN database consistency across ClickHouse replicas (PMM HA) | Design, in review |
-| [PMM-15868-aurora-monitoring](tickets/PMM-15868-aurora-monitoring/) | Aurora monitoring: cluster overview, fixed Aurora dashboard, rds_exporter cluster data | Design, proposed |
+| [PMM-15868-aurora-monitoring](tickets/PMM-15868-aurora-monitoring/) | Aurora and RDS monitoring: Amazon RDS overview page, fixed Aurora dashboard, rds_exporter cluster data | Release 1 implemented, in review |

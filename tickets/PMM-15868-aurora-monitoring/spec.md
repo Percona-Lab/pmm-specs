@@ -1,48 +1,62 @@
 # Aurora monitoring in PMM
 
 *   **Author:** Tibi (tibor.korocz@percona.com)
-*   **Status:** Proposed
-*   **Date:** 2026-11-04
+*   **Status:** Release 1 implemented, in code review. Live checks of plain RDS and of an Aurora PostgreSQL reader are pending (see [Verification](#verification-and-acceptance-criteria)).
+*   **Date:** 2026-11-04, updated to the as-built design on 2026-11-06
 *   **Epic:** [PMM-15868](https://perconadev.atlassian.net/browse/PMM-15868)
-*   **Inputs:** [research.md](research.md) (live check and code reading), [concepts_brief.md](concepts_brief.md) (two review rounds)
+*   **Inputs:** [research.md](research.md) (live check and code reading before this epic), [concepts_brief.md](concepts_brief.md) (two review rounds, history only)
 
 --------------------------------------------------------------------------------
 
 ## Overview
 
-PMM monitors Amazon Aurora instances added through RDS discovery, but treats them as plain RDS instances.
-Its one Aurora dashboard is broken on Aurora MySQL 3, nothing groups instances by Aurora cluster, and cluster storage is never collected.
+PMM monitors Amazon Aurora and RDS instances added through RDS discovery, but treated Aurora as plain RDS.
+Its one Aurora dashboard was broken on Aurora MySQL 3, nothing grouped instances by Aurora cluster, and cluster storage was never collected.
 
-This design fixes that in two releases:
+Release 1, as built:
 
-*   **Release 1, Aurora MySQL:**
-    1.  rds_exporter publishes one small "info" series per instance, carrying the AWS cluster ID and engine it already receives from AWS.
-    2.  rds_exporter collects Aurora cluster storage, which it requests today in a form AWS never answers.
-    3.  A new Aurora overview dashboard, linked from the MySQL menu, lists instances grouped by AWS cluster.
-    4.  The existing MySQL Amazon Aurora Details dashboard gets targeted fixes and rows for data PMM already collects.
-    5.  Two generic panels that are empty on every RDS node (Disk Space, CPU Saturation) are fixed, which also helps plain RDS.
-*   **Release 2, Aurora PostgreSQL:** the same overview covers Aurora PostgreSQL, with a details view and a writer/reader signal.
+1.  **rds_exporter** publishes one info series per instance with the AWS cluster ID, engine, account and read-replica source, taken from the `DescribeDBInstances` calls it already makes. It also collects Aurora cluster storage, publishes CloudWatch `FreeableMemory` under its own name and leaves `fstype` empty on filesystem series.
+2.  **A native PMM UI page, Amazon RDS > Overview**, lists every Aurora MySQL, Aurora PostgreSQL, RDS for MySQL, MariaDB and PostgreSQL instance. It groups them by Aurora cluster, Multi-AZ DB cluster or replication group, and shows status, role, firing alerts, throughput and storage.
+3.  **pmm-managed** adds a viewer-allowed endpoint that lists Node types, which the menu needs, and copies the Service's `environment`, `cluster` and `replication_set` labels onto rds_exporter series so that LBAC roles see them.
+4.  **MySQL Amazon Aurora Details** works on Aurora MySQL 3 without URL variables and gains CloudWatch and cluster storage panels.
+5.  **Generic panels:** Disk Space works on RDS nodes, and so does CPU Saturation when Enhanced Monitoring is on.
 
-Nothing changes in RDS discovery, the PMM API, the add-instance form, inventory labels or PMM's database.
+Release 2 (an Aurora PostgreSQL details view and WAL Writes on Aurora) is still to be designed.
+There is no database migration, no new AWS permission, and no change to RDS discovery or the add-instance form.
+
+## Decision Log
+
+Changes from the design as first reviewed, and why.
+
+| # | Change | Why |
+|---|---|---|
+| 1 | The overview is a native PMM UI page (`/pmm-ui/amazon-rds`, top-level menu **Amazon RDS > Overview**), not a Grafana dashboard. The planned "Amazon Aurora Overview" dashboard under MySQL and an interim Grafana panel-plugin prototype were dropped. | Grafana's nested tables can't do per-row links or field config in the Grafana version PMM ships, and when PMM upgrades Grafana is not known. The panel plugin also needed an unsigned-plugin allowance. A top-level landing page fits the PMM UI, like Real-Time Analytics. |
+| 2 | Scope widened from Aurora MySQL to plain RDS (MySQL, MariaDB, PostgreSQL) and Aurora PostgreSQL. | The info series and the grouping need nothing Aurora-specific, so the other RDS engines came at little cost. |
+| 3 | Firing alerts per group and instance are in scope. Advisor counts are still out. | Grafana's alert rules API carries `service_name` and `node_name`, which a native page can read; the earlier rejection assumed a dashboard reading metrics only. Advisor results still have no per-service source. |
+| 4 | The info series' AWS values are refreshed every 5 minutes from the enhanced scraper's existing `DescribeDBInstances` call, not only read at start (reverses Alternative H). | Read-replica sources change when a replica is promoted, and cluster storage must follow the instance's current cluster. The refresh adds no AWS call. |
+| 5 | The info series also carries `aws_source_instance_id` and `aws_source_region`. | Replication groups (primary and read replicas, also cross-region) are built from them. |
+| 6 | rds_exporter series carry the Service's `environment`, `cluster` and `replication_set` when all Services on the Node agree on them. This corrects the earlier "no inventory label change". | With LBAC roles filtering on these labels, every rds_exporter series was hidden: the page showed every instance under "AWS info unavailable" and the RDS node dashboards were blank. |
+| 7 | New endpoint `POST /v1/inventory/nodes:getTypes` (`ListActiveNodeTypes`), allowed for viewers; an additive change to the PMM API. | The menu shows only when an RDS Node exists, and listing Nodes needs the Admin role. |
+| 8 | CloudWatch `FreeableMemory` becomes `aws_rds_freeable_memory_average`. | It was stored as `node_memory_Cached_bytes`, which Enhanced Monitoring also uses for the OS cache. |
+| 9 | Aurora Details also gets an "Instance resources (CloudWatch)" row, a "Cluster volume used" panel and a link to the Amazon RDS page. | CloudWatch data is there for every instance, Enhanced Monitoring or not. |
+| 10 | CPU Saturation's RDS branch needs Enhanced Monitoring; it is documented, with no CloudWatch fallback. | CloudWatch reports CPU utilization, not saturation. |
+| 11 | QA: two Playwright tests; the planned CodeceptJS change to PMM-T1295 was dropped. | pmm-qa's rule: new UI tests go to Playwright. |
 
 ## The Problem
 
 Checked on 2026-11-04 on a PMM 3.10.1 dev build, against two Aurora MySQL 3 instances (MySQL 8.0.42) and one Aurora PostgreSQL 15.15 instance, each a single-writer cluster ([research.md](research.md)).
 
 *   **The Aurora dashboard is empty when opened normally.**
-    MySQL Amazon Aurora Details builds both its service and node dropdowns from `mysql_global_status_auroradb_thread_deadlocks`, which Aurora MySQL 3 no longer reports.
-    Opened without URL variables, every panel shows "No data".
-    With `var-service_name` in the URL, 4 of its 6 panels are still partial or wrong (PMM-6655 is one of them).
-    No PMM menu links to it; users reach it only through search.
-*   **No view groups instances by Aurora cluster.**
-    PMM stores no AWS cluster ID. The `cluster` label holds whatever the user typed, and rds_exporter's series never carry it.
+    MySQL Amazon Aurora Details builds its service and node dropdowns from `mysql_global_status_auroradb_thread_deadlocks`, which Aurora MySQL 3 no longer reports.
+    With `var-service_name` in the URL, 4 of its 6 panels are still partial or wrong (PMM-6655 is one of them). No PMM menu links to it.
+*   **No view groups instances by Aurora cluster** or shows the RDS estate at all.
+    PMM stores no AWS cluster ID; the `cluster` label holds whatever the user typed, and rds_exporter's series never carry it.
 *   **Cluster storage is never collected.**
-    rds_exporter asks CloudWatch for `VolumeBytesUsed`, `VolumeReadIOPs` and `VolumeWriteIOPs` per instance, but AWS publishes them per cluster, so the 3 calls per instance per scrape always come back empty.
+    rds_exporter asks CloudWatch for `VolumeBytesUsed`, `VolumeReadIOPs` and `VolumeWriteIOPs` per instance, but AWS publishes them per cluster, so 3 calls per instance per scrape always come back empty.
 *   **Most collected Aurora data is never shown.**
     PMM collects 36 CloudWatch metrics per Aurora MySQL instance and about 130 Aurora status counters; all dashboards together use 4 `aws_rds_*` metrics.
 *   **Two generic panels are empty on every RDS node.**
     Disk Space filters on a filesystem type that rds_exporter never reports, and CPU Saturation needs `node_cpu_seconds_total`, which RDS nodes do not have.
-    The cause is in code that runs for every RDS instance, so plain RDS is very likely affected too (not tested).
 *   **Aurora PostgreSQL has no dashboard.**
     Its replication collectors are skipped since PMM-14527, so reader lag and WAL panels on the generic PostgreSQL dashboards stay empty.
 
@@ -50,451 +64,306 @@ Checked on 2026-11-04 on a PMM 3.10.1 dev build, against two Aurora MySQL 3 inst
 
 Release 1:
 
-1.  **Aurora details work when opened normally.**
-    Opened from the menu, search or the overview with no URL variables, MySQL Amazon Aurora Details lists every Aurora MySQL service.
-    On Aurora MySQL 3 under load, the panel sweep finds no empty and no partly empty panel, except rows labelled as needing a reader or Serverless.
-2.  **One view of all Aurora MySQL clusters.**
-    A new overview, linked from the MySQL menu, lists every monitored Aurora MySQL instance grouped by AWS region and cluster, including instances added before this change, with no label edits.
-    An instance with no cluster information (no rds_exporter, an older pmm-client, or a failed AWS lookup) appears in an "AWS cluster unknown" group instead of disappearing.
-3.  **Cluster storage is visible** for each Aurora cluster.
-4.  **AWS requests do not grow.** rds_exporter's request count per Aurora instance, measured with `rds_exporter_requests_total`, is no higher than before.
-5.  **Disk Space and CPU Saturation show data** for RDS nodes, Aurora and plain RDS alike (Disk Space once the instance's pmm-client is upgraded).
-6.  **No regression on plain RDS.** A plain RDS MySQL instance keeps every panel it has today and gets an info series with an empty cluster ID.
+1.  **Aurora details work when opened normally.** Opened from the menu, search or the Amazon RDS page with no URL variables, MySQL Amazon Aurora Details lists every Aurora MySQL service, and its panels have data except rows labelled as needing a reader, a feature in use, or Serverless.
+2.  **One view of every RDS and Aurora database.** The Amazon RDS page lists every MySQL and PostgreSQL service on a `remote_rds` Node, grouped by Aurora cluster, Multi-AZ DB cluster or replication group, including instances added before the upgrade, with no label edits.
+    An instance without AWS details (an older pmm-client, or a failed AWS lookup) appears under "AWS info unavailable" instead of disappearing.
+3.  **Health at a glance.** For each group and instance: exporters connected, writers or role, firing alerts, throughput and storage.
+4.  **Same visibility as the dashboards.** Users with the Viewer role see the menu and the page, and LBAC roles see the instances they may see.
+5.  **Cluster storage is visible** for each Aurora cluster.
+6.  **AWS requests do not grow:** fewer CloudWatch calls per instance, and no extra `DescribeDBInstances` call.
+7.  **Disk Space and CPU Saturation show data** for RDS nodes: Disk Space once rds_exporter is upgraded, CPU Saturation when Enhanced Monitoring is on.
+8.  **No regression on plain RDS.**
 
 Release 2:
 
-7.  Aurora PostgreSQL instances appear in the same overview, have a details view and a writer/reader signal, and WAL Writes is no longer empty on Aurora.
+9.  Aurora PostgreSQL gets a details view, and WAL Writes is no longer empty on Aurora. Listing and role on the Amazon RDS page shipped in Release 1.
 
 ## Non-Goals
 
-*   Changes to RDS discovery, its proto, the add-instance form, inventory labels or PMM's database. PMM UI changes are limited to the overview's menu entry.
-*   New AWS permissions, and therefore `DescribeDBClusters` and everything that needs it: true cluster size, the writer flag from AWS, Serverless mode, Global Database.
-*   Alert or advisor counts per cluster (no per-cluster data source exists), and new Aurora alert templates.
-*   Writer/reader role or environment as labels; environment from AWS tags.
-*   Plain RDS features that touch nothing this design changes, such as a panel for CloudWatch `FreeStorageSpace`. They go to a separate ticket.
-*   The PostgreSQL Tuples panel's `instance=~"$node_name"` filter bug, which affects every PostgreSQL service. It goes to its own bug.
-*   Aurora MySQL 2 (MySQL 5.7-compatible): past end of standard support, and no test instance runs it.
-*   Converting panels this design doesn't otherwise touch from the old `graph` type.
+*   Changes to RDS discovery, its proto, the add-instance form or PMM's database.
+*   New AWS permissions, and therefore `DescribeDBClusters` and everything that needs it: true cluster size, the writer flag from AWS, Serverless mode, Global Database, and linking a replica of a Multi-AZ DB cluster or an Aurora cross-region replica cluster to its source.
+*   Advisor counts per group, and new Aurora alert templates.
+*   Writer/reader role or AWS tags as labels; environment from AWS tags.
+*   Listing instances added with `pmm-admin add mysql|postgresql`: they don't run on a `remote_rds` Node.
+*   A CloudWatch fallback for CPU Saturation.
+*   The PostgreSQL Tuples panel's `instance=~"$node_name"` filter bug (its own bug), Aurora MySQL 2, and converting untouched panels from the old `graph` type.
 
-## Open Questions
+## Open Questions and Known Limitations
 
-*   **Where cluster storage is fetched (D4).** Each Aurora instance asks for its cluster's `VolumeBytesUsed`, or rds_exporter groups instances and asks once per cluster per process. Decided in the Technical Plan.
-*   **Which endpoint serves the info series (D1).** `/basic`, `/enhanced` or a new one; it must be exactly one.
-*   **Whether the cluster key includes the AWS account (D3).** Needed only if one PMM monitors clusters with the same name in two accounts. Whether the account can be read from `DBInstanceArn` is unverified.
-*   **Aurora PostgreSQL role signal and details view (D7, D8).** Release 2.
-*   **Spikes before implementation**, on clusters that have a reader:
-    *   Values of `innodb_read_only` and the PostgreSQL role signals on a reader, and during a failover.
-    *   ~~How often AWS publishes `VolumeBytesUsed`, and which query window shows it without gaps.~~ Resolved: see Technical Plan 2 (3-hour lookback).
-    *   Whether RDS Multi-AZ DB clusters (plain RDS) also set `DBClusterIdentifier`.
-    *   What PMM-T1295 in pmm-qa asserts, so the new Details rows don't fail it.
+The design questions are settled: D1 (info series on `/enhanced`), D3 (the key includes the AWS account, read from `DBInstanceArn`), D4 (cluster storage per instance, read with `max`), and D7 (Aurora PostgreSQL role from the existing `pg_replication_is_replica` and `pg_settings_in_hot_standby`). D8, the Aurora PostgreSQL details view, waits for Release 2.
+
+Known limitations and follow-ups:
+
+*   **Show all in Alert groups** filters on `node_name` only, so an alert that names an instance only through `service_name` is counted on the page but not listed there.
+*   Under a search, a group's alert badge also counts alerts of the instances the search hides.
+*   Aurora MySQL added with `pmm-admin` gets no Deadlocks line in Problems: the status counter Aurora 3 dropped was replaced by CloudWatch `Deadlocks`, which needs rds_exporter.
+*   The new no-data text on the InnoDB data I/O panels mentions Aurora also for non-Aurora instances that have no data.
+*   Aurora PostgreSQL 13 and older shows role "unknown": `pg_settings_in_hot_standby` needs PostgreSQL 14, and the replication collectors are skipped on Aurora.
+*   A replica of a Multi-AZ DB cluster shows as a standalone instance, and an Aurora cross-region replica cluster as its own cluster; linking them needs `DescribeDBClusters`.
+*   Sessions whose instances all disable enhanced metrics make no refresh call, so their info values stay as read at start-up until rds_exporter restarts.
+*   rds_exporter's session keying, unchanged by this epic, mixes up the same instance name in two accounts in one region, and several IAM roles behind one access key.
+*   Pending live checks: see [Verification](#verification-and-acceptance-criteria).
 
 ## Critical User Journeys (CUJs)
 
-### CUJ 1: See every Aurora cluster at a glance
+### CUJ 1: See every RDS and Aurora database at a glance
 
-*   **Given**: PMM Server and pmm-client from Release 1, and Aurora MySQL instances added through RDS discovery, some before the upgrade.
-*   **When**: The user opens the Aurora overview from the MySQL menu.
-*   **Then**: Instances are grouped by AWS region and cluster. Each group shows monitored instances, how many exporters are connected (N of M), throughput and cluster storage, and links to Details, Alerting and Advisors. No label was edited.
+*   **Given**: PMM Server and pmm-client from Release 1, and instances added through RDS discovery, some before the upgrade.
+*   **When**: A user with the Viewer role or higher opens **Amazon RDS > Overview**.
+*   **Then**: One row per group, ordered by region and account: Aurora cluster, Multi-AZ DB cluster, replication group (named after the primary) or standalone instance. Each shows connected and monitored instances, writers, firing alerts, throughput and storage. No label was edited.
 
 ### CUJ 2: Drill into one instance
 
-*   **Given**: The overview from CUJ 1.
-*   **When**: The user clicks an instance.
-*   **Then**: MySQL Amazon Aurora Details opens with that service selected, and every panel that applies to it has data.
+*   **Given**: The page from CUJ 1.
+*   **When**: The user expands a group and clicks an instance.
+*   **Then**: The engine's main dashboard opens in a new tab with that service selected: Aurora Details for Aurora MySQL, MySQL Instance Summary for MySQL and MariaDB, PostgreSQL Instance Summary for PostgreSQL and Aurora PostgreSQL. **MySQL** and **OS** links open MySQL Instance Summary and Node Summary.
 
 ### CUJ 3: Open the Aurora dashboard from search
 
 *   **Given**: Release 1 installed.
 *   **When**: The user finds MySQL Amazon Aurora Details through search, with no URL variables.
-*   **Then**: Its service dropdown lists all Aurora MySQL services, and the first one's panels show data.
+*   **Then**: Its service dropdown lists the Aurora MySQL services only, and the first one's panels show data.
 
-### CUJ 4: Server upgraded, pmm-client not yet
+### CUJ 4: Something is firing
 
-*   **Given**: PMM Server from Release 1, and Aurora instances whose rds_exporter runs on an older pmm-client.
-*   **When**: The user opens the Aurora overview.
-*   **Then**: Those instances appear in "AWS cluster unknown", with up/down and throughput still shown. Nothing errors, and they move to their cluster once the client is upgraded.
-*   **Note**: instances added through RDS discovery run rds_exporter on PMM Server's own pmm-agent by default (`managed/services/management/rds.go`, `models.PMMServerAgentID`), so for them upgrading PMM Server is enough; this CUJ applies to instances attached to another pmm-agent. Instances added with `pmm-admin add mysql` have no rds_exporter and stay in "AWS cluster unknown".
+*   **Given**: A firing, unsilenced alert whose `service_name` or `node_name` names a listed instance.
+*   **When**: The user clicks the alert badge of its group or instance.
+*   **Then**: A list of the alerts, each linking to its rule's Instances tab, plus **Show all in Alert groups**.
 
-### CUJ 5: Disk and CPU on an RDS node
+### CUJ 5: Server upgraded, pmm-client not yet
+
+*   **Given**: PMM Server from Release 1, and instances whose rds_exporter runs on an older pmm-client on another host.
+*   **When**: The user opens the page.
+*   **Then**: Those instances appear under "AWS info unavailable", one group per region and engine, with status, role and throughput. They move to their groups once that pmm-client is upgraded.
+*   **Note**: instances added through RDS discovery run rds_exporter on PMM Server's own pmm-agent by default (`managed/services/management/rds.go`, `models.PMMServerAgentID`), so upgrading PMM Server is enough for them.
+
+### CUJ 6: Disk and CPU on an RDS node
 
 *   **Given**: An Aurora or plain RDS instance with Enhanced Monitoring on, monitored by a Release 1 pmm-client.
 *   **When**: The user opens Node Summary or MySQL Instance Summary for it.
 *   **Then**: Disk Space and CPU Saturation show data.
 
-### CUJ 6 (Release 2): Aurora PostgreSQL in the same overview
-
-*   **Given**: Aurora PostgreSQL instances added through RDS discovery, on Release 2.
-*   **When**: The user opens the Aurora overview.
-*   **Then**: Aurora PostgreSQL clusters appear next to Aurora MySQL ones, with a writer/reader signal and a link to their details view.
-
 ## Technical Plan (Architecture)
 
-Release 1 changes two places: rds_exporter (shipped in pmm-client) and dashboard JSON plus one menu entry (shipped in PMM Server).
-The database exporters, RDS discovery, the PMM API and inventory are untouched.
-
 ```text
-                         AWS
-   DescribeDBInstances (at start)      CloudWatch GetMetricStatistics
-   ─ resource ID, interval (today)     ─ 47 per-instance metrics (today minus Volume*)
-   ─ + cluster ID, engine, ARN (new)   ─ + VolumeBytesUsed by cluster, Aurora only (new)
-                │                                   │
-                ▼                                   ▼
-   ┌──────────────────────── rds_exporter (pmm-client) ────────────────────────┐
-   │ sessions: per instance, keeps cluster ID, engine, account (new)           │
-   │ /enhanced (every 10 s): Enhanced Monitoring + aws_rds_instance_info (new)  │
-   │ /basic    (every 60 s): CloudWatch metrics + cluster storage (new)         │
-   │ filesystem series: empty fstype (new)                                      │
-   └──────────────────────────────────┬────────────────────────────────────────┘
-                                      ▼
-   mysqld_exporter / postgres_exporter ──► VictoriaMetrics ◄── (unchanged)
-                                      │
-                                      ▼
-   Dashboards (PMM Server): Aurora overview (new), MySQL Amazon Aurora Details (fixed),
-   Disk Space and CPU Saturation panels (fixed), MySQL menu entry (new)
+                                AWS (no new permissions)
+   DescribeDBInstances, at start and every 5 min    CloudWatch GetMetricStatistics
+   from the enhanced scraper (existing calls):      ─ 47 per-instance metrics (Volume* removed)
+   + cluster ID, engine, account, replica source    ─ + VolumeBytesUsed by cluster, Aurora only
+                   │                                               │
+                   ▼                                               ▼
+   ┌───────────────────────────── rds_exporter (pmm-client) ─────────────────────────────┐
+   │ /enhanced: Enhanced Monitoring + aws_rds_instance_info                               │
+   │ /basic:    CloudWatch + aws_rds_volume_bytes_used_average; FreeableMemory renamed    │
+   │ labels from pmm-managed: Node, shared Service labels (new), Agent                    │
+   └──────────────────────────────────────────┬───────────────────────────────────────────┘
+                                              ▼
+            mysqld_exporter / postgres_exporter ──► VictoriaMetrics
+                                              │
+        Grafana /api/ds/query (Metrics data source, LBAC)      Grafana alert rules + Alertmanager
+                                              │                              │
+                                              ▼                              ▼
+   PMM UI: Amazon RDS > Overview (/pmm-ui/amazon-rds); menu gated by POST /v1/inventory/nodes:getTypes
+   Dashboards: Aurora Details, CPU Saturation, Disk Space (via empty fstype), InnoDB I/O no-data text
 ```
 
-### 1. rds_exporter: info series (D1: served on `/enhanced`)
+### 1. rds_exporter: info series (D1: `/enhanced`)
 
-*   **Read once at start.** The start-up `DescribeDBInstances` call (`rds_exporter:sessions/sessions.go`, `InstanceStates`) already returns every field needed.
-    Keep three more values per instance next to `ResourceID`: `DBClusterIdentifier`, `Engine` and the account number taken from `DBInstanceArn`.
-    None of them changes while the instance exists, and pmm-agent restarts rds_exporter whenever its configuration changes, so the start-up value stays current.
-*   **Publish from memory on `/enhanced`.** A small collector registered on the enhanced registry emits one series per resolved instance, whatever its basic and enhanced switches say:
+*   **AWS values.** `InstanceStates` (`rds_exporter:sessions/sessions.go`) keeps, next to `ResourceID`: `DBClusterIdentifier`, `Engine`, the account from `DBInstanceArn`, and the read-replica source from `ReadReplicaSourceDBInstanceIdentifier`. A same-region source is a plain identifier; a cross-region one is an ARN, which gives the source region. An ARN that doesn't parse leaves the account empty and logs a warning.
+*   **Refresh.** Values are read at start and refreshed every 5 minutes, when the enhanced scraper repeats `DescribeDBInstances` for its session (`enhanced/scraper.go`, `updateInstanceStates`). The scraper passes the result to `Sessions.UpdateInstanceStates`, which updates every instance of the session, including those with enhanced metrics disabled. A lock guards the instances; `AllSessions` and `GetConfig` return copies.
+*   **Series.** A collector (`info/collector.go`) on the enhanced registry emits, from memory, one series per resolved instance, whatever its basic and enhanced switches say:
 
     ```text
-    aws_rds_instance_info{instance="<AWS instance ID>", region="…", aws_cluster_id="<DBClusterIdentifier or empty>",
-                          aws_engine="aurora-mysql|aurora-postgresql|mysql|postgres|…", aws_account_id="…",
-                          <PMM node labels from the config>} 1
+    aws_rds_instance_info{instance="<DB instance ID>", region="…", <labels from the config>,
+                          aws_cluster_id="…", aws_engine="aurora-mysql|aurora-postgresql|mysql|mariadb|postgres|…",
+                          aws_account_id="…", aws_source_instance_id="…", aws_source_region="…"} 1
     ```
 
-    The `aws_*` labels are set after the PMM labels, so a user label with the same name cannot overwrite them.
-    `cluster` and `environment` are never touched; they stay the user's labels.
-*   **Unresolved instances.** An instance the start-up lookup cannot resolve is already dropped until the next restart (existing behaviour). It gets no info series and lands in "AWS cluster unknown".
+    The `aws_*` labels are set last, so a config label with the same name can't overwrite them. `aws_cluster_id` is empty outside a cluster, and the `aws_source_*` labels are empty for instances that are not read replicas.
+*   **Unresolved instances** are dropped until the next restart (existing behaviour); they get no info series and land under "AWS info unavailable".
 
-### 2. rds_exporter: cluster storage (D4: per instance)
+### 2. rds_exporter: cluster storage and other series (D4: per instance)
 
-*   Remove `VolumeBytesUsed`, `VolumeReadIOPs` and `VolumeWriteIOPs` from the per-instance metric list (`rds_exporter:basic/metrics.go`), for every engine.
-    AWS publishes them per cluster, nothing in PMM reads them, and they never return data per instance.
-*   For instances whose engine starts with `aurora-`, the `/basic` scrape adds one call: `VolumeBytesUsed` with the `DBClusterIdentifier` dimension.
-    The result is published as `aws_rds_volume_bytes_used_average` with the instance's usual labels plus `aws_cluster_id` and `aws_account_id`.
-*   A cluster with N instances in PMM stores N identical copies; dashboards read it with `max by (region, aws_account_id, aws_cluster_id)` and never `sum`.
-*   **Cost:** 48 CloudWatch calls per Aurora instance per scrape instead of 50; 47 per plain RDS instance instead of 50.
-*   **Resolved (spike, 2026-11-04):** AWS publishes `VolumeBytesUsed` per cluster at 5-minute marks but irregularly; on the test clusters the newest datapoint was often 45 to 70 minutes old, so the usual 10-minute window was empty. This one metric looks back 3 hours and keeps the newest datapoint, so the value can be up to about 3 hours old. Per-instance `VolumeBytesUsed` had no datapoints in 6 hours, and ListMetrics shows only the `DBClusterIdentifier` dimension.
+*   `VolumeBytesUsed`, `VolumeReadIOPs` and `VolumeWriteIOPs` are removed from the per-instance metric list (`basic/metrics.go`): AWS publishes them per cluster.
+*   For engines starting with `aurora` (the legacy `aurora` engine included) and a non-empty cluster ID, each `/basic` scrape adds one `VolumeBytesUsed` call with the `DBClusterIdentifier` dimension of the instance's current cluster. It is published as `aws_rds_volume_bytes_used_average` with the instance's labels plus `aws_cluster_id` and `aws_account_id`.
+*   AWS publishes it irregularly, often 45 to 70 minutes late (spike, 2026-11-04), so this one metric reads the newest datapoint of the 3 hours ending 10 minutes before the scrape: it can be up to about 3 hours 10 minutes old.
+*   A cluster with N monitored instances stores N identical copies; readers use `max`, never `sum`.
+*   **Cost:** 48 CloudWatch calls per Aurora instance per scrape instead of 50, 47 per plain RDS instance.
+*   `FreeableMemory` is published as `aws_rds_freeable_memory_average` instead of `node_memory_Cached_bytes`.
+*   `node_filesystem_*` series have an empty `fstype` (`enhanced/metrics.go`, `makeNodeFilesystemMetrics`); see section 6.
 
-### 3. Aurora overview dashboard (new)
+### 3. pmm-managed: labels and the Node types endpoint
 
-*   **Where:** a new dashboard in `dashboards/dashboards/MySQL/`, registered in the pmm-app plugin, with an entry under MySQL in PMM's menu (`ui/apps/pmm/src/contexts/navigation/navigation.constants.ts`).
-*   **Rows come from the database exporters, not the info series.**
-    Start from `mysql_up`, left-join `aws_rds_instance_info` on `node_id`, and keep services where the joined `aws_engine` starts with `aurora-`.
-    Services with no info series but with `mysql_global_status_auroradb_commits` go into an "AWS cluster unknown" group; this tells Aurora apart from plain RDS without the info series.
-    A missing sample over the lookback window shows as down, not as a missing row.
-*   **Per cluster (key: region, account, cluster ID):**
+*   **Service labels on rds_exporter series.** `managed/services/agents/rds.go` (`mergeLabels`, `sharedServiceLabels`) merges Node labels, then `environment`, `cluster` and `replication_set` from the Services on the Node, then Agent labels, which is the order Service series use. A label is copied only when every Service on the Node has the same non-empty value; a Node without Services gets none. `service_name` stays off, so Node-level series keep joining Service series through `node_name`.
+    `state.go` loads the Services of all RDS Nodes with one query per pmm-agent state (`models.FindServicesByNodeIDs`). Adding, changing or removing a Service through the inventory API requests a state update of the pmm-agents that run an rds_exporter for its Node (`managed/services/inventory/services.go`), so the labels follow without a restart.
+*   **`POST /v1/inventory/nodes:getTypes`** (`ListActiveNodeTypes` in `api/inventory/v1/nodes.proto`, additive) returns the distinct Node types in the inventory, like `services:getTypes` does for Services. `managed/services/grafana/auth_server.go` allows it for the Viewer role.
 
-    | Column | Source | Freshness |
+### 4. Amazon RDS page (PMM UI)
+
+*   **Route and menu.** `ui/apps/pmm/src/pages/amazon-rds/`, at `/pmm-ui/amazon-rds`. The top-level **Amazon RDS** menu, with one child **Overview**, sits with the dashboard menus. It appears when `nodes:getTypes` includes `NODE_TYPE_REMOTE_RDS_NODE` (refetched every 5 minutes), for every role.
+*   **Data.** Instant PromQL through Grafana's `/api/ds/query` on the Metrics data source (`ui/apps/pmm/src/api/metrics.ts`, `api/rds.ts`), so LBAC applies and viewers may query. One request every 60 seconds runs 8 queries:
+
+    | Query | Source | Required |
     |---|---|---|
-    | Monitored instances | count of `mysql_up` rows | live |
-    | Exporters connected (N of M) | `mysql_up` | live |
-    | Throughput (queries/s) | `mysql_global_status_queries` | live |
-    | Storage used | `aws_rds_volume_bytes_used_average`, `max` | up to about 3 hours old (AWS publishes it irregularly; see Technical Plan 2) |
+    | up | `mysql_up` or `pg_up` with `node_type="remote_rds"`; a service that stopped reporting stays as 0 for one hour | yes |
+    | info | `aws_rds_instance_info`, also kept for one hour after it stops | yes |
+    | role | Aurora MySQL `mysql_global_variables_innodb_read_only`; MySQL and MariaDB `mysql_global_variables_read_only`; PostgreSQL `pg_replication_is_replica` or `pg_settings_in_hot_standby` | no |
+    | throughput | MySQL family `rate(mysql_global_status_queries)`; PostgreSQL `rate(pg_stat_database_xact_commit)` + `rate(pg_stat_database_xact_rollback)` | no |
+    | storage | Aurora `aws_rds_volume_bytes_used_average`; others `aws_rds_free_storage_space_average`, or Enhanced Monitoring `node_filesystem_free_bytes` | no |
 
-*   **Per instance (table under each cluster):** name, role (`innodb_read_only`: 0 writer, 1 reader, missing "unknown"), up/down, throughput, link to Details with `var-service_name`.
-    A cluster whose writer count is not exactly 1 shows "changing", not an error, because role is sampled every 60 seconds.
-*   **Links:** Alerting and Advisors pages (no per-cluster counts exist).
-*   **Reuse:** Environments Overview (`dashboards/dashboards/PMM Health/Environments_Overview.json`) already has per-group counts, throughput and the `group_left` join; copy its structure with the AWS cluster key in place of `environment`.
+    A failed required query shows an error; a failed optional one leaves its values blank. Grafana answers 400 for the whole request when one query fails, with every result in the body.
+    Rows start from the database exporters' `up` series and take AWS labels from the info series by `node_id`, so a service without an info series is never lost (Alternative E). Only services on `remote_rds` Nodes are listed.
+*   **Grouping** (`AmazonRds.utils.ts`, `groupInstances`):
+    *   **Aurora cluster** or **Multi-AZ DB cluster:** same region, account and `aws_cluster_id`; the engine decides which.
+    *   **Replication group:** a primary and its read replicas, found through `aws_source_instance_id` and `aws_source_region`, cross-region and cascaded replicas included, and named after the primary even when PMM doesn't monitor it.
+    *   **Instance:** standalone.
+    *   **AWS info unavailable:** no info series, one group per region and engine. The engine falls back to the PMM service type, and its writer count raises no warning.
+*   **Group columns:** Region / Account; DB identifier; Type / Engine; Alerts; Instances / Writers ("connected / monitored", then the writer count: "no writer" and more than one writer are warnings, "unknown" when no instance reports its role); Throughput (qps for the MySQL family, tps for PostgreSQL); Storage (Aurora: cluster volume used, `max` across instances; others: free storage, the lowest instance marked "(min)"). Secondary values sit on a second line, so the table fits beside the open side menu down to a 1280 px screen.
+*   **Instance rows** (expand per group or all, writers first): service link to the engine's main dashboard, **MySQL** and **OS** dashboard links, the AWS instance ID and region where they differ from the service and group, role, status (Up/Down), alerts, throughput and storage (none for Aurora instances). All links open in a new tab.
+*   **Alerts.** Firing alerts from Grafana's alert rules API, excluding those that Grafana's Alertmanager reports as silenced, the same way the Alerts page does. An alert belongs to an instance when its `service_name` or `node_name` names it. Counts stay unknown until both requests succeed, so a silenced alert never counts as firing. The badge is coloured by the worst severity band and opens a list that links each alert to its rule's Instances tab, plus **Show all in Alert groups** (Grafana Alert groups filtered by `node_name`, active alerts only). The header has **Alerting** (Alerts > Status) and, for Editors and Admins when Advisors are enabled, **Advisors**.
+*   **Search and filters.** Search matches DB identifiers, types, regions, engines, accounts, service names and instance IDs; a group matched only through some instances opens with just those. Region (the instances' regions too, so a cross-region replica is found), AWS account, Engine, Type and DB identifier filters take several values. All are kept in URL parameters `rds-q`, `rds-region`, `rds-account`, `rds-engine`, `rds-type`, `rds-id`.
 
-### 4. MySQL Amazon Aurora Details (fixed)
+### 5. MySQL Amazon Aurora Details
 
-Same file, uid (`mysql-amazonaurora`), variable names and panel ids, so existing links and bookmarks keep working.
+Same file, uid (`mysql-amazonaurora`), variable names and panel ids, so links and bookmarks keep working.
 
-*   **Variables:** `service_name` and `node_name` read `{__name__=~"mysql_global_status_auroradb_(commits|thread_deadlocks)"}`, which exists on Aurora MySQL 3 and 2. Remove the variables copied from other dashboards that no panel uses.
-*   **Panel fixes:**
-    *   Statement Latency: drop the query-cache term, fix the operator precedence in the SELECT expression, and show 0 instead of blank when a statement type is idle (closes PMM-6655).
-    *   Problems: keep `aurora_reserved_mem_exceeded_incidents`; replace the two counters Aurora 3 dropped with CloudWatch `Deadlocks` and `BlockedTransactions`.
-    *   Memory Used: keep lock manager memory; replace `aurora_dict_sys_mem_size` with temp-table RAM.
-    *   Special Command Counters: one line per command instead of an average.
-    *   Convert the six touched panels from `graph` to `timeseries`.
-*   **New rows, each titled with when it has data:** buffer cache hit ratio and free local storage (CloudWatch); replication lag ("needs a reader"); write forwarding; parallel query; Serverless capacity ("Serverless only").
-    The exact panels are listed in the Detailed Implementation.
+*   **Variables:** `service_name` and `node_name` read `{__name__=~"mysql_global_status_auroradb_(commits|thread_deadlocks)"}`, which exists on Aurora MySQL 3 and 2. Variables no panel used are removed.
+*   **Panel fixes:** Statement Latency drops the query-cache term, fixes the SELECT expression and shows 0 for an idle statement type (PMM-6655). Problems keeps `aurora_reserved_mem_exceeded_incidents` and replaces the two counters Aurora 3 dropped with CloudWatch Deadlocks and BlockedTransactions. Memory Used replaces `aurora_dict_sys_mem_size` with temp-table RAM. Special Command Counters shows one line per command. The six panels are now `timeseries`.
+*   **New rows:** "Cache and local storage" (buffer cache hit ratio, free local storage, cluster volume used); "Instance resources (CloudWatch)", expanded (CPU utilization, freeable memory, connections, IOPS, throughput, network throughput, disk queue depth, swap); collapsed "Replication (needs a reader)", "Write forwarding", "Parallel query" and "Serverless capacity (Serverless only)".
+*   A dashboard link opens the Amazon RDS page.
 
-### 5. Generic panels on RDS nodes (fixed; also plain RDS)
+### 6. Generic panels on RDS nodes
 
-*   **Disk Space (fixed in rds_exporter):** rds_exporter copies the filesystem name into `fstype` (`rds_exporter:enhanced/metrics.go`, `makeNodeFilesystemMetrics`), which the panel's `fstype=~"(ext.|xfs|vfat|)"` filter rejects.
-    That filter already accepts an empty `fstype`, so rds_exporter leaves `fstype` empty and every Disk Space panel works with no dashboard change (24 filters across the dashboards).
-    The other 75 `fstype` filters in the dashboards exclude a list of types, which an empty value still passes. Owner decision: fix at the source rather than in 14 dashboard files.
-*   **CPU Saturation:** for RDS nodes, compute saturation from `node_procs_running` and `rdsosmetrics_General_numVCPUs`, and max core usage from `node_cpu_average`, when `node_cpu_seconds_total` is missing.
-*   **InnoDB data I/O panels** on MySQL Instances Overview: on Aurora, say the data doesn't apply instead of showing nothing.
-*   The same panels appear on several summary dashboards; the Detailed Implementation lists every file.
+*   **Disk Space:** fixed in rds_exporter by the empty `fstype`, which every Disk Space filter (`fstype=~"(ext.|xfs|vfat|)"`) already accepts and every exclusion filter passes. No dashboard change (Alternative M).
+*   **CPU Saturation and Max Core Usage** (12 dashboards): for `node_type="remote_rds"`, saturation is `node_procs_running` divided by `rdsosmetrics_General_numVCPUs`, plus a "CPU Utilization (all cores, RDS)" line from `node_cpu_average`. Both come from Enhanced Monitoring; without it the panel stays empty, as documented in the release notes.
+*   **InnoDB data I/O panels** on MySQL Instances Overview say in their no-data text that Aurora doesn't report InnoDB data file I/O.
 
-### 6. Release 2: Aurora PostgreSQL (outline)
+### 7. Release 2: Aurora PostgreSQL (outline)
 
-*   Overview rows from `pg_up`, same join and grouping, with throughput as commits per second.
-*   Role from a plain postgres_exporter query on `pg_is_in_recovery()`, not a `query_aurora` entry, so it still runs if postgres_exporter's own Aurora detection fails (D7).
-*   The info series decides what is Aurora; postgres_exporter's detection is not used for that.
-*   WAL Writes on Aurora, and the details view's form (D8), are designed when Release 2 starts.
+Listing, grouping, role and throughput shipped with the Amazon RDS page. Left: a details view (D8), WAL Writes on Aurora, and a role signal for Aurora PostgreSQL 13 and older.
 
 ### Rollout
 
-*   **Dashboards ship with PMM Server; rds_exporter ships with pmm-client.** Instances added through RDS discovery run rds_exporter on PMM Server's own pmm-agent by default, so a PMM Server upgrade updates it for them. No version gate is needed: there is no API, database or configuration change.
-*   **New server, old client:** instances appear in "AWS cluster unknown", with up/down and throughput. Storage, and Disk Space on RDS nodes, stay missing until the client is upgraded.
-*   **Old server, new client:** the extra series are collected but no dashboard uses them.
-*   **Rollback:** reverting either side returns to today's behaviour; nothing is stored or migrated.
+*   **The page, endpoint, label change and dashboards ship with PMM Server; rds_exporter ships with pmm-client.** RDS-discovery instances run rds_exporter on PMM Server's pmm-agent by default, so a PMM Server upgrade covers them. No version gate: the endpoint and its only caller ship together.
+*   **New server, old client:** instances appear under "AWS info unavailable" with status, role and throughput. Cluster storage, Disk Space, and Aurora Details' Freeable memory panel stay empty until the client is upgraded.
+*   **Old server, new client:** the new series are unused. Custom dashboards or alert rules that read `node_memory_Cached_bytes` of RDS nodes as freeable memory must switch to `aws_rds_freeable_memory_average`, and filters on RDS `fstype` must change (both in the release notes).
+*   **Label change:** after the upgrade, or after changing a Service's `environment`, `cluster` or `replication_set`, an RDS node's graphs can show its series twice for a few minutes.
+*   **Rollback:** reverting either side returns to the previous behaviour; nothing is stored or migrated, and the labels follow the next state update.
 
 ## Alternatives Considered
 
-### Alternative A: Pre-fill the `cluster` label at RDS discovery
+### Alternative A: Fill the `cluster` label with the AWS cluster ID, at discovery or when an instance is added
 
-Discovery returns `DBClusterIdentifier`, and the add-instance form pre-fills the existing Cluster field.
+Discovery pre-fills the existing Cluster field from `DBClusterIdentifier`, or pmm-managed looks it up when an add request has none.
 
-*   **Pros**: The cluster shows in the form before adding; the user can change it; existing dashboards that filter by `cluster` start working.
-*   **Cons**: Changes three places (API proto, pmm-managed, percona/grafana form) and needs a Feature Build across two repositories. Instances added before the change never get it. rds_exporter's series don't carry service labels, so CloudWatch data still could not be grouped by it. Changing a service's cluster label later deletes its scheduled backups.
-*   **Reason for Rejection**: The info series gives the same grouping for all instances, old and new, with one rds_exporter change and no label edits.
+*   **Pros**: The cluster shows in the form; dashboards that filter by `cluster` start working.
+*   **Cons**: Changes the API proto, pmm-managed and the percona/grafana form, or costs one AWS call per add. Instances added before the change never get it. The field is the user's, so it can't be trusted to hold the AWS cluster, and changing it later deletes the Service's scheduled backups.
+*   **Reason for Rejection**: The info series groups all instances, old and new, with no label edits.
 
-### Alternative B: pmm-managed fills the cluster label when an instance is added
+### Alternative C: Use `DescribeDBClusters` for the writer flag, cluster size, Serverless mode and cluster replicas
 
-When an add request has no cluster, pmm-managed looks the instance up in AWS and fills it.
+*   **Pros**: Authoritative role and member list; would link Multi-AZ DB cluster replicas and Aurora cross-region replica clusters to their source.
+*   **Cons**: Needs `rds:DescribeDBClusters`, which PMM's documented IAM policy does not grant; users who followed the docs would get permission errors.
+*   **Reason for Rejection**: No new permissions. Role comes from metrics PMM already collects.
 
-*   **Pros**: One repository; also covers instances added through the API.
-*   **Cons**: One extra AWS call per add; the user can't see the value before adding; the same gaps as Alternative A for old instances and for CloudWatch series.
-*   **Reason for Rejection**: Same as Alternative A.
+### Alternative E: Build the page's rows from the info series
 
-### Alternative C: Use `DescribeDBClusters` for the writer flag, true cluster size and Serverless mode
+*   **Pros**: Simplest query; the group key is on every row.
+*   **Cons**: Instances without an info series disappear, and counts and throughput come out low with no sign that anything is missing.
+*   **Reason for Rejection**: Rows come from the database exporters, with an "AWS info unavailable" group.
 
-*   **Pros**: Authoritative writer/reader role and the full member list, including members not added to PMM.
-*   **Cons**: Needs `rds:DescribeDBClusters`, which PMM's documented IAM policy does not grant; users who followed the docs would get permission errors. The writer flag changes on failover, so it would need its own refresh.
-*   **Reason for Rejection**: No new permissions. Role comes from `innodb_read_only`, which PMM already collects.
+### Alternative H: Read the info values only at start-up (the reviewed design)
 
-### Alternative D: Copy AWS tags into labels (for example, environment from a tag)
+*   **Pros**: No state shared with the enhanced scraper.
+*   **Cons**: A promoted replica would keep its source, and cluster storage would follow a stale cluster ID, until pmm-agent restarts rds_exporter.
+*   **Reason for Rejection**: The enhanced scraper's 5-minute refresh already makes the call; sharing its result costs a lock, not an AWS request.
 
-*   **Pros**: Customers' own tags, such as environment or owner, appear in PMM without typing.
-*   **Cons**: Tag names differ per customer, so PMM can't know which one means environment. Labels would be a snapshot taken at add time, stale after the first retag. Many tag keys are not valid label names. Every tag becomes a label on every series.
-*   **Reason for Rejection**: Not needed for grouping by cluster; environment stays a field users type.
+### Alternative N: The overview as a Grafana dashboard (the reviewed design and a prototype)
 
-### Alternative E: Build overview rows from the info series
+Two variants were built: two tables on the Environments Overview pattern, then a custom pmm-app panel plugin showing a cluster tree.
 
-*   **Pros**: Simplest query; the cluster key is on every row.
-*   **Cons**: Instances without an info series disappear: those added without rds_exporter, those on an older pmm-client, and those whose start-up lookup failed. Counts and throughput come out low with no sign that anything is missing.
-*   **Reason for Rejection**: Rows come from the database exporters, with an "AWS cluster unknown" group instead.
+*   **Pros**: Ships as dashboard JSON; no UI code.
+*   **Cons**: Nested tables can't do per-row links or field config in PMM's Grafana version, and when PMM upgrades Grafana is not known. The plugin needed an unsigned-plugin allowance in `grafana.ini`.
+*   **Reason for Rejection**: A native page, like Real-Time Analytics, fits a top-level landing page (Decision 1).
 
-### Alternative F: Serve the info series on `/basic`, or on a new `/info` endpoint (D1)
+### Alternative O: Copy every Service label onto rds_exporter series, or none
 
-*   **Pros**: `/basic` groups it with other AWS data; a new endpoint keeps it separate.
-*   **Cons**: `/basic` responds only after all CloudWatch calls return; a slow or throttled CloudWatch past the 54-second timeout loses the whole response, so instances drop into "unknown" for that minute. A new endpoint needs a PMM server scrape-config change and a version check, because an older pmm-client would answer a newer server with 404.
-*   **Reason for Rejection**: Owner decision D1: `/enhanced`, served from memory every 10 seconds, with no server change.
+*   **Pros**: Either is simpler than copying three labels on agreement.
+*   **Cons**: Copying all (including `service_name`) breaks the `node_name` join between Node and Service series, and on a Node with several Services it picks one Service's values. Copying none leaves LBAC roles blind to RDS metrics (Decision 6).
+*   **Reason for Rejection**: Copy only the standard labels LBAC filters on, and only when the Node's Services agree.
 
-### Alternative G: Fetch cluster storage once per cluster per process (D4)
+### Smaller alternatives
 
-*   **Pros**: Fewer duplicate series; 47 calls per instance plus 1 per cluster.
-*   **Cons**: Grouping code in rds_exporter; the series carries no node labels, so node-label filters don't apply; still duplicated when a cluster's instances run under different pmm-agents or credentials.
-*   **Reason for Rejection**: Owner decision D4: one call per Aurora instance, read with `max` by cluster.
-
-### Alternative H: Reuse rds_exporter's 5-minute refresh for the info series
-
-The Enhanced Monitoring scraper already repeats `DescribeDBInstances` every 5 minutes.
-
-*   **Pros**: The cluster ID and engine would refresh without a restart.
-*   **Cons**: That refresh only covers instances with Enhanced Monitoring on, keeps its result private to that scraper, and lives in a 1,300-line file with its own locking. The values it would refresh never change for an instance.
-*   **Reason for Rejection**: Read once at start; pmm-agent restarts rds_exporter on any configuration change.
-
-### Alternative I: Alert and advisor counts per cluster on the overview
-
-*   **Pros**: One screen answers "is anything wrong in this cluster?".
-*   **Cons**: The advisor metric has only `service_type`, `advisor` and `check_name` labels; the Failed Advisors panel fetches every failed check without a filter; Grafana alert state is not stored as metrics; the built-in down templates drop `cluster`.
-*   **Reason for Rejection**: No per-cluster data source exists. The overview links to the Alerting and Advisors pages.
-
-### Alternative J: Rebuild the Aurora details dashboard from scratch
-
-*   **Pros**: A clean layout designed for Aurora 3.
-*   **Cons**: A new uid breaks bookmarks, links and the pmm-qa tests that open it; most of the dashboard needs about eight expression fixes, not a redesign.
-*   **Reason for Rejection**: Targeted fixes plus named new rows, keeping the uid, file, variable names and panel ids.
-
-### Alternative K: Remove the Aurora dashboard
-
-The original handoff named this as the alternative to fixing it, given little recorded demand ([PMM-9191](https://perconadev.atlassian.net/browse/PMM-9191) has been On Hold since 2021).
-
-*   **Pros**: Nothing to maintain.
-*   **Cons**: Aurora users lose the only Aurora-specific view; the fixes are small and the data is already collected.
-*   **Reason for Rejection**: The product owner chose to fix Aurora monitoring (this epic).
-
-### Alternative L: An rds_exporter build-info series (D6)
-
-*   **Pros**: Would show which rds_exporter version is running.
-*   **Cons**: PMM scrapes rds_exporter as a bare target with no node or service labels (`pmm:managed/services/victoriametrics/scrape_configs.go`, `scrapeConfigForRDSExporter`), so a process-level series can't be tied to any instance and can't tell an old client from a failed lookup.
-*   **Reason for Rejection**: It would add code without serving its purpose.
-
-### Alternative M: Fix Disk Space in the dashboards
-
-An `or` branch for `node_type="remote_rds"` in each Disk Space panel.
-
-*   **Pros**: Works as soon as PMM Server is upgraded, for any pmm-client.
-*   **Cons**: 14 dashboard files, with the panel in 3 different versions; a missed copy, or a later copy of an old version, brings the bug back.
-*   **Reason for Rejection**: Owner decision: leave `fstype` empty in rds_exporter, which fixes every copy at once.
+| Alternative | Reason for rejection |
+|---|---|
+| D: Copy AWS tags into labels | Tag names differ per customer, labels would be a snapshot taken at add time, many tag keys are not valid label names, and every tag would land on every series. |
+| F: Serve the info series on `/basic` or a new `/info` endpoint (D1) | `/basic` loses its whole response when CloudWatch runs past the 54-second timeout; a new endpoint needs a scrape-config change and a version check. |
+| G: Fetch cluster storage once per cluster per process (D4) | Grouping code in rds_exporter, and a series without Node labels escapes LBAC and Node filters. |
+| I: Advisor counts per group | The advisor metric has only `service_type`, `advisor` and `check_name` labels. The page links to Advisors instead. |
+| J: Rebuild Aurora Details from scratch | A new uid breaks bookmarks, links and tests; about eight expression fixes were enough. |
+| K: Remove the Aurora dashboard | The product owner chose to fix Aurora monitoring (this epic). |
+| L: An rds_exporter build-info series (D6) | PMM scrapes rds_exporter as a bare target (`managed/services/victoriametrics/scrape_configs.go`), so the series can't be tied to an instance. |
+| M: Fix Disk Space in the dashboards | 14 files with the panel in 3 versions; an empty `fstype` in rds_exporter fixes every copy at once. |
 
 ## Non-Functional Requirements
 
-*   **AWS cost and quotas:** CloudWatch calls per scrape drop from 50 to 48 per Aurora instance and to 47 per plain RDS instance. `DescribeDBInstances` calls are unchanged. Measure before and after with `rds_exporter_requests_total`.
-*   **Security:** no new AWS permission and no new stored data. The AWS account number appears as a metric label; it is not a secret, but it is visible to anyone who can read PMM metrics.
-*   **Rollout and rollback:** see Rollout under the Technical Plan. No version gate, migration or flag.
+*   **AWS cost and quotas:** CloudWatch calls per scrape drop from 50 to 48 per Aurora instance and to 47 per plain RDS instance. `DescribeDBInstances` calls are unchanged.
+*   **Security:** no new AWS permission and no new stored data. The page reads metrics through Grafana with the user's LBAC filters and alerts through Grafana's APIs with the user's permissions; the new endpoint shows viewers only which Node types exist. The AWS account number appears as a metric label; it is not a secret, but anyone who can read the metric sees it.
+*   **Load:** the page sends one Grafana query request (8 instant queries) and two alerting requests per minute while open. pmm-managed adds one Services query per pmm-agent state that has RDS Nodes.
+*   **Rollout and rollback:** see Rollout. No version gate, migration or flag.
 
 --------------------------------------------------------------------------------
 
-## Detailed Implementation Plan
+## Files Changed
 
-Release 1 only. Release 2 gets its own plan once D7 and D8 are decided.
-Paths are relative to each repository's root. Line numbers are at the commits named in [research.md](research.md).
-
-### Target Files to Create/Modify
+Paths are relative to each repository's root.
 
 #### percona/rds_exporter (ships in pmm-client)
 
-#### 1. `sessions/sessions.go` (Modify)
-
-*   **Type / Scope**: Go, AWS instance lookup.
-*   **Proposed Changes**:
-    *   Add `ClusterID`, `Engine` and `AccountID` to `InstanceState` and to `Instance`.
-    *   In `InstanceStates`, fill them from `DBClusterIdentifier`, `Engine` and `DBInstanceArn` of each `DBInstance`. The account is the fifth `:`-separated field of the ARN (`arn:<partition>:rds:<region>:<account>:db:<id>`); an ARN that doesn't parse leaves it empty and logs a warning.
-    *   In `New`, copy them into each resolved `Instance` next to `ResourceID`.
-    *   **Why:** the start-up lookup already returns these fields; keeping them costs no AWS call.
-
-#### 2. `sessions/sessions_test.go`, `sessions/resolver_test.go` (Modify)
-
-*   **Type / Scope**: Go unit tests.
-*   **Proposed Changes**: Cases for an Aurora instance (cluster ID, engine, account set), a plain RDS instance (empty cluster ID), and an ARN that doesn't parse (empty account, instance still resolved).
-
-#### 3. `info/collector.go` (Create)
-
-*   **Type / Scope**: Go, Prometheus collector.
-*   **Proposed Changes**:
-    *   A collector over `sessions.Sessions` that, on every `Collect`, emits `aws_rds_instance_info` = 1 for each resolved instance, from memory, with labels `region`, `instance`, the PMM labels from the instance config, then `aws_cluster_id`, `aws_engine`, `aws_account_id` set last so a config label can't overwrite them.
-    *   It ignores `DisableBasicMetrics` and `DisableEnhancedMetrics`.
-    *   **Why:** a separate package keeps it out of the 1,300-line enhanced scraper and makes the endpoint a one-line choice in `main.go`.
-
-#### 4. `info/collector_test.go` (Create)
-
-*   **Type / Scope**: Go unit test.
-*   **Proposed Changes**: Exact output for an Aurora and a plain RDS instance; a config label named `aws_engine` does not replace the AWS value; an instance with both switches off still gets its series.
-
-#### 5. `main.go` (Modify)
-
-*   **Type / Scope**: Go, wiring.
-*   **Proposed Changes**: Register the info collector on the enhanced registry that serves `/enhanced` (D1).
-
-#### 6. `basic/metrics.go` (Modify)
-
-*   **Type / Scope**: Go, CloudWatch metric list.
-*   **Proposed Changes**: Remove the `VolumeBytesUsed`, `VolumeReadIOPs` and `VolumeWriteIOPs` entries.
-    The `go:generate` line in `basic/collector.go` points at a `basic/generate/` folder that doesn't exist, so edit the list by hand.
-
-#### 7. `basic/scraper.go` (Modify)
-
-*   **Type / Scope**: Go, CloudWatch scraper.
-*   **Proposed Changes**:
-    *   `NewScraper` keeps the `sessions.Instance` that `GetConfig` already returns, to read `Engine`, `ClusterID` and `AccountID`.
-    *   For engines starting with `aurora-` and a non-empty cluster ID, `Scrape` adds one `GetMetricStatistics` call for `VolumeBytesUsed` with the `DBClusterIdentifier` dimension.
-        It is published as `aws_rds_volume_bytes_used_average` with the instance's usual labels plus `aws_cluster_id` and `aws_account_id`.
-    *   This metric looks back 3 hours (the others keep 10 minutes), because AWS publishes it irregularly and often more than an hour late (spike result, Technical Plan 2).
-
-#### 8. `basic/collector_test.go`, `basic/testdata/all.txt` (Modify)
-
-*   **Type / Scope**: Go tests and golden output.
-*   **Proposed Changes**: Regenerate `all.txt` with `-golden-txt` (the test reads real CloudWatch through `config.tests.yml`, so it needs AWS credentials). Add a unit test, with no AWS call, for the rule "Aurora engine and cluster ID present → one extra cluster call".
-
-#### 9. `enhanced/metrics.go`, `enhanced/testdata/*.txt` (Modify)
-
-*   **Type / Scope**: Go, Enhanced Monitoring filesystem series, and their golden output.
-*   **Proposed Changes**: In `makeNodeFilesystemMetrics`, set `fstype` to an empty value instead of the filesystem name, and drop the comment that explains the copy.
-    Regenerate the four golden `.txt` files; their inputs are recorded JSON, so the tests need no AWS access, and two of them are plain RDS (MySQL 8.4, PostgreSQL 16).
-    **Why:** every Disk Space filter already accepts an empty `fstype`; this fixes all of them in one place (owner decision).
-
-#### 10. `CHANGELOG.md`, `README.md` (Modify)
-
-*   **Type / Scope**: Docs.
-*   **Proposed Changes**: Record the new series (`aws_rds_instance_info`, cluster-level `aws_rds_volume_bytes_used_average`), the three removed per-instance metrics, and the empty `fstype` on filesystem series.
+*   `sessions/sessions.go`, `sessions/sessions_test.go`, `sessions/resolver_test.go`: AWS values per instance, ARN parsing, `UpdateInstanceStates`, lock and copies.
+*   `info/collector.go`, `info/collector_test.go`, `main.go`: the info series on `/enhanced`.
+*   `enhanced/scraper.go`, `enhanced/collector.go`, `enhanced/scraper_test.go`: the 5-minute refresh feeds the sessions.
+*   `basic/metrics.go`, `basic/scraper.go`, `basic/scraper_test.go`, `basic/collector_test.go`, `basic/testdata/all.txt`: `Volume*` removed, cluster storage, `FreeableMemory` renamed.
+*   `enhanced/metrics.go`, `enhanced/testdata/*.txt`: empty `fstype`.
+*   `README.md`, `CHANGELOG.md`.
 
 #### percona/pmm (ships in PMM Server)
 
-#### 11. `dashboards/dashboards/MySQL/Amazon_Aurora_Overview.json` (Create)
-
-*   **Type / Scope**: Grafana dashboard, uid `aurora-overview`.
-*   **Proposed Changes**:
-    *   Variables: region only, read from `mysql_up`, with "All". No variable reads `aws_rds_instance_info`, so the dashboard opens the same way for instances on an older pmm-client.
-    *   Cluster table: one row per (region, account, cluster), plus an "AWS cluster unknown" row. Columns: monitored instances, exporters connected (N of M), queries per second, storage used. Each column's description states its source and how fresh it is.
-    *   Instance table: name, role from `mysql_global_variables_innodb_read_only` (writer, reader, unknown), up/down, queries per second, and a link to `mysql-amazonaurora` with `var-service_name`.
-    *   Rows start from `mysql_up` and left-join `aws_rds_instance_info` on `node_id`; services without an info series but with `mysql_global_status_auroradb_commits` form the unknown group.
-    *   Dashboard links to Alerting and Advisors.
-    *   Structure copied from Environments Overview, with the AWS cluster key in place of `environment`.
-    *   Run `dashboards/misc/cleanup-dash.py` on it.
-
-#### 12. `dashboards/pmm-app/src/plugin.json` (Modify)
-
-*   **Type / Scope**: Grafana plugin manifest.
-*   **Proposed Changes**: Add the overview to `includes`, next to the existing "MySQL Amazon Aurora Details" entry, so Grafana provisions it.
-
-#### 13. `ui/apps/pmm/src/contexts/navigation/navigation.constants.ts` (Modify)
-
-*   **Type / Scope**: PMM UI, menu.
-*   **Proposed Changes**: Add an "Amazon Aurora" child under `NAV_MYSQL` pointing to `/d/aurora-overview`. Update any navigation test or snapshot that lists the MySQL children.
-
-#### 14. `dashboards/dashboards/MySQL/MySQL_Amazon_Aurora_Details.json` (Modify)
-
-*   **Type / Scope**: Grafana dashboard, uid `mysql-amazonaurora` unchanged.
-*   **Proposed Changes**:
-    *   `service_name` and `node_name`: read `{__name__=~"mysql_global_status_auroradb_(commits|thread_deadlocks)"}`.
-    *   Remove unused variables copied from other dashboards (`database`, `username`, `schema`, and the others no panel uses).
-    *   Statement Latency: remove the `qcache_hits` term, fix the parentheses in the SELECT expression, and return 0 when a statement type has no executions.
-    *   Problems: keep `aurora_reserved_mem_exceeded_incidents`; add CloudWatch `aws_rds_deadlocks_average` and `aws_rds_blocked_transactions_average`, matched by `node_name`.
-    *   Memory Used: replace `aurora_dict_sys_mem_size` with `aurora_temptable_ram_allocation`.
-    *   Special Command Counters: group by `command`.
-    *   Convert the six panels to `timeseries`, keeping their ids and titles (pmm-qa matches them by title).
-    *   New rows: "Cache and local storage" (buffer cache hit ratio, free local storage), "Replication (needs a reader)", "Write forwarding", "Parallel query", "Serverless capacity (Serverless only)".
-
-#### 15. `dashboards/dashboards/MySQL/MySQL_Instances_Overview.json` (Modify)
-
-*   **Type / Scope**: Grafana dashboard.
-*   **Proposed Changes**: On the InnoDB data I/O panels (ids 437–443, 455–457), set the no-data text to say the data is not available on Amazon Aurora, so they no longer read as broken.
-
-#### 16. CPU Saturation and Max Core Usage panel (Modify, 12 files)
-
-*   **Files**: `dashboards/dashboards/MySQL/` `MySQL_Instance_Summary.json`, `MySQL_InnoDB_Details.json`, `MySQL_InnoDB_Compression_Details.json`, `MySQL_MyISAM_Aria_Details.json`, `MySQL_MyRocks_Details.json`, `MySQL_Performance_Schema_Details.json`, `MySQL_Query_Response_Time_Details.json`, `MySQL_Table_Details.json`, `MySQL_User_Details.json`, `MySQL_Wait_Event_Analyses_Details.json`; `dashboards/dashboards/PostgreSQL/PostgreSQL_Instance_Summary.json`; `dashboards/dashboards/OS/Node_Summary.json`.
-*   **Not changed**: the MongoDB, HAProxy, ProxySQL and PMM Health copies; RDS nodes don't appear there.
-*   **Type / Scope**: Grafana dashboards.
-*   **Proposed Changes**: Add an `or` branch for RDS nodes: saturation from `node_procs_running` divided by `rdsosmetrics_General_numVCPUs`, max core usage from `node_cpu_average`. The panel exists in four versions; edit each by hand.
-
-#### 17. `documentation/docs/reference/dashboards/dashboard-mysql-amazon-aurora-details.md` (Modify) and `dashboard-amazon-aurora-overview.md` (Create)
-
-*   **Type / Scope**: User docs.
-*   **Proposed Changes**: Describe the fixed and new panels, what "AWS cluster unknown" means, and that storage can be up to about 3 hours old. Register the new page in the docs navigation, following [documentation/AGENTS.md](https://github.com/percona/pmm/blob/main/documentation/AGENTS.md).
-
-#### 18. `documentation/docs/install-pmm/install-pmm-client/connect-database/aws.md` (Modify)
-
-*   **Type / Scope**: User docs.
-*   **Proposed Changes**: One paragraph: Aurora instances added through RDS discovery are grouped by AWS cluster automatically after upgrading PMM Server (instances on another pmm-agent need that pmm-client upgraded; `pmm-admin`-added ones stay in "AWS cluster unknown"); no permission change is needed.
+*   **API:** `api/inventory/v1/nodes.proto` and its generated files, `api/swagger/`; `managed/models/node_helpers.go`, `managed/services/inventory/nodes.go`, `managed/services/inventory/grpc/nodes_server.go`, `managed/services/grafana/auth_server.go`, with unit tests; `api-tests/inventory/nodes_test.go`, `api-tests/server/auth_test.go`.
+*   **Labels:** `managed/services/agents/rds.go`, `managed/services/agents/state.go`, `managed/models/service_helpers.go`, `managed/services/inventory/services.go`, with unit tests.
+*   **UI:** `ui/apps/pmm/src/pages/amazon-rds/` (page, tables, toolbar, alerts badge, utils, tests); `api/rds.ts`, `api/metrics.ts`, `api/nodes.ts`; `hooks/api/useRds.ts`, `hooks/api/useNodes.ts`; `contexts/navigation/`; `router.tsx`; `lib/constants.ts`; `types/`.
+*   **Dashboards:** `dashboards/dashboards/MySQL/MySQL_Amazon_Aurora_Details.json`, `MySQL_Instances_Overview.json`; CPU Saturation in the ten MySQL details and summary dashboards, `PostgreSQL/PostgreSQL_Instance_Summary.json` and `OS/Node_Summary.json`.
+*   **Docs:** `documentation/docs/use/amazon-rds-overview.md` (new), `reference/dashboards/dashboard-mysql-amazon-aurora-details.md`, `install-pmm/install-pmm-client/connect-database/aws.md`, `use/dashboards-panels/index.md`, `admin/roles/index.md`, `mkdocs-base.yml`, `release-notes/next.md` (the page, Aurora Details, CPU Saturation and Enhanced Monitoring, the `FreeableMemory` rename, empty `fstype`, Service labels on RDS metrics, PMM-6655); `documentation/api/inventory/list-node-types.md` (new).
 
 #### percona/pmm-qa (tests)
 
-#### 19. `codeceptjs-e2e/tests/verifyAuroraMySQLRemoteInstance_test.js` (Modify)
+*   `e2e_tests/tests/inventory/remoteInstances.test.ts`: PMM-T2504 (the Amazon RDS page lists the Aurora instance under its cluster, with type, engine, instances, writer, role, status and a new-tab link to Aurora Details) and PMM-T2505 (Aurora Details lists Aurora MySQL services without URL variables, and its panels have data), both `@instances`, version-gated to 3.10.1 in `e2e_tests/helpers/versionGates.ts`.
+*   `e2e_tests/pages/amazonRds.page.ts`, `e2e_tests/pages/dashboards/mysql/mysqlAmazonAuroraDetails.ts`, `e2e_tests/fixtures/pmmTest.ts`, `e2e_tests/testdata/remoteInstances.ts`.
 
-*   **Type / Scope**: E2E test, PMM-T1295.
-*   **Proposed Changes**: Add a scenario that opens MySQL Amazon Aurora Details without `service_name` in the URL and checks the dropdown has the service. Keep the existing "no empty graphs" check, which the reader-only and Serverless-only rows would fail on single-writer clusters, by collapsing those rows by default.
+## Verification and Acceptance Criteria
 
-#### 20. `codeceptjs-e2e/tests/pages/dashboardPage.js`, `e2e_tests/testdata/dashboards.registry.ts` (Modify)
+"Met" names the code and tests that cover a criterion; "live check pending" means it still needs a run against real RDS instances.
 
-*   **Type / Scope**: Test page objects.
-*   **Proposed Changes**: Add the overview (uid `aurora-overview`) and the new Details panel titles; keep the six existing titles.
+| # | Criterion | Status |
+|---|---|---|
+| 1 | Aurora Details opened without URL variables lists the Aurora MySQL services only, and its panels have data except the rows named as conditional. | Met: PMM-T2505. |
+| 2 | The page lists an Aurora MySQL instance under its Aurora cluster, with region, engine, "1 / 1", "1 writer", role, Up, and a new-tab link to Aurora Details. | Met: PMM-T2504 and UI tests. |
+| 3 | Grouping: Aurora cluster, Multi-AZ DB cluster, replication group (cross-region and cascaded), standalone instance, "AWS info unavailable" per region and engine. | Met in UI unit tests. **Live check pending** for plain RDS standalone and read replica; Multi-AZ DB cluster not checked live. |
+| 4 | Role per engine: Aurora MySQL, MySQL and MariaDB, PostgreSQL and Aurora PostgreSQL. | Met in UI unit tests. **Live check pending** for an Aurora PostgreSQL reader and a plain RDS replica; Aurora failover not checked live. |
+| 5 | The menu shows only when an RDS Node exists, for viewers too. | Met: navigation tests, pmm-managed and API tests for `nodes:getTypes`. |
+| 6 | rds_exporter series carry the Node's shared `environment`, `cluster` and `replication_set`, so an LBAC role filtering on them sees RDS metrics; the labels follow Service changes. | Met in pmm-managed unit tests (`rds_test.go`, `services_test.go`). |
+| 7 | Alerts: firing, unsilenced, matched by `service_name` or `node_name`; unknown until silences load; links to rule and Alert groups. | Met in UI tests. |
+| 8 | A failed optional query blanks only its values; a failed `up` or `info` query shows an error. | Met in UI tests. |
+| 9 | Search and filters survive a reload through URL parameters. | Met in UI tests. |
+| 10 | Cluster storage per Aurora cluster, `max` not `sum`; legacy `aurora` engine included. | Met in rds_exporter and UI tests. |
+| 11 | 48 CloudWatch calls per Aurora instance and 47 per plain RDS instance; no extra `DescribeDBInstances`. | Met by the metric list and the shared refresh; `rds_exporter_requests_total` not compared live. |
+| 12 | `node_filesystem_*` on RDS nodes has an empty `fstype`, and Disk Space shows data. | Met in rds_exporter golden tests (Aurora and plain RDS recordings). **Live check pending** on plain RDS. |
+| 13 | CPU Saturation shows data on RDS nodes with Enhanced Monitoring. | Dashboard change. **Live check pending** on plain RDS. |
+| 14 | No regression on plain RDS MySQL and PostgreSQL. | **Live check pending.** |
+| 15 | Old pmm-client with new server: instances under "AWS info unavailable". | Met in UI unit tests. |
 
-### Verification Plan
-
-*   **Compilation/Build**: rds_exporter `make` and `make check`. PMM UI `cd ui && make lint && make format-check`.
-*   **Unit Tests**: rds_exporter `make test` (sessions, info, basic rule test). PMM UI `cd ui && make test`.
-*   **Dashboard checks**: `python3 dashboards/misc/cleanup-dash.py --check-only <file>` for every changed dashboard, and `python3 -m unittest discover -s dashboards/misc -p 'test_*.py'`.
-*   **Live check** (Feature Build with the rds_exporter and pmm branches, on a CHAOS VM), against Aurora MySQL 3 with a reader, Aurora MySQL 3 single writer, and one plain RDS MySQL instance:
-    *   Panel sweep on the overview, Details, MySQL Instances Overview and every dashboard with a Disk Space or CPU Saturation panel, for each service: no empty panel except rows marked as needing a reader or Serverless.
-    *   `node_filesystem_*` series on the RDS nodes have an empty `fstype`, and Disk Space shows data on both the Aurora and the plain RDS node.
-    *   Screenshots of both Aurora dashboards opened with no URL variables.
-    *   `aws_rds_instance_info` present for every instance, with an empty cluster ID on plain RDS.
-    *   `rds_exporter_requests_total` per minute before and after: no higher per instance.
-    *   Role on the reader shows "reader"; after `aws rds failover-db-cluster`, the overview shows the new writer within two minutes.
-    *   Old pmm-client with new server: instances appear under "AWS cluster unknown".
-*   **E2E/Integration**: pmm-qa `@instances` runs PMM-T1295 against the Feature Build.
+Pending live check, on a Feature Build with the rds_exporter and pmm branches on a CHAOS VM: a plain RDS standalone instance and read replica, and an Aurora PostgreSQL cluster with a reader. PMM-T2504 and PMM-T2505 run in pmm-qa `@instances` against the same build.
 
 --------------------------------------------------------------------------------
 
-*Drafted with EGM*
+*Drafted with EGM; updated to the as-built design*

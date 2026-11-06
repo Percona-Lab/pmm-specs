@@ -10,6 +10,8 @@ with dashboard variables resolved as Grafana does, plus screenshots of the Auror
 
 "Verified" means seen in code or in live data. "Inferred" means reasoned, not observed.
 
+These findings describe PMM and rds_exporter before this epic. [spec.md](spec.md) describes what changed, for example the Service labels now copied onto rds_exporter series and the shared 5-minute refresh of AWS values.
+
 ## MySQL Amazon Aurora Details dashboard
 
 File: `percona/pmm` `dashboards/dashboards/MySQL/MySQL_Amazon_Aurora_Details.json` (uid `mysql-amazonaurora`), 6 panels of the old `graph` type.

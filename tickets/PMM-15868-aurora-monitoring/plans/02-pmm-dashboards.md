@@ -12,6 +12,8 @@
 
 **Repository:** percona/pmm, branch `PMM-15868-aurora-dashboards`, one PR.
 
+> **As built:** Tasks 1 and 2 shipped as planned, and Aurora Details also gained an "Instance resources (CloudWatch)" row, a "Cluster volume used" panel and a link to the Amazon RDS page. Task 3 (the Aurora overview dashboard and its MySQL menu entry) was superseded by a native PMM UI page, **Amazon RDS > Overview**, which also lists plain RDS and Aurora PostgreSQL; Task 4's overview doc became `documentation/docs/use/amazon-rds-overview.md`. The work is on branch `PMM-15868-rds-overview-page`. See the [spec](../spec.md) (Decision Log, Technical Plan 3 and 4).
+
 ## Global Constraints
 
 * Keep `MySQL_Amazon_Aurora_Details.json`'s uid `mysql-amazonaurora`, file path, variable names and panel ids 3, 21, 22, 24, 25, 26 with their titles (pmm-qa matches the titles).

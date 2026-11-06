@@ -12,6 +12,8 @@
 
 **Repository:** percona/pmm-qa, branch `PMM-15868-aurora-tests`, one PR, run against a Feature Build with plans 01 and 02.
 
+> **As built:** superseded. The CodeceptJS change to PMM-T1295 was dropped, because new UI tests go to Playwright. Playwright PMM-T2505 checks Aurora Details without URL variables, and PMM-T2504 checks the Aurora instance under its cluster on the Amazon RDS page, both in `e2e_tests/tests/inventory/remoteInstances.test.ts` and version-gated to 3.10.1. The dashboards registry is unchanged. See the [spec](../spec.md#files-changed).
+
 ## Global Constraints
 
 * Read `AGENTS.md` and `CLAUDE.md` (house style: minimal comments, never edit tracked config as a workaround) before editing.

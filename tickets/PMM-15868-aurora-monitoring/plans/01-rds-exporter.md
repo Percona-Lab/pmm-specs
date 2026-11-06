@@ -12,6 +12,8 @@
 
 **Repository:** percona/rds_exporter, branch `PMM-15868-aurora-cluster-info`, one PR.
 
+> **As built:** implemented with four changes recorded in the [spec](../spec.md#decision-log). The AWS values are refreshed every 5 minutes from the enhanced scraper's existing `DescribeDBInstances` call (`Sessions.UpdateInstanceStates`), not only read at start. The info series also carries `aws_source_instance_id` and `aws_source_region`. Cluster storage also covers the legacy `aurora` engine. CloudWatch `FreeableMemory` is published as `aws_rds_freeable_memory_average`. The branch's README and CHANGELOG are the reference.
+
 ## Global Constraints
 
 * No new AWS permission: use only `DescribeDBInstances` and `GetMetricStatistics`, as today.
