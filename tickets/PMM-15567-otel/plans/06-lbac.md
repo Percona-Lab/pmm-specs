@@ -4,7 +4,7 @@
 > 1. Get the ADR in Task 0 accepted.
 > 2. Re-run superpowers:writing-plans against the merged code from plans 01–05.
 
-**Goal:** Users restricted by LBAC see the logs and traces of exactly the services and nodes their roles allow, with the same semantics as metrics. Everyone else keeps today's behaviour, where the raw `pmm-otel` Grafana datasource stays Admin-only.
+**Goal:** Users restricted by LBAC see the logs and traces of exactly the services and nodes their roles allow, with the same semantics as metrics. Everyone else keeps today's behaviour: logs are Admin-only (ADR-23).
 
 **Architecture** ([analysis §7](../spec.md#7-lbac)):
 - **Enforcement:** a PMM query API, not the Grafana datasource.
@@ -14,7 +14,7 @@
 - **Ingest:** identity is checked, so a node can't claim to be another node.
 - **UI:** the native Logs explorer from plan 08 already uses this API. This plan opens it to restricted users and adds a trace view.
 
-**Spec:** analysis §7.1–§7.4 and F8, F9; the existing LBAC model (`managed/models/role_*`, `managed/services/grafana/auth_server.go:146-160,446-494`).
+**Spec:** analysis §7.1–§7.4 and F8, F9; the existing LBAC model (`managed/models/role_*`, `managed/services/grafana/auth_server.go:168-184,446-494`).
 
 ## Global Constraints
 
@@ -23,7 +23,8 @@
   - a role with an empty filter means full access;
   - a missing label equals `""`;
   - regexes are anchored.
-- **Fail closed.** A non-Admin request without the header is denied, a selector that doesn't parse is denied, and service-account tokens get an explicit decision.
+- **Admin-only without access control.** While access control is disabled (the default, `AccessControlEnabledDefault = false`), `/v1/logs` and `/v1/traces` stay Admin-only (ADR-23). The auth rules are a static map that `resolveRule` reads without looking at LBAC, so the auth handler checks `s.accessControl.isEnabled()` (`auth_server.go:447`) for these two prefixes and requires `admin` when it is false.
+- **Fail closed** (access control enabled). A request without `X-Proxy-Filter` is full access: `auth_server` sends no header when LBAC is off or the user has no filters (the `len(filters) == 0` return after `getLBACFilters` in `managed/services/grafana/auth_server.go`), and passes selectors through unparsed, so `LogsService` denies a selector that doesn't parse. The guard against serving a restricted user unfiltered is that `/v1/logs` and `/v1/traces` are in `lbacPrefixes`. Service-account and anonymous credentials skip LBAC today (the `userID <= 0` return in `maybeAddLBACFilters`), so `/v1/logs` opens to non-Admins only after plan 07, Task 3 gives them an explicit rule.
 - No raw SQL from clients. Every filter is a bound parameter.
 - Admins are not exempt from LBAC, consistent with today.
 
@@ -63,7 +64,7 @@
 ### Task 2: Verified node identity at ingest
 
 - **Files:**
-  - `managed/services/grafana/auth_server.go`: for `/otlp/` requests carrying a per-node service-account token, set the `X-PMM-Node-Id` response header. Resolve the node from the service account the token belongs to, recording that mapping at registration if it isn't stored yet (`client.go:657-674`).
+  - `managed/services/grafana/auth_server.go`: for `/otlp/` requests carrying a per-node service-account token, set the `X-PMM-Node-Id` response header. Resolve the node from the service account the token belongs to, recording that mapping at registration if it isn't stored yet (`client.go:668-680`).
   - `pmm.conf` `/otlp/`: `auth_request_set $pmm_node_id $upstream_http_x_pmm_node_id; proxy_set_header X-PMM-Node-Id $pmm_node_id;`. Any client-sent header of that name is dropped.
   - `managed/services/otel/server_config.go`: OTLP HTTP `include_metadata: true`, plus a processor that upserts `pmm.node_id` from `metadata.x-pmm-node-id` when it is present, and otherwise sets `pmm.identity_verified=false`.
 - **Spike first:** confirm in the pinned collector which processor can read client metadata into resource attributes: `resource` with `from_context`, or `transform` with OTTL request context. Record the result in the ADR.
@@ -77,27 +78,31 @@ Plan 08 builds `LogsService` (`Search`, `Context`, `Histogram`, `Facets`) for Ad
 
 - **Files:**
   - `managed/services/logs/lbac.go`, plus changes to `query.go` and `service.go` and their tests
-  - `managed/services/grafana/auth_server.go`: change the rule to `"/v1/logs": viewer`, and add `/v1/logs` to `lbacPrefixes`
+  - `managed/services/grafana/auth_server.go`: `/v1/logs` requires `viewer` while access control is enabled and `admin` while it is disabled (the check above, next to `resolveRule`), and `/v1/logs` goes into `lbacPrefixes`
   - `pmm.conf`: a `/v1/logs` location that sets `X-Proxy-Filter`, like `/v1/qan` (:339-344)
 - **Produces:**
   - `func AllowedIDs(q *reform.Querier, s lbac.Selectors) (pairs []ServiceNode, nodes []string, err error)`, cached on the inventory TTL;
-  - the predicate `(PmmServiceId, PmmNodeId) IN {pairs} OR (PmmServiceId = '' AND PmmNodeId IN {nodes})`, added by `BuildSearchQuery` and by the histogram, facets and context queries, all through bound parameters.
+  - the predicate `(PmmServiceId, PmmNodeId) IN {pairs} OR (PmmServiceId = '' AND PmmNodeId IN {nodes})`, added by `BuildSearchQuery` and by the histogram, facets, context and patterns queries, all through bound parameters. Patterns returns a sample line per group, so it must be filtered too.
 - **Tests:**
-  - `TestSearchFailsClosedWithoutHeader`, `TestSearchDeniesBadSelector`;
+  - `TestLBACPrefixesCoverOtelReadPaths` (auth_server unit test: `/v1/logs:search` and `/v1/traces:search` get the header), `TestSearchDeniesBadSelector`;
+  - `TestOtelReadPathsAdminOnlyWithoutAccessControl` (auth_server unit test): with access control disabled, a Viewer gets 403 on `/v1/logs:search` and an Admin gets 200; with it enabled, a Viewer with the full-access role gets 200;
+  - api-test `TestRestrictedUserGetsFilterHeader`: a user with a filtered role gets only the allowed services from `/v1/logs:search`, and a user with the full-access role gets everything;
   - `TestSearchHidesSpoofedServiceRow`, `TestSearchNodeLogsNeedNodeLabel`;
   - `TestFacetsRespectLBAC`: a restricted user doesn't see facet values for hidden services;
+  - `TestPatternsRespectLBAC`: a restricted user sees no pattern, and no sample line, from a hidden service;
   - an api-test with two roles and two users.
 
 ### Task 4: `TracesService.Search` and `GetTrace`
 
-- The same predicate, applied to each span. `GetTrace` returns `partial: true` when spans were filtered out.
+- The same predicate and the same access rule as Task 3 (Admin-only while access control is disabled), applied to each span. `GetTrace` returns `partial: true` when spans were filtered out.
+- Traces store no `PmmServiceId`: plan 05 deletes `pmm.service_id` at ingest. So the span predicate is node-only, plus the services that plan 05's correlation assigns. Decide at re-plan.
 - **Tests:** `TestGetTracePartial`, plus the fail-closed tests from Task 3.
 
 ### Task 5: Open the Logs explorer to restricted users, and add a trace view
 
 - **Files:**
   - `ui/apps/pmm/src/pages/logs/LogsExplorer.tsx`: drop the Admin-only `roles`;
-  - `navigation.constants.ts`: `NAV_LOGS` becomes visible to every role when LBAC is enabled, and to Admins only otherwise (ADR-07 still applies without LBAC);
+  - `navigation.constants.ts`: `NAV_LOGS` becomes visible to every role when LBAC is enabled, and to Admins only otherwise (ADR-23 still applies without LBAC);
   - a new `ui/apps/pmm/src/pages/traces/*` view on `TracesService`, built the same way as plan 08's explorer.
 - **Content:** a "partial trace" notice.
 - **Tests:** Vitest for role visibility and the partial notice. A pmm-qa e2e test with a restricted user.

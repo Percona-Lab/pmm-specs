@@ -46,7 +46,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 1. **A symlink under an allowed prefix that points outside it** (`/var/log/x -> /etc/shadow`). Expected: `NOT_ALLOWED`, because the allow-list checks the resolved path. Test in Task 6 (`TestRenderRejectsSymlinkEscape`).
 2. **Globs and `..`** (`/var/log/../etc/*`, `/var/log/mysql/*.log`). Expected: a path containing `..` is rejected. A glob is checked on its static directory prefix. Test in Task 6 (`TestAllowListGlobsAndDotDot`).
 3. **Log lines of 64 KiB or more, or binary content.** Expected: each line is truncated at `max_log_size` (64 KiB), and every OTLP request stays under nginx's 10 MB limit. Test in Task 6 (`TestRenderedConfigBoundsRequestSize`), and checked live in plan 01's contract test by adding a 1 MiB line.
-4. **Two collectors created concurrently for one pmm-agent** (two `pmm-admin add logs` at once). Expected: exactly one collector. The second request reuses it. Test in Task 3 (`TestAddLogSourceConcurrentCreatesOneCollector`, using the partial unique index).
+4. **Two collectors created concurrently for one pmm-agent** (two `pmm-admin add logs` at once). Expected: exactly one collector. The second request reuses it. Test in Task 3b (`TestAddLogSourceConcurrentCreatesOneCollector`, using the partial unique index).
 5. **A log file rotated while the collector is down.** Expected: lines written to the old file before rotation are read from its checkpoint, and the new file is read from its start. This is documented as the guarantee. Test in Task 6 (`TestRenderedFilelogUsesStorageAndStartAtEnd`), which asserts `storage: file_storage`, `start_at: end` and `include_file_path: true`; the live check is in PMM-15578.
 
 ---
@@ -59,16 +59,18 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
     - enum `AGENT_TYPE_OTEL_COLLECTOR = 20` (:16-37);
     - message `OtelCollector`, following `NomadAgent` at :79-100;
     - `otel_collector` in `ListAgentsResponse` (:792-812), in the `GetAgentResponse` oneof (:821-842), and in `ChangeAgentRequest/Response` (:907-955), with `ChangeOtelCollectorParams { optional bool enable = 1; optional common.StringMap custom_labels = 2; }`;
-    - no Add RPC: plan 02, Task 3 creates collectors.
+    - no Add RPC: plan 02, Task 3b creates collectors.
   - `api/inventory/v1/agents.go` (sealed interface, :29,44-45)
   - `api/inventory/v1/types/agent_types.go` (:19-63)
   - `managed/models/agent_model.go` (:79-99, `OtelCollectorType`)
-  - `managed/models/database.go`: migration **121** (renumber at merge time), `CREATE UNIQUE INDEX agents_one_otel_collector_per_pmm_agent ON agents (pmm_agent_id) WHERE agent_type = 'otel-collector'`
+  - `managed/models/agentversion.go`: `PMMAgentMinVersionForOtelCollector`
+  - `version/features.go`: `OtelCollectorSupportVersion`
+  - `managed/models/database.go`: a migration with the next free number at merge time (126 on `main` at the pinned commit), `CREATE UNIQUE INDEX agents_one_otel_collector_per_pmm_agent ON agents (pmm_agent_id) WHERE agent_type = 'otel-collector'`
   - `managed/services/converters.go` (:580-588)
   - `managed/services/inventory/grpc/agents_server.go` (:44-60 enum map, `ListAgents` :71-128, Change :240-282)
   - `managed/services/inventory/agents.go` (`ChangeOtelCollector`, following `ChangeNomadAgent` :1774-1800)
   - `admin/commands/list.go` (:300-312, :556-620)
-  - `admin/commands/inventory/list_agents.go` (:46,55,134-144,200,302)
+  - `admin/commands/inventory/list_agents.go` (:46,55,134-144,200,304)
   - `admin/commands/inventory/change_agent_otel_collector.go` (new, following `change_agent_nomad_agent.go`)
   - `managed/services/management/agent.go` (`agentToAPI` :141-240)
   - `api-tests/management/helpers.go` (`removeAllAgentsInList`, :125-170)
@@ -78,6 +80,9 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   - `admin/commands/list_test.go`
 
 **Interfaces:**
+- Produces the version constants, both for `3.12.0-0`:
+  - `models.PMMAgentMinVersionForOtelCollector = version.Must(version.NewVersion("3.12.0-0"))`, a hashicorp `*version.Version` next to the other `PMMAgentMinVersionFor…` values, because `models.PMMAgentSupported` (`managed/models/agentversion.go:48`) takes that type (Task 3b);
+  - `version.OtelCollectorSupportVersion`, the shared-contract `FeatureVersion`, for `state.go` (Task 4).
 - Produces the shared-contract enum, message and model constant, and `func (s *AgentsService) ChangeOtelCollector(ctx context.Context, agentID string, p *inventoryv1.ChangeOtelCollectorParams) (*inventoryv1.ChangeAgentResponse, error)`.
 
 - [ ] **Step 1: Write the failing tests.**
@@ -89,7 +94,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 - [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS.
 - [ ] **Step 5: Commit.**
   ```bash
-  git add api managed admin api-tests/management/helpers.go
+  git add api managed admin version api-tests/management/helpers.go
   git commit -s -m "PMM-15572 Add the OTEL collector agent type"
   ```
 
@@ -97,7 +102,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 
 **Files:**
 - Create:
-  - `managed/services/otel/presets/builtin/*.yml`: one file each for `mysql_error`, `syslog_mysql_systemd`, `nginx_access`, `nginx_error`, `grafana`, `pmm_managed`, `pmm_agent`, `postgres`, `clickhouse_server`, `otel_collector`, `supervisord`, `syslog`, `json`, `raw`, plus `victoriametrics`, `hclog` and `ansible` for the server's own logs (Task 8), and the hidden `journald` (`selectable: false`)
+  - `managed/services/otel/presets/builtin/*.yml` for the generic presets `syslog`, `json`, `raw` and the hidden `journald` (`selectable: false`). Task 2b adds the database and server presets.
   - `managed/services/otel/presets/presets.go`
   - `managed/services/otel/presets/validate.go`
   - `managed/services/otel/presets/validate_test.go`
@@ -113,7 +118,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
     ```yaml
     name: mysql_error
     description: …
-    min_agent_version: 3.11.0
+    min_agent_version: 3.12.0
     selectable: true
     operators: [ … ]
     ```
@@ -126,7 +131,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
     - `type` is one of `regex_parser`, `json_parser`, `csv_parser`, `key_value_parser`, `syslog_parser`, `time_parser`, `severity_parser`, `trace_parser`, `scope_name_parser`, `move`, `copy`, `remove`, `retain`, `flatten`, `add`, `recombine`, `noop`;
     - it rejects any string containing `EXPR(`, `${` or `env(`;
     - errors name the operator index and the offending value.
-- Built-in fixes from PMM-15574:
+- Built-in fixes from PMM-15574 (applied in Task 2b):
   - `mysql_error` parses `log_timestamps=SYSTEM` offsets (`2026-10-10T12:00:00.123456+02:00`) as well as `Z`.
   - `postgres` parses a non-UTC `log_timezone` abbreviation.
   - Both use `recombine` so that a multi-line entry (an InnoDB deadlock dump, a stack trace) becomes one record.
@@ -155,12 +160,10 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
       require.NoError(t, err)
       var names []string
       for _, p := range ps { names = append(names, p.Name) }
-      assert.ElementsMatch(t, []string{"mysql_error", "syslog_mysql_systemd", "nginx_access", "nginx_error", "grafana",
-          "pmm_managed", "pmm_agent", "postgres", "clickhouse_server", "otel_collector", "supervisord", "syslog", "json", "raw",
-          "victoriametrics", "hclog", "ansible", "journald"}, names)
+      assert.ElementsMatch(t, []string{"syslog", "json", "raw", "journald"}, names)
   }
   ```
-  In `build/otelcol/presettest/main_test.go`, `TestPresetsParseSamples`: for each `testdata/<name>/`, build a stanza pipeline from the preset's operators, feed `input.log` line by line, and compare `[]{timestamp(UTC RFC3339Nano), severity_text, body}` with `expected.json`. Write the samples from real logs:
+  In `build/otelcol/presettest/main_test.go`, `TestPresetsParseSamples`: for each `testdata/<name>/`, build a stanza pipeline from the preset's operators, feed `input.log` line by line, and compare `[]{timestamp(UTC RFC3339Nano), severity_text, body}` with `expected.json`. Write the samples from real logs. This task writes the syslog and JSON samples; Task 2b writes the rest:
   - MySQL 8.0 and 8.4 error logs, with both `log_timestamps` modes;
   - PostgreSQL 13–17 stderr logs with `log_timezone=Europe/Berlin`;
   - nginx access and error logs;
@@ -175,57 +178,104 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   Each multi-line sample asserts one record.
 - [ ] **Step 2: Run them.** `cd managed && go test ./services/otel/presets/` and `cd build/otelcol/presettest && go test ./...`. Expected: FAIL.
 - [ ] **Step 3: Implement** the files, `presets.go` (`//go:embed builtin/*.yml`), `validate.go`, and the harness. Start from the prototype's operator chains (`git show origin/tibi-holmes:managed/models/database.go`, migrations 127–129 and 134), and correct them until the samples pass.
-- [ ] **Step 4: Run them again.** Same commands. Expected: PASS. If `qan-api2.log` and `vmproxy.log` parse under `pmm_agent`, record that in the PR; otherwise add `pmm_logrus` and use it for both (PMM-15575 asks for this to be confirmed).
+- [ ] **Step 4: Run them again.** Same commands. Expected: PASS.
 - [ ] **Step 5: Commit.**
   ```bash
   git add managed/services/otel/presets build/otelcol/presettest .github/workflows/otelcol.yml
-  git commit -s -m "PMM-15574 Add built-in log parser presets"
+  git commit -s -m "PMM-15574 Add the preset format, validator and harness"
   ```
 
-### Task 3: Tables `log_parser_presets` and `log_sources`, and the `OtelService` API
+### Task 2b: The database and server presets
+
+**Files:**
+- Create:
+  - `managed/services/otel/presets/builtin/*.yml` for `mysql_error`, `syslog_mysql_systemd`, `nginx_access`, `nginx_error`, `grafana`, `pmm_managed`, `pmm_agent`, `postgres`, `clickhouse_server`, `otel_collector`, `supervisord`, `victoriametrics`, `hclog` and `ansible`
+  - `managed/services/otel/presets/testdata/<name>/input.log` and `expected.json` for each of them
+- Modify: `managed/services/otel/presets/validate_test.go` (`TestBuiltInsLoad`)
+
+**Interfaces:**
+- Consumes the file format, `BuiltIn`, `CheckCustom` and the harness (Task 2).
+- Applies the built-in fixes from PMM-15574 listed in Task 2's Interfaces.
+- `qan-api2.log` and `vmproxy.log` use `pmm_agent` (Task 8). If their samples don't parse under it, widen `pmm_agent` until they do; don't add a preset.
+
+- [ ] **Step 1: Write the failing tests.** Extend `TestBuiltInsLoad` to the full list: `mysql_error`, `syslog_mysql_systemd`, `nginx_access`, `nginx_error`, `grafana`, `pmm_managed`, `pmm_agent`, `postgres`, `clickhouse_server`, `otel_collector`, `supervisord`, `syslog`, `json`, `raw`, `victoriametrics`, `hclog`, `ansible`, `journald`. Add the samples from Task 2's list that Task 2 didn't cover; each multi-line sample asserts one record.
+- [ ] **Step 2: Run them.** `cd managed && go test ./services/otel/presets/` and `cd build/otelcol/presettest && go test ./...`. Expected: FAIL.
+- [ ] **Step 3: Implement** the presets. Start from the prototype's operator chains (`git show origin/tibi-holmes:managed/models/database.go`, migrations 127–129 and 134), and correct them until the samples pass.
+- [ ] **Step 4: Run them again.** Same commands. Expected: PASS.
+- [ ] **Step 5: Commit.**
+  ```bash
+  git add managed/services/otel/presets
+  git commit -s -m "PMM-15574 Add database and server log presets"
+  ```
+
+### Task 3: Table `log_parser_presets` and the preset RPCs
 
 **Files:**
 - Create:
   - `managed/models/log_parser_preset_model.go`
   - `managed/models/log_parser_preset_helpers.go`
-  - `managed/models/log_source_model.go`
-  - `managed/models/log_source_helpers.go`
-  - their `_reform.go` files (generated by `make gen`)
+  - its `_reform.go` file (generated by `make gen`)
   - `managed/services/otel/presets_grpc.go`
-  - `managed/services/otel/log_sources_grpc.go`
   - their tests
   - `api-tests/otel/presets_test.go`
-  - `api-tests/otel/log_sources_test.go`
 - Modify:
-  - `managed/models/database.go`: migration **122**, creating two tables:
-    - `log_parser_presets (id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '', operators_yaml TEXT NOT NULL, built_in BOOLEAN NOT NULL DEFAULT FALSE, selectable BOOLEAN NOT NULL DEFAULT TRUE, min_agent_version VARCHAR NOT NULL DEFAULT '', cloned_from VARCHAR NOT NULL DEFAULT '', created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)`;
-    - `log_sources`, as described in analysis §6.2. `units` and `custom_labels` are stored like `agents.custom_labels`.
-  - `api/otel/v1/otel.proto` (preset and source RPCs from the roadmap table)
-  - `managed/cmd/pmm-managed/main.go`: call `presets.BuiltIn()` at startup and upsert the results through `models.SyncBuiltInPresets`.
+  - `managed/models/database.go`: a migration with the next free number at merge time (127 on `main` at the pinned commit, after Task 1's), creating `log_parser_presets (id VARCHAR PRIMARY KEY, name VARCHAR NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '', operators_yaml TEXT NOT NULL, built_in BOOLEAN NOT NULL DEFAULT FALSE, selectable BOOLEAN NOT NULL DEFAULT TRUE, min_agent_version VARCHAR NOT NULL DEFAULT '', cloned_from VARCHAR NOT NULL DEFAULT '', created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)`.
+  - `api/otel/v1/otel.proto` (the preset RPCs from the roadmap table)
+  - `managed/cmd/pmm-managed/main.go`: call `presets.BuiltIn()` at startup, convert each `presets.Preset` to `models.BuiltInPreset`, and upsert them through `models.SyncBuiltInPresets`.
 
 **Interfaces:**
-- Consumes `presets.BuiltIn`, `presets.CheckCustom`, the `presets.Validator` (Task 2), and `models.OtelCollectorType` (Task 1).
+- Consumes `presets.BuiltIn`, `presets.CheckCustom` and the `presets.Validator` (Task 2).
 - Produces:
-  - **Presets:**
-    - `func SyncBuiltInPresets(q *reform.Querier, builtIns []presets.Preset) error`. It upserts each built-in by name. A custom preset with a clashing name is renamed to `<name>_custom`, and a warning is logged.
-    - `func FindLogParserPresets(q *reform.Querier) ([]*LogParserPreset, error)`, which returns `UsageCount` through a `COUNT` over `log_sources`.
-    - `CreateLogParserPreset`, `ChangeLogParserPreset` and `RemoveLogParserPreset`:
-      - change and remove of a built-in return `codes.FailedPrecondition` "built-in presets are read-only; clone it";
-      - remove of a preset in use returns `FailedPrecondition` with the count.
-  - **Log sources:**
-    - `func UpsertLogSource(q *reform.Querier, p UpsertLogSourceParams) (*LogSource, bool, error)` (the bool means "created"), with `UpsertLogSourceParams{ PMMAgentID string; Kind string; Path string; Units []string; PresetName string; ServiceID string; AppName string; Discovery string; CustomLabels map[string]string }`.
-      - It creates the collector agent when the pmm-agent has none.
-      - It rejects a `ServiceID` whose `node_id` differs from the pmm-agent's `runs_on_node_id` with `InvalidArgument` "service %s runs on node %s, not on this node".
-      - It rejects an unknown preset with `NotFound` naming it.
-      - It rejects `ServiceID` and `AppName` together with `InvalidArgument`.
-      - Adding the same `(collector, kind, path, units)` again updates the row, so the last preset wins.
-    - `func RemoveLogSources(q *reform.Querier, f LogSourceFilters) (int, error)` and `func FindLogSources(q *reform.Querier, f LogSourceFilters) ([]*LogSource, error)`, with `LogSourceFilters{ID, NodeID, PMMAgentID, ServiceID, Path string}`.
-    - Removing a service deletes its sources through the foreign key.
+  - `type BuiltInPreset struct { Name, Description, OperatorsYAML, MinAgentVersion string; Selectable bool }` in `models`, so `models` imports no service package.
+  - `func SyncBuiltInPresets(q *reform.Querier, builtIns []BuiltInPreset) error`. It upserts each built-in by name. A custom preset with a clashing name is renamed to `<name>_custom`, and a warning is logged.
+  - `func FindLogParserPresets(q *reform.Querier) ([]*LogParserPreset, error)`. Task 3b adds `UsageCount`.
+  - `CreateLogParserPreset`, `ChangeLogParserPreset` and `RemoveLogParserPreset`:
+    - change and remove of a built-in return `codes.FailedPrecondition` "built-in presets are read-only; clone it".
+
+- [ ] **Step 1: Write the failing tests.**
+  - `log_parser_preset_helpers_test.go` (`testdb.Open`):
+    - `TestSyncBuiltInPresetsRenamesClash`: a custom `syslog` exists before sync; afterwards the custom one is `syslog_custom`, keeps its id, and the built-in `syslog` exists.
+    - `TestChangeBuiltInFails`.
+- [ ] **Step 2: Run them.** `cd managed && go test ./models/ ./services/otel/ -run 'Preset'`. Expected: FAIL.
+- [ ] **Step 3: Implement** the model, the migration, the helpers, the proto (then `make gen`), the handlers and the startup sync.
+- [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS. Then write the api-test against a Feature Build: the list contains every selectable built-in in `presets.BuiltIn()`; add, change and clone a custom preset; changing a built-in gets 400; invalid YAML gets 400 with a clear message; a Viewer gets 403.
+- [ ] **Step 5: Commit.**
+  ```bash
+  git add api/otel managed api-tests/otel
+  git commit -s -m "PMM-15574 Add the parser presets API"
+  ```
+
+### Task 3b: Table `log_sources` and the log source RPCs
+
+**Files:**
+- Create:
+  - `managed/models/log_source_model.go`
+  - `managed/models/log_source_helpers.go`
+  - its `_reform.go` file (generated by `make gen`)
+  - `managed/services/otel/log_sources_grpc.go`
+  - their tests
+  - `api-tests/otel/log_sources_test.go`
+- Modify:
+  - `managed/models/database.go`: a migration with the next free number after Task 3's (128 on `main` at the pinned commit), creating `log_sources` as described in analysis §6.2. `units` and `custom_labels` are stored like `agents.custom_labels`. `state` holds the proto enum name (`LOG_SOURCE_STATE_COLLECTING`, …), and `state_reason` the agent's text.
+  - `api/otel/v1/otel.proto` (the log source RPCs from the roadmap table)
+
+**Interfaces:**
+- Consumes `models.OtelCollectorType` and `models.PMMAgentMinVersionForOtelCollector` (Task 1), and the preset table (Task 3).
+- Produces:
+  - `func UpsertLogSource(q *reform.Querier, p UpsertLogSourceParams) (*LogSource, bool, error)` (the bool means "created"), with `UpsertLogSourceParams{ PMMAgentID string; Kind string; Path string; Units []string; PresetName string; ServiceID string; AppName string; Discovery string; CustomLabels map[string]string }`.
+    - It creates the collector agent when the pmm-agent has none.
+    - It rejects a `ServiceID` whose `node_id` differs from the pmm-agent's `runs_on_node_id` with `InvalidArgument` "service %s runs on node %s, not on this node".
+    - It rejects an unknown preset with `NotFound` naming it.
+    - It rejects `ServiceID` and `AppName` together with `InvalidArgument`.
+    - Adding the same `(collector, kind, path, units)` again updates the row, so the last preset wins.
+  - `func RemoveLogSources(q *reform.Querier, f LogSourceFilters) (int, error)` and `func FindLogSources(q *reform.Querier, f LogSourceFilters) ([]*LogSource, error)`, with `LogSourceFilters{ID, NodeID, PMMAgentID, ServiceID, Path string}`.
+  - Removing a service deletes its sources through the foreign key.
+  - `FindLogParserPresets` gains `UsageCount`, a `COUNT` over `log_sources`; removing a preset in use returns `FailedPrecondition` with the count.
+  - **Preset changes** call `RequestStateUpdate` for each pmm-agent whose collector uses the preset (`SELECT DISTINCT pmm_agent_id …`), and for no other agent.
   - **gRPC:**
     - `AddLogSourceRequest` takes exactly one of `pmm_agent_id` (pmm-admin) or `node_id` (UI). A `node_id` resolves to the pmm-agent whose `runs_on_node_id` is that node; if there is none, the request fails with `FailedPrecondition` "node %s has no pmm-agent".
-    - The handlers call `models.PMMAgentSupported(q, pmmAgentID, "OpenTelemetry log collection", version.OtelCollectorSupportVersion)` before any write, and map the result to `FailedPrecondition`.
+    - The handlers call `models.PMMAgentSupported(q, pmmAgentID, "OpenTelemetry log collection", models.PMMAgentMinVersionForOtelCollector)` before any write, and map the result to `FailedPrecondition`.
     - After the transaction they call `state.RequestStateUpdate(ctx, pmmAgentID)` for that pmm-agent only.
-  - **Preset changes** call `RequestStateUpdate` for each pmm-agent whose collector uses the preset (`SELECT DISTINCT pmm_agent_id …`), and for no other agent.
 
 - [ ] **Step 1: Write the failing tests.**
   - `log_source_helpers_test.go` (`testdb.Open`, because the tests cover foreign keys, unique and check constraints):
@@ -235,20 +285,15 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
     - `TestUpsertLogSourceRejectsServiceAndApp`.
     - `TestRemoveServiceRemovesItsSources`.
     - `TestAddLogSourceConcurrentCreatesOneCollector`: two goroutines with `sync.WaitGroup.Go`, each in its own transaction, give one collector.
-  - `log_parser_preset_helpers_test.go`:
-    - `TestSyncBuiltInPresetsRenamesClash`: a custom `syslog` exists before sync; afterwards the custom one is `syslog_custom`, keeps its id, and the built-in `syslog` exists.
-    - `TestRemovePresetInUseFails`.
-    - `TestChangeBuiltInFails`.
+    - `TestRemovePresetInUseFails` (in `log_parser_preset_helpers_test.go`).
   - `presets_grpc_test.go`, with mocks for `Validator` and the state updater: `TestChangePresetPushesOnlyUsers` asserts that `RequestStateUpdate` is called for agent A, which uses the preset, and not for agent B.
 - [ ] **Step 2: Run them.** `cd managed && go test ./models/ ./services/otel/ -run 'LogSource|Preset'`. Expected: FAIL.
-- [ ] **Step 3: Implement** the models, the migration, the helpers, the proto (then `make gen`), the handlers and the startup sync.
-- [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS. Then write the api-tests against a Feature Build (connect a pmm-agent from `api-tests` setup, or use the server's own node):
-  - **Presets:** list contains every selectable built-in (17 after Task 2); add, change and use a custom preset; removing it while in use gets 400; changing a built-in gets 400; cloning works; invalid YAML gets 400 with a clear message.
-  - **Log sources:** add, list and remove; an unknown preset gets 404 naming it; a Viewer gets 403.
+- [ ] **Step 3: Implement** the model, the migration, the helpers, the proto (then `make gen`) and the handlers.
+- [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS. Then the api-test against a Feature Build (connect a pmm-agent from `api-tests` setup, or use the server's own node): add, list and remove a source; an unknown preset gets 404 naming it; removing a preset in use gets 400; a Viewer gets 403.
 - [ ] **Step 5: Commit.**
   ```bash
   git add api/otel managed api-tests/otel
-  git commit -s -m "PMM-15574 Add log sources and parser presets API"
+  git commit -s -m "PMM-15572 Add the log sources API"
   ```
 
 ### Task 4: Build `OtelCollectorParams` in pmm-managed
@@ -260,13 +305,12 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   - `managed/services/agents/otelcollector_test.go`
 - Modify:
   - `api/agent/v1/agent.proto`: `AgentProcess.otel_collector = 9`, `StateChangedRequest.log_source_statuses = 6`
-  - `version/features.go`: `OtelCollectorSupportVersion`
   - `managed/services/agents/state.go`:
     - a `case models.OtelCollectorType` in `sendSetStateRequest` (~:281-290), skipped with a warning for agents below the version (pattern at :304-309);
     - in `AgentFilters`, `IgnoreOtelCollector: !settings.IsOtelCollectorEnabled()` (pattern `IgnoreNomad` ~:225; filter field at `agent_helpers.go:244-262,345`).
 
 **Interfaces:**
-- Consumes `models.FindLogSources` and `FindLogParserPresets` (Task 3), and `models.MergeLabels`.
+- Consumes `models.FindLogSources` (Task 3b), `FindLogParserPresets` (Task 3), `version.OtelCollectorSupportVersion` (Task 1), and `models.MergeLabels`.
 - Produces `func otelCollectorConfig(agent *models.Agent, node *models.Node, sources []*models.LogSource, presetsByID map[string]*models.LogParserPreset, services map[string]*models.Service, isServerNode bool, pmmAgentVersion *version.Parsed) *agentv1.SetStateRequest_AgentProcess`. It returns:
   - `Type: AGENT_TYPE_OTEL_COLLECTOR`;
   - `OtelCollector.ResourceAttributes = {"pmm.node_id", "pmm.agent_id"}`;
@@ -275,7 +319,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
     - `OperatorsYaml` = the preset's operators. A journald source uses the hidden `journald` preset.
     - `ResourceAttributes`: for a service source, `pmm.service_id` and `pmm.service_name`, plus `service.name` set to the program (`mysqld`, `postgres`, `mongod`, by service type; D4). For an app source, `service.name = app_name`. Then the source's custom labels.
     - `Discovered = discovery != ""`.
-  - A source whose preset has `MinAgentVersion` above the pmm-agent version is left out, and its DB state is set to `agent_too_old`.
+  - A source whose preset has `MinAgentVersion` above the pmm-agent version is left out, and its `state` is set to `LOG_SOURCE_STATE_AGENT_TOO_OLD`.
   - `SendToLocalReceiver = isServerNode`, `SendingQueueMib = 1024`.
   - Sources are sorted by id, and map keys are sorted on marshal, so equal input always gives an equal message.
   - `Args` and `TextFiles` are empty: pmm-agent renders the config itself (D11).
@@ -283,7 +327,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 - [ ] **Step 1: Write the failing tests.**
   ```go
   func TestOtelCollectorConfigIdentity(t *testing.T) {
-      p := otelCollectorConfig(collector, node, []*models.LogSource{svcSource, appSource, osSource}, presets, services, false, v3_11)
+      p := otelCollectorConfig(collector, node, []*models.LogSource{svcSource, appSource, osSource}, presets, services, false, v3_12)
       require.Len(t, p.OtelCollector.LogSources, 3)
       assert.Equal(t, map[string]string{"pmm.node_id": node.NodeID, "pmm.agent_id": collector.AgentID}, p.OtelCollector.ResourceAttributes)
       assert.Equal(t, map[string]string{"pmm.service_id": "svc1", "pmm.service_name": "mysql-1", "service.name": "mysqld"}, byID(p, "src-svc").ResourceAttributes)
@@ -294,8 +338,8 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   }
 
   func TestOtelCollectorConfigDeterministic(t *testing.T) {
-      a := otelCollectorConfig(collector, node, shuffled(sources), presets, services, false, v3_11)
-      b := otelCollectorConfig(collector, node, sources, presets, services, false, v3_11)
+      a := otelCollectorConfig(collector, node, shuffled(sources), presets, services, false, v3_12)
+      b := otelCollectorConfig(collector, node, sources, presets, services, false, v3_12)
       assert.True(t, proto.Equal(a, b))
   }
   ```
@@ -321,7 +365,6 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
     - new `type LogSources struct { AllowedPaths []string \`yaml:"allowed-paths"\`; AllowedJournaldUnits []string \`yaml:"allowed-journald-units"\` }`, added to `Config` as `LogSources LogSources \`yaml:"log-sources"\``. The default is `AllowedPaths = ["/var/log"]` when the key is absent; an explicit empty list stays empty.
   - `agent/config/config_test.go`
   - `managed/services/supervisord/pmm_config.go` (:180-192): add `--paths-otelcol-data-dir=/srv/otelcol/data --log-sources-allowed-paths=/srv/logs` to the server's `[program:pmm-agent]` command, and update the golden `managed/testdata/supervisord.d/pmm.ini`.
-  - `build/docker/server/entrypoint.sh`: create `/srv/otelcol/data`.
 
 **Interfaces:**
 - Produces `cfg.Paths.OtelCollector`, `cfg.Paths.OtelCollectorDataDir` and `cfg.LogSources`. Task 6 reads them.
@@ -331,11 +374,11 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   - `TestLoadKeepsAllowListAcrossSave`: load a file with `allowed-paths: [/var/log, /opt/app/logs]`, call `SaveToFile`, reload, and get the same list. This is the upgrade-survival AC from PMM-15577.
   - `TestEnvAllowList`: `PMM_AGENT_LOG_SOURCES_ALLOWED_PATHS=/srv/logs` gives `[]string{"/srv/logs"}`.
 - [ ] **Step 2: Run them.** `cd agent && go test ./config/ -run 'Otel|AllowList'`. Expected: FAIL.
-- [ ] **Step 3: Implement** the fields, defaults and flags, then the server program flags and the entrypoint directory.
+- [ ] **Step 3: Implement** the fields, defaults and flags, then the server program flags. pmm-agent creates `/srv/otelcol/data` itself (Task 7).
 - [ ] **Step 4: Run them again.** Same command, plus `cd managed && go test ./services/supervisord/`. Expected: PASS.
 - [ ] **Step 5: Commit.**
   ```bash
-  git add agent/config managed/services/supervisord managed/testdata build/docker/server/entrypoint.sh
+  git add agent/config managed/services/supervisord managed/testdata
   git commit -s -m "PMM-15572 Add collector paths and log allow-list"
   ```
 
@@ -415,7 +458,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   git commit -s -m "PMM-15572 Render collector config on pmm-agent"
   ```
 
-### Task 7: Run the collector as `pmm-agent`, and report per-source status
+### Task 7: Run the collector as `pmm-agent`
 
 **Files:**
 - Create:
@@ -427,10 +470,9 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
     - a `Credential *syscall.Credential` field in `Params` (:75-87);
     - in `toStarting` (:150-178), set `p.cmd.SysProcAttr.Credential` **after** `pdeathsig.Set`, so `Pdeathsig` is kept.
   - `agent/agents/supervisor/supervisor.go`:
-    - a `case inventoryv1.AgentType_AGENT_TYPE_OTEL_COLLECTOR` in `processParams` (:1118-1219). It calls `Render`, writes the YAML to `<OtelCollectorDataDir>/<agentID>/config.yaml` with mode 0600, chowns that directory tree to the credential, sets `Path = cfg.Paths.OtelCollector`, `Args = ["--config=<file>"]`, `Env = ["PATH=/usr/bin:/bin"]` and `Credential`, and keeps the statuses on the agent's process info;
-    - `version()` (:1262-1283) with a regex for `otelcol version`, in `deps.go:26`;
-    - send `StateChangedRequest.LogSourceStatuses` together with the process status (:822-829), and again whenever the statuses change.
-  - `managed/services/agents/handler.go` (`stateChanged` ~:129,223): store the statuses through `models.UpdateLogSourceStates(q, statuses)`.
+    - a `case inventoryv1.AgentType_AGENT_TYPE_OTEL_COLLECTOR` in `processParams` (:1118-1219). It creates each missing directory down to `OtelCollectorDataDir` with mode 0755, then `<agentID>` with mode 0700, owned by the credential. Not one `os.MkdirAll` with 0700: it gives every level it creates the same mode, so a root pmm-agent would leave `data/otelcol` as root:root 0700, and the collector, running as `pmm-agent`, couldn't reach its config. The packages don't create `/usr/local/percona/pmm/data`. If an existing parent isn't searchable by the credential, the agent status is `INITIALIZATION_ERROR`, naming that directory. Then it calls `Render`, writes the YAML to `config.yaml` there with mode 0600, chowns that directory tree to the credential, and sets `Path = cfg.Paths.OtelCollector`, `Args = ["--config=<file>"]`, `Env = ["PATH=/usr/bin:/bin"]` and `Credential`;
+    - it assigns `RenderInput.TelemetryPort` from the supervisor's port range, the way exporters get theirs, and reports it as the agent's `listen_port` (Task 9 scrapes it);
+    - `version()` (:1262-1283) with a regex for `otelcol version`, in `deps.go:26`.
   - `build/packages/rpm/client/pmm-client.spec` and `build/packages/deb/postinst`: after the user is created, `usermod -aG systemd-journal pmm-agent` when `getent group systemd-journal` succeeds, and `-aG adm` on Debian/Ubuntu when `adm` exists.
 
 **Interfaces:**
@@ -438,7 +480,6 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 - Produces:
   - `func CollectorCredential(euid int, lookup func(string) (*user.User, error), groupIDs func(*user.User) ([]string, error)) (*syscall.Credential, error)`. It returns `nil, nil` when `euid != 0`. As root, it returns the `pmm-agent` uid, gid and supplementary groups. If the user is missing, it returns an error, which becomes the agent status `INITIALIZATION_ERROR` with the message "user pmm-agent not found; the collector does not run as root".
   - `func ReadableAs(cred *syscall.Credential) func(path string) error`. It checks the owner, group and other read bits on the file (or, for a glob, its directory), and the execute bit on each parent directory. When the file or a parent has a `system.posix_acl_access` xattr, the check is skipped.
-  - `func UpdateLogSourceStates(q *reform.Querier, statuses []*agentv1.LogSourceStatus) error`
 
 - [ ] **Step 1: Write the failing tests.**
   ```go
@@ -459,18 +500,43 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   ```
   Also write:
   - `TestReadableAs`, on temp files with modes 0600, 0640 and 0644 and a fake credential.
-  - In the supervisor tests, `TestProcessParamsOtelCollector`: the config file exists with mode 0600, `Args[0]` starts with `--config=`, and `Env` is `["PATH=/usr/bin:/bin"]`.
-  - In `managed/services/agents`, `TestStateChangedStoresLogSourceStates` (sqlmock): the expected UPDATE on `log_sources` sets `state` and `state_reason` for the given id.
-- [ ] **Step 2: Run them.** `cd agent && go test ./agents/otelcollector/ ./agents/supervisor/ ./agents/process/` and `cd managed && go test ./services/agents/ -run StateChanged`. Expected: FAIL.
+  - `TestProcessParamsOtelCollectorUnsearchableParent`: an existing `OtelCollectorDataDir` with mode 0700, owned by another user, gives `INITIALIZATION_ERROR` naming it.
+  - In the supervisor tests, `TestProcessParamsOtelCollector`: the data directory is created, every directory above the config file has mode 0755 (searchable by the collector's uid) and the `<agentID>` directory 0700, the config file exists with mode 0600, `Args[0]` starts with `--config=`, `Env` is `["PATH=/usr/bin:/bin"]`, and the rendered config's telemetry endpoint uses the assigned port.
+- [ ] **Step 2: Run them.** `cd agent && go test ./agents/otelcollector/ ./agents/supervisor/ ./agents/process/`. Expected: FAIL.
 - [ ] **Step 3: Implement** everything listed above, including the package scripts.
-- [ ] **Step 4: Run them again.** Same commands, then `make prepare-pr`. Expected: PASS. Then on a CHAOS VM with a Feature Build (`pmm-qa:chaos-docker-provisioning`):
+- [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS. Then on a CHAOS VM with a Feature Build (`pmm-qa:chaos-docker-provisioning`):
   - `ps -o user= -C otelcol` prints `pmm-agent`.
   - `ss -ltnp | grep otelcol` shows only `127.0.0.1:<listen_port>`.
-  - Add a source with a path outside `/var/log`; `GET /v1/otel/log-sources` shows `NOT_ALLOWED`.
 - [ ] **Step 5: Commit.**
   ```bash
-  git add agent managed build/packages
-  git commit -s -m "PMM-15572 Run collector as pmm-agent, report sources"
+  git add agent build/packages
+  git commit -s -m "PMM-15572 Run the collector as pmm-agent"
+  ```
+
+### Task 7b: Report a state for each log source
+
+**Files:**
+- Modify:
+  - `agent/agents/supervisor/supervisor.go`: keep the statuses `Render` returns on the agent's process info, and send `StateChangedRequest.LogSourceStatuses` together with the process status (:833), and again whenever the statuses change.
+  - `managed/services/agents/handler.go` (`stateChanged` ~:129,223): convert each `agentv1.LogSourceStatus` to `models.LogSourceStateUpdate` and store them with `models.UpdateLogSourceStates`.
+  - `managed/models/log_source_helpers.go`
+
+**Interfaces:**
+- Consumes `Render`'s statuses (Task 6) and the `log_sources` table (Task 3b).
+- Produces:
+  - `type LogSourceStateUpdate struct { ID, State, Reason string }` in `models`, so `models` doesn't import `api/agent`.
+  - `func UpdateLogSourceStates(q *reform.Querier, updates []LogSourceStateUpdate) error`. `State` is the proto enum name.
+
+- [ ] **Step 1: Write the failing tests.**
+  - In `agent/agents/supervisor`, `TestSupervisorSendsLogSourceStatusesOnChange`: a changed status list produces a `StateChangedRequest` with the new statuses; an unchanged list produces none.
+  - In `managed/services/agents`, `TestStateChangedStoresLogSourceStates` (sqlmock): the expected UPDATE on `log_sources` sets `state` and `state_reason` for the given id.
+- [ ] **Step 2: Run them.** `cd agent && go test ./agents/supervisor/ -run LogSourceStatuses` and `cd managed && go test ./services/agents/ -run StateChanged`. Expected: FAIL.
+- [ ] **Step 3: Implement** the sending, the conversion and the helper.
+- [ ] **Step 4: Run them again.** Same commands, then `make prepare-pr`. Expected: PASS. Then on the Task 7 VM, add a source with a path outside `/var/log`; `GET /v1/otel/log-sources` shows `LOG_SOURCE_STATE_NOT_ALLOWED`.
+- [ ] **Step 5: Commit.**
+  ```bash
+  git add agent managed
+  git commit -s -m "PMM-15572 Report a state for each log source"
   ```
 
 ### Task 8: PMM Server's own logs
@@ -480,10 +546,10 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   - `managed/services/otel/server_sources.go`
   - `managed/services/otel/server_sources_test.go`
 - Modify:
-  - `managed/services/agents/registry.go`: in `authenticate` (~:353-405), call `ensureServerOtelCollector` for the server's pmm-agent (`models.PMMServerAgentID`, or the HA UUID) when OTEL is enabled. Copy `addNomadAgentToPMMAgent` (:526-545).
+  - `managed/services/agents/registry.go`: in `authenticate` (~:353-405), call `ensureServerOtelCollector` for the server's pmm-agent (`models.PMMServerAgentID`, or the HA UUID) on every connect, whatever the OTEL setting, as `addNomadAgentToPMMAgent` (:526-545) does for Nomad. Task 4's `IgnoreOtelCollector` withholds the collector while OTEL is off, so turning OTEL on at runtime only needs a state push, not a reconnect (ADR-25).
 
 **Interfaces:**
-- Consumes `models.UpsertLogSource` (Task 3) and `SendToLocalReceiver` (Task 4).
+- Consumes `models.UpsertLogSource` (Task 3b) and `SendToLocalReceiver` (Task 4).
 - Produces:
   - `type ServerSource struct { File, Preset, App, ServiceID string; When func(ServerEnv) bool }`
   - `type ServerEnv struct { BuiltinPostgres, BuiltinClickHouse, InternalVictoriaMetrics, NomadEnabled bool }`. It is read from `PMM_DISABLE_BUILTIN_POSTGRES` (`managed/cmd/pmm-managed-init/main.go:74`), `PMM_DISABLE_BUILTIN_CLICKHOUSE`, `VMParams.ExternalVM()` and `settings.IsNomadEnabled()`.
@@ -497,7 +563,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
     | `pmm-agent.log` | `pmm_agent` | `pmm-agent` | always |
     | `pmm-init.log` | `ansible` (new; it holds `ansible-playbook` output, `pmm_config.go:88`) | `pmm-init` | always |
     | `supervisord.log` | `supervisord` | `supervisord` | always |
-    | `qan-api2.log` | `pmm_agent`, or `pmm_logrus` from Task 2 | `qan-api2` | always |
+    | `qan-api2.log` | `pmm_agent` | `qan-api2` | always |
     | `vmproxy.log` | same as `qan-api2.log` | `vmproxy` | always |
     | `vmalert.log` | `victoriametrics` (new) | `vmalert` | always |
     | `otel-collector.log` | `otel_collector` | `otel-collector` | always |
@@ -508,7 +574,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 
     The real file is `postgresql.log`. PostgreSQL 18 writes to stdout and supervisord stores it there (`pmm_config.go:106-128`), so PMM-15575's `postgresql14.log` is stale.
   - Each source includes `<file>*`, not just `<file>`. supervisord rotates by renaming `x.log` to `x.log.1`, and the glob lets the collector finish lines written just before a rotation. `file_storage` fingerprints stop it from reading a rotated copy twice.
-  - New built-in presets in Task 2:
+  - New built-in presets in Task 2b:
     - `victoriametrics`: tab-separated, `2026-10-11T10:00:00.000Z<TAB>info<TAB>caller<TAB>message`;
     - `hclog`: `2026-10-11T10:00:00.000Z [INFO]  nomad: message`;
     - `ansible`: `recombine` on `PLAY [`, `TASK [` and `PLAY RECAP`; severity from `fatal:` / `failed:` (error), `changed:` / `ok:` (info).
@@ -516,12 +582,13 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   - To collect nginx access lines, an admin changes that source's preset to `nginx_access` through the API or the UI.
 
 - [ ] **Step 1: Write the failing tests.**
-  - `TestServerSourcesCoverEveryShippedLog`. It collects every `stdout_logfile = /srv/logs/<name>.log` from:
+  - `TestServerSourcesCoverEveryShippedLog`. It collects every `stdout_logfile = /srv/logs/<name>.log`, and supervisord's own `logfile = /srv/logs/<name>.log`, from:
     - the templates in `managed/services/supervisord/pmm_config.go` and `supervisord.go`;
     - `build/ansible/roles/supervisord/files/*.ini`;
 
     and asserts each is in `DefaultServerSources` with every `ServerEnv` flag on, and that every listed file is shipped. A new program that logs to `/srv/logs` without a source then fails CI.
   - `TestServerSourcesFollowEnv`: with built-in PostgreSQL and ClickHouse off and external VictoriaMetrics (the HA case), the list has no `postgresql.log`, `clickhouse-server.log` or `victoriametrics.log`. Nomad off means no `nomad-server.log`.
+  - `TestEnableOtelPushesServerCollectorWithoutReconnect`: the server's pmm-agent connects with OTEL off, so the collector and its sources exist but `sendSetStateRequest` leaves the collector out; after OTEL is turned on, the next state update for that pmm-agent includes the `otel-collector` process.
   - `TestEnsureServerOtelCollectorIdempotent` (`testdb`): calling it twice gives one collector and 13 sources (Nomad off).
 - [ ] **Step 2: Run them.** `cd managed && go test ./services/otel/ ./services/agents/ -run 'ServerSources|EnsureServerOtel'`. Expected: FAIL.
 - [ ] **Step 3: Implement** the source list and the ensure hook.
@@ -541,9 +608,8 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 **Files:**
 - Modify:
   - `managed/services/victoriametrics/prometheus.go`: a scrape config for `models.OtelCollectorType` in the agent switch (~:285-296), job `otel-collector`, target `127.0.0.1:<listen_port>`, path `/metrics`, with `node_id`, `agent_id` and `agent_type` labels from `MergeLabels`
-  - `managed/services/victoriametrics/scrape_configs.go`: a server scrape of `127.0.0.1:4319`, job `otel-collector-server`, added in `addInternalServicesToScrape` (:311-326) when OTEL is enabled
+  - in the same file, a server scrape of `127.0.0.1:4319`, job `otel-collector-server`, added in `addInternalServicesToScrape` (`prometheus.go:311`) when OTEL is enabled
   - `managed/services/victoriametrics/prometheus_test.go`
-  - `managed/services/victoriametrics/scrape_configs_test.go`
 
 **Interfaces:**
 - Consumes `OtelCollector.listen_port`, which pmm-agent assigns from its port range in Task 7 (`TelemetryPort = port`).
@@ -556,6 +622,28 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   ```bash
   git add managed/services/victoriametrics
   git commit -s -m "PMM-15593 Scrape OTEL collector self-metrics"
+  ```
+
+### Task 10: Inventory type in the Grafana fork, and telemetry
+
+**Files:**
+- In percona/grafana, on branch `PMM-15572-otel-collector-type`, modify the files below. If PMM-15002 has moved Inventory into `ui/apps/pmm` by then, make the same change there instead.
+  - `public/app/percona/inventory/Inventory.types.ts` (:28-50): `OtelCollector = 'otel-collector'`
+  - `public/app/percona/inventory/Tabs/Agents.constants.ts` (:25-47): name `OTEL collector`
+  - the matching tests
+- In percona/pmm, modify `managed/services/telemetry/config.default.yml`. Add metrics:
+  - `otel_collector_enabled` (from settings);
+  - `otel_log_sources_count` (`SELECT count(*) FROM log_sources`);
+  - `otel_daily_ingested_bytes`, through the ClickHouse telemetry datasource: `SELECT sum(bytes_on_disk) FROM system.parts WHERE database='otel' AND active AND partition = toString(yesterday())`.
+
+- [ ] **Step 1: Write the failing test** in the Grafana fork: the Agents tab renders an `otel-collector` agent as "OTEL collector". Run it with `yarn test Agents`. Expected: FAIL.
+- [ ] **Step 2: Implement** the type and name. Run the test again. Expected: PASS. Commit with `git commit -s -m "PMM-15572 Show the OTEL collector in Inventory"`.
+- [ ] **Step 3: Write the failing test** for telemetry: extend the telemetry config test in `managed/services/telemetry` so it asserts the three new metric names load. Run it. Expected: FAIL.
+- [ ] **Step 4: Implement** the config entries. Run `cd managed && go test ./services/telemetry/`. Expected: PASS.
+- [ ] **Step 5: Commit.**
+  ```bash
+  git add managed/services/telemetry
+  git commit -s -m "PMM-15571 Report OTEL usage in telemetry"
   ```
 
 ### Task 10b: journald in the pmm-client Docker image
@@ -576,26 +664,4 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   ```bash
   git add build/docker/client/Dockerfile.el9
   git commit -s -m "PMM-15577 Add journalctl to the pmm-client image"
-  ```
-
-### Task 10: Inventory type in the Grafana fork, and telemetry
-
-**Files:**
-- In `/srv/runner/2/percona/grafana`, on branch `PMM-15572-otel-collector-type`, modify:
-  - `public/app/percona/inventory/Inventory.types.ts` (:28-50): `OtelCollector = 'otel-collector'`
-  - `public/app/percona/inventory/Tabs/Agents.constants.ts` (:25-47): name `OTEL collector`
-  - the matching tests
-- In percona/pmm, modify `managed/services/telemetry/config.default.yml`. Add metrics:
-  - `otel_collector_enabled` (from settings);
-  - `otel_log_sources_count` (`SELECT count(*) FROM log_sources`);
-  - `otel_daily_ingested_bytes`, through the ClickHouse telemetry datasource: `SELECT sum(bytes_on_disk) FROM system.parts WHERE database='otel' AND active AND partition = toString(yesterday())`.
-
-- [ ] **Step 1: Write the failing test** in the Grafana fork: the Agents tab renders an `otel-collector` agent as "OTEL collector". Run it with `yarn test Agents`. Expected: FAIL.
-- [ ] **Step 2: Implement** the type and name. Run the test again. Expected: PASS. Commit with `git commit -s -m "PMM-15572 Show the OTEL collector in Inventory"`.
-- [ ] **Step 3: Write the failing test** for telemetry: extend the telemetry config test in `managed/services/telemetry` so it asserts the three new metric names load. Run it. Expected: FAIL.
-- [ ] **Step 4: Implement** the config entries. Run `cd managed && go test ./services/telemetry/`. Expected: PASS.
-- [ ] **Step 5: Commit.**
-  ```bash
-  git add managed/services/telemetry
-  git commit -s -m "PMM-15571 Report OTEL usage in telemetry"
   ```

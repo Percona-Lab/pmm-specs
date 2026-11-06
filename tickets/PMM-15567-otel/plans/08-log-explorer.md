@@ -4,6 +4,7 @@
 
 **Goal:** Admins search, filter, chart and read logs on a native PMM UI page built with `@percona/peak-ui`, without going through Grafana. The page:
 - shows a severity histogram;
+- groups lines into patterns, with counts and what is new (D27);
 - filters by node, PMM service, app, source, severity and text, with counts;
 - has a details pane with surrounding lines;
 - tails live;
@@ -16,17 +17,17 @@ The same API becomes the LBAC-enforced read path in plan 06.
 - A new `LogsService` in pmm-managed builds parameterized ClickHouse SQL from structured filters. It reads `otel.logs` as the read-only `otel_reader` user and resolves node and service names from inventory.
 - The PMM UI page `/logs` uses TanStack Query hooks over that API, and peak-ui components (`Table`, `Chip`, `CodeBlock`, `AutoCompleteInput`, `DateTimePickerInput`, `useDetailsPaneNavigation`, `usePerconaTableUrlState`, illustrations).
 - The page follows the RTA overview page (`ui/apps/pmm/src/pages/rta/overview/`).
-- It is Admin-only in this phase (ADR-07). Plan 06 opens it to restricted users once LBAC applies.
+- It is Admin-only in this phase (ADR-23). Plan 06 opens it to restricted users once LBAC applies.
 
 **Tech Stack:** Go (pmm-managed, clickhouse-go), protobuf/grpc-gateway, React, MUI v7, `@percona/peak-ui` 1.0.26+, `@mui/x-charts`, TanStack Query, Vitest.
 
 **Spec:**
 - [analysis](../spec.md) §7 and decision D20;
-- ADR-07, ADR-18, and ADR-21 (proposed);
+- ADR-18, ADR-21 and ADR-23 (proposed);
 - the [roadmap](00-roadmap.md) for the shared names.
 - [PMM-15722](https://perconadev.atlassian.net/browse/PMM-15722) (Logs explorer, under PMM-15567). Where its acceptance criteria differ from this plan, the ticket is current.
 
-**Depends on:** plan 01, Tasks 2–4 (`otel.logs`, `otel_reader`, settings), and plan 02 (data flowing). It can run in parallel with plan 03.
+**Depends on:** plan 01, Tasks 2–4 (`otel.logs` with `PatternHash`, `otel_reader`, settings), and plan 02 (data flowing). It can run in parallel with plan 03.
 
 ## Global Constraints
 
@@ -83,7 +84,7 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
   - `managed/services/logs/*_test.go`
   - `api-tests/logs/search_test.go`
 - Modify:
-  - `api/Makefile` (register the domain the way realtimeanalytics is registered at :22,38,57,75,118)
+  - `api/Makefile` (register the domain the way realtimeanalytics is registered at :22,39,59,78,122)
   - `managed/cmd/pmm-managed/main.go`: an `otel_reader` ClickHouse pool from `PMM_CLICKHOUSE_OTEL_READER_USER/PASSWORD` (max 4 connections), and gRPC and gateway registration
   - `managed/services/grafana/auth_server.go`: `"/v1/logs": admin`
 
@@ -290,9 +291,8 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
 
 **Files:**
 - Modify:
-  - the service summary dashboards and Node Summary (the same files as plan 03, Task 6): their log links open the native explorer, `/logs?service=${service_id}&from=${__from}&to=${__to}`, or `node=${node_id}` from Node Summary;
-  - `dashboards/dashboards/OTel/Logs.json`: a panel link "Open in Logs explorer" with the same filters;
-  - the Grafana fork's Inventory Services tab (`/srv/runner/4/percona/grafana/public/app/percona/inventory/`): a "Logs" row action for services that have log sources.
+  - the service summary dashboards `dashboards/dashboards/MySQL/MySQL_Instance_Summary.json`, `PostgreSQL/PostgreSQL_Instance_Summary.json` and `MongoDB/MongoDB_Instance_Summary.json`, and `OS/Node_Summary.json` (check the names with `ls dashboards/dashboards/*/`): their log links open the native explorer, `/logs?service=${service_id}&from=${__from:date:iso}&to=${__to:date:iso}`, or `node=${node_id}` from Node Summary. Use `:date:iso`, because `useLogsUrlFilters` accepts ISO or relative times only;
+  - the Inventory Services tab: a "Logs" row action for services that have log sources. If PMM-15002 has moved Inventory into `ui/apps/pmm` by then, add it there; otherwise in percona/grafana, `public/app/percona/inventory/`.
 
   Use the PMM UI base path for the URL (`PMM_NEW_NAV_PATH` in `ui/apps/pmm/src/lib/constants.ts`, and the path Grafana uses to reach the PMM UI). Check it on a Feature Build.
 
@@ -300,3 +300,44 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
 - [ ] **Step 2: Implement** the links, the Inventory row action (with its Grafana fork test), and run `cleanup-dash.py`.
 - [ ] **Step 3: Run the checks again.** The pytest, `cleanup-dash.py --check-only` on every changed dashboard, and the fork test (`yarn test Services`). Expected: PASS. Then on a Feature Build, check that a link from the MySQL summary opens the explorer filtered to that service and time range.
 - [ ] **Step 4: Commit** in each repo: `git commit -s -m "PMM-15722 Link dashboards and Inventory to Logs"`.
+
+### Task 7: Patterns
+
+**Files:**
+- Modify:
+  - `api/logs/v1/logs.proto`
+  - `managed/services/logs/query.go` and `service.go`, and their tests
+  - `ui/apps/pmm/src/api/logs.ts`, `ui/apps/pmm/src/hooks/api/useLogs.ts`, `ui/apps/pmm/src/pages/logs/filters/useLogsUrlFilters.ts`
+- Create:
+  - `ui/apps/pmm/src/pages/logs/patterns/LogPatterns.tsx` and its test
+
+**Interfaces:**
+- Consumes `otel.logs.PatternHash` and `logpatterns.Expr` (plan 01, Task 3; D27).
+- **Proto** (additive to Task 1's messages):
+  - `Filters`: `uint64 pattern_hash = 9; repeated uint64 exclude_pattern_hashes = 10;`. `BuildSearchQuery` and every other query apply them as `PatternHash = ?` and `PatternHash NOT IN ?`.
+  - `message LogPattern { string pattern = 1; uint64 pattern_hash = 2; uint64 count = 3; uint64 previous_count = 4; bool is_new = 5; Severity max_severity = 6; google.protobuf.Timestamp first_seen = 7; google.protobuf.Timestamp last_seen = 8; string sample = 9; }`
+  - `rpc Patterns(PatternsRequest{Filters filters = 1; uint32 limit = 2;}) returns (PatternsResponse{repeated LogPattern patterns = 1;})` at `POST /v1/logs:patterns`. `limit` defaults to 50 and is capped at 200. Rows are ordered by `count`, highest first.
+- **Semantics:**
+  - Lines are grouped by the stored `PatternHash`. `pattern` is `logpatterns.Expr` applied, in ClickHouse, to one sample `Body` per group, so only returned groups are masked.
+  - `previous_count` covers the window of the same length just before `start`.
+  - `is_new` is `previous_count == 0` while the previous window has rows for the same filters, so a source added in this window doesn't mark everything new.
+- **UI:**
+  - a Lines | Patterns toggle on `/logs`, in the URL as `view=patterns`;
+  - a peak-ui `Table` with the pattern, the count, the change against the previous window, a "New" `Chip`, and the max-severity `Chip`;
+  - a row click switches to Lines filtered by that pattern (URL `pattern`);
+  - a row action "Hide" adds the pattern to `exclude_pattern_hashes` (URL `xpattern`, repeatable).
+  - `pattern_hash` and `exclude_pattern_hashes` are `uint64`. grpc-gateway sends them as JSON strings, and most `cityHash64` values exceed 2⁵³, so the UI keeps them as strings everywhere (types, URL, query keys) and never parses them as numbers.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `TestPatternsQueryGroupsByStoredHash`: the SQL groups by `PatternHash`, and `logpatterns.Expr` appears only around the sample column.
+  - `TestPatternsIsNewNeedsPreviousRows`: no rows in the previous window gives `is_new = false`; rows there but none of this pattern gives `true`.
+  - `TestSearchExcludesPatternHashes`: `exclude_pattern_hashes = [1, 2]` binds `PatternHash NOT IN ?` with both values.
+  - Vitest: `row click filters lines by pattern`, `hide adds xpattern to URL`, and `keeps pattern hashes as strings`: a hash of `"18446744073709551557"` survives the round trip through the table, the URL and the next request unchanged.
+- [ ] **Step 2: Run them.** `make gen && cd managed && go test ./services/logs/ -run 'Pattern'` and `cd ui && pnpm --filter pmm test -- logs`. Expected: FAIL.
+- [ ] **Step 3: Implement** the RPC, the filters and the Patterns view.
+- [ ] **Step 4: Run them again.** Same commands, then `make prepare-pr` and `make lint format-check` in `ui`. Expected: PASS. Then on a Feature Build, check that the server's own logs group into patterns and that "Hide" removes their lines from Lines.
+- [ ] **Step 5: Commit.**
+  ```bash
+  git add api/logs managed/services/logs ui/apps/pmm/src
+  git commit -s -m "PMM-15722 Group log lines into patterns"
+  ```

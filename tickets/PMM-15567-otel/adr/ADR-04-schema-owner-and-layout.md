@@ -31,6 +31,10 @@
   - `PmmServiceId LowCardinality(String) MATERIALIZED ResourceAttributes['pmm.service_id']`
 - **Layout:** `PARTITION BY toDate(TimestampTime)`, `ORDER BY (PmmNodeId, PmmServiceId, ServiceName, TimestampTime)`. There is no table TTL (ADR-05).
 - **`service.name` for database sources:** the server program (`mysqld`, `postgres`, `mongod`).
+- **Patterns** (D27, decided on 2026-11-05):
+  - `otel.logs` gets `PatternHash UInt64 MATERIALIZED cityHash64(<masked Body>) CODEC(ZSTD(1))`. It is not in the sort key.
+  - The masking rules live in one Go package, `utils/logpatterns`. The otel migration writes the expression out literally, and a qan-api2 test fails when the newest migration's expression differs from the package's. pmm-managed uses the same package to mask the sample line it shows for each pattern.
+  - Changing the rules means a new migration with `ALTER TABLE otel.logs MODIFY COLUMN PatternHash …`, never `MATERIALIZE COLUMN`: existing rows keep their old hash until retention drops them.
 
 ## Consequences
 
@@ -38,3 +42,5 @@
 - Filtering by PMM node and service, the common case and the shape LBAC needs (ADR-18), reads only the matching ranges.
 - A query for "everything in the last five minutes, across all nodes" reads more granules than with a time-first key. This is acceptable for a per-node and per-service product.
 - A CI contract test runs the pinned collector against the migrated schema, so a collector upgrade can't break inserts unnoticed.
+- `PatternHash` costs about a dozen regex replacements per inserted row. The capacity test (PMM-15592) measures it.
+- After a change of the masking rules, one pattern can appear twice, under its old and new hash, until retention drops the old rows.
