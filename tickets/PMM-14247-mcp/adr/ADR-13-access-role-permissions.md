@@ -1,7 +1,7 @@
 # ADR-13: Access-Role permissions
 
 - Status: Accepted (2026-11-05), after the review in pmm-specs#4
-- Date: 2026-10-22, revised 2026-10-24
+- Date: 2026-10-22, revised 2026-10-24 and 2026-11-06
 - Tickets: PMM-14247, PMM-15531, PMM-15744, PMM-15791
 - Implemented: not yet; PMM-15791, after the MCP release
 - Replaces: `dev/docs/managed/mcp-access-roles-proposal.md` on `PMM-MCP-GA`
@@ -25,7 +25,7 @@ The proposal on `PMM-MCP-GA` suggested `permissions` on Access Roles that **gran
 Option 3, delivered on PMM-15791 after the MCP release. It touches a migration, the proto, the auth path and the role editor, which is PMM-wide work the MCP release doesn't need.
 - **Vocabulary:** `mcp:use`. Reads such as the inventory, alerts and Advisor results need no permission of their own: MCP narrows them to the caller's service list (ADR-03, ADR-08).
 - **Model:** `permissions text[]` on `roles` (forward-only migration); additive `repeated string permissions` on the role messages in `api/accesscontrol/v1beta1`.
-- **Rule:** with Access Control on, a caller who is not Admin needs `mcp:use` for `/mcp`; without it, 403. Admins always pass.
+- **Rule:** with Access Control on, a caller who is not Admin needs `mcp:use` for `/mcp`; without it, 403. Admins always pass. A principal whose identity lookup yields no positive user ID is refused with 401 before this check, and Access Role filters are skipped only for the anonymous identity (ADR-12).
 - **Union, not per role:** a user's permissions are the union over their roles, independent of the roles' filters. A user with role A (`mcp:use`, filter `environment="prod"`) and role B (no permission, filter `environment="staging"`) can use MCP, and MCP returns prod and staging data, the same as their dashboards show. Permissions decide whether, never what.
 - **After the migration** no role carries `mcp:use`, so with Access Control on, MCP is closed to non-admins until an admin grants it. The release notes say so.
 - **Access Control off:** no effect; the Grafana role and `PMM_ENABLE_MCP` decide.

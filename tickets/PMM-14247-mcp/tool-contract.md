@@ -182,6 +182,8 @@ The rows of the tools that exist describe them at `911910199` with plan 03's cha
 
 **Minimum role** is the Grafana role. `/mcp` itself needs Viewer (`managed/services/grafana/auth_server.go:132`) [V].
 
+**Invariant** (ADR-10). A tool returns only public data, such as `pmm_catalog`'s reference data, unless a backing call authorized it with the caller's headers. A token goes to every backing call as `Authorization: Bearer <token>` with no `Cookie`; Basic credentials and a cookie go unchanged (plan 06).
+
 | Tool | Minimum role | Backing API | Access Roles | Kind | Engines | Error codes |
 |---|---|---|---|---|---|---|
 | `pmm_version` | Viewer | `GET /v1/server/version` | none: no service data | Passive | — | `not_found`, `invalid_input`, `unauthorized`, `timeout`, `pmm_unavailable` |

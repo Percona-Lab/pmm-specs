@@ -145,8 +145,8 @@ MCP client ──HTTPS──▶ nginx  location /mcp
                          │  results narrowed to the caller's service list (ADR-03, ADR-08)
                          ▼
                       nginx on loopback (http://127.0.0.1:8080/)
-                         │  /v1/… and /graph/api/… with the caller's
-                         │  Authorization and Cookie, copied verbatim (ADR-03)
+                         │  /v1/… and /graph/api/… with the caller's credentials:
+                         │  a token as Bearer, no Cookie; else Basic and Cookie (ADR-03, ADR-10)
                          │  auth_request again, per backing call: Grafana role, Access Role filters
                          ▼
      ┌───────────────────┼──────────────────────┬──────────────────────────────┐
@@ -420,6 +420,7 @@ Decision: [ADR-12](adr/ADR-12-service-accounts-as-principals.md). PMM-wide, so i
 - A principal seen for the first time gets the default role, as interactive users do today (`getLBACFilters`, `auth_server.go:482`) [V]. Tokens resolve to user ID 0 today and get no filter (`getAuthUser`, `client.go:291`) [V], so the default role can only narrow what a token sees.
 - PMM's node accounts are Admin service accounts (`CreateServiceAccount`, `client.go:668`) [V]. They read the inventory and send metrics and QAN data, and Access Roles filter none of those paths (`lbacPrefixes`, `auth_server.go:181`) [V], so a restricted default role doesn't change what pmm-agent and pmm-admin do.
 - Roles are assigned to a service account with the existing `POST /v1/accesscontrol/roles:assign` and the account's ID. The access-control docs say how, in PMM-15534's change; `mcp.md` points to them. A role picker on Grafana's service-account page is out of scope.
+- A principal whose identity lookup yields no positive user ID is refused with 401, and Access Role filters are skipped only for the anonymous identity (ADR-12).
 - **Dropped from the epic:** propagating the caller's identity from `auth_request` to upstreams (`X-User-ID`, sketched in #4045). Every MCP backing call already passes `auth_request`, which resolves the caller, and MCP needs no identity of its own (ADR-03).
 
 ### 9.2 The caller's service list
@@ -440,7 +441,7 @@ Decision: [ADR-13](adr/ADR-13-access-role-permissions.md). `mcp:use` as a requir
 
 ### 9.4 Acceptance
 
-- A service-account token resolves to its Grafana user ID.
+- A service-account token resolves to its Grafana user ID. A principal whose identity lookup yields no positive user ID gets 401.
 - An Access Role whose filter matches one service, assigned to a service account or to an interactive Viewer: `pmm_inventory`, `pmm_top_queries`, `pmm_query_detail`, `pmm_get_explain`, `pmm_get_schema`, `pmm_get_config` and the metrics tools return only that service's data. `pmm_alerts` returns only that service's alerts, its down alert included when its pmm-agent runs on another node, plus those with no service or node label and the alerts of PMM's own rules.
 - With that role, one `queryid` recorded on the allowed service and on a hidden one: `pmm_query_detail`, `pmm_get_explain` and `pmm_get_schema` resolve to the allowed service; given the hidden service's `service_id`, they return `not_found`, and no error names it. For PostgreSQL stored plans this holds once PMM-15697 is fixed ([§10](#10-phase-5-release)).
 - Two services on one node, a role that allows one of them: the other service and its alerts are hidden.
@@ -486,7 +487,7 @@ Every phase:
 - For user-visible changes, a PMM Server built from the branch (the live-check environment in [plans/00](plans/00-roadmap.md#how-to-execute-these-plans)): the Viewer-token triage from PMM-15528 (`pmm_inventory` → `pmm_top_queries` → `pmm_query_detail` → `pmm_get_explain` → `pmm_get_schema` → `pmm_get_config`), and `POST /mcp` answering 404 when the endpoint is off.
 
 Additionally:
-- **Origin check (ADR-10):** a cross-site `Origin` gets 403; a request without `Origin` is served; a non-loopback peer gets 404; a backing call carries the caller's headers unchanged.
+- **Origin check (ADR-10):** a cross-site `Origin` gets 403; a request without `Origin` is served; a non-loopback peer gets 404; a backing call carries the caller's credentials in ADR-10's canonical form.
 - **Hardening (plan 02):** the caps on live inspection, and that a call that times out leaves no action running.
 - **Phase 2:** MySQL EXPLAIN fixtures from each supported version, and a multi-table join on a live server.
 - **Phase 3:** the acceptance in [§8](#8-phase-3-output-contract), and the golden `tools/list` test.
