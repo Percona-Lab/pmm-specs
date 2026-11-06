@@ -19,6 +19,7 @@ Related tickets: PMM-15533, PMM-15534, PMM-15535, PMM-15536, PMM-15697, PMM-1570
 | Path | Content |
 |---|---|
 | [spec.md](spec.md) | Analysis and design: problem and goals, architecture as built, the rest of phase 2, phases 2b to 5, corrections to the tickets |
+| [tool-contract.md](tool-contract.md) | The MCP tool contract (ADR-11): the rules every tool follows and one row per tool; written by plan 03 Task 1 and reviewed before the rest of plan 03 |
 | [adr/](adr/README.md) | ADR-01 to ADR-10 start from decisions implemented on `PMM-MCP-GA`; ADR-11 to ADR-18 are new; ADR-16 is deferred |
 | [plans/](plans/00-roadmap.md) | Roadmap and plans 01 to 08: plans 01 to 05 in full, plans 06 to 08 at task level |
 
