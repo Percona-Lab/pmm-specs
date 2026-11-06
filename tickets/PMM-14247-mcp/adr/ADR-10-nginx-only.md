@@ -31,7 +31,7 @@ Option 3.
 
 ## Consequences
 
-- `/mcp` can't be reached around nginx, even when `PMM_INTERFACE_TO_BIND` makes pmm-managed's port routable.
+- `/mcp` can't be reached around nginx from another host, even when `PMM_INTERFACE_TO_BIND` makes pmm-managed's port routable.
 - A front proxy that connects to pmm-managed other than over loopback makes MCP look switched off.
 - A page on another origin can't call `/mcp` from a browser, with or without the user's cookie.
 - PMM's node service-account tokens are Admin (ADR-12), so a node's token can use `/mcp` with Admin's role. Accepted: MCP gives a token no capability beyond what it has through the REST API (ADR-03).

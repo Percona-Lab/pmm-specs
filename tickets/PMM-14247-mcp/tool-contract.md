@@ -40,8 +40,6 @@ A failing call returns its own result, a nil output and a nil Go error:
 - `_meta`: `{"com.percona/error": {"code": "<code>", "retryable": <bool>}}`;
 - no `structuredContent`.
 
-When a per-caller rate limit refused the call (plan 05), `com.percona/error` also carries `retry_after`, in whole seconds: `{"code": "rate_limited", "retryable": true, "retry_after": 12}`.
-
 ```json
 {
   "isError": true,
@@ -49,6 +47,8 @@ When a per-caller rate limit refused the call (plan 05), `com.percona/error` als
   "_meta": {"com.percona/error": {"code": "rate_limited", "retryable": true}}
 }
 ```
+
+When a per-caller rate limit refused the call (plan 05), `com.percona/error` also carries `retry_after`, in whole seconds: `{"code": "rate_limited", "retryable": true, "retry_after": 12}`. A cap on calls in flight sets none.
 
 The text keeps today's form (`toolError.Error()`, `errors.go:50-52`) [V]. Today a failure goes back as a Go error, which the SDK turns into an `isError` result with that text and no `_meta` (`tools.go:44-49`, `mcp/server.go:425-434`) [V]; plan 03's `errorResult` adds `_meta` and drops the Go error.
 

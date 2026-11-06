@@ -43,7 +43,7 @@
 | [08 Release](08-release.md) | PMM-15532 | plans 01 to 07; the release gate of [spec §10](../spec.md#10-phase-5-release), PMM-15534 on `main` and merged into `PMM-MCP-GA` included | Task-level |
 
 - **Plan 06** builds the caller's service list from the metric series of the last hour, which vmproxy filters by the caller's Access Roles (ADR-08), uses it for every service lookup, and checks Access Roles end to end. It removes the Viewer rules for `GET /v1/inventory/services` and `/nodes` from #5942.
-- **Plan 07** reads alerts from Grafana's alert API and narrows them to the caller's service list (ADR-03, ADR-17). No plan changes `lbacPrefixes` or adds a pmm-managed API for them. `pmm_advisors` is out of the Tech Preview (ADR-18), so no plan builds it.
+- **Plan 07** reads alerts from Grafana's folder-scoped rules API and narrows them to the caller's service list (ADR-03, ADR-17). No plan changes `lbacPrefixes` or adds a pmm-managed API for them. `pmm_advisors` is out of the Tech Preview (ADR-18), so no plan builds it.
 - **PMM-15534** (ADR-12) is not a plan here. It lands on `main` through its own ticket and PR, and reaches `PMM-MCP-GA` with the next merge of `main`. Plan 08 waits for it.
 - ADR-16 is deferred to its own ticket on `main`. ADR-13 (`mcp:use`) ships on PMM-15791 after the MCP release. Neither has a plan here.
 

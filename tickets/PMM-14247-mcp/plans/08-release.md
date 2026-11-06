@@ -150,7 +150,7 @@
 **Interfaces:** none.
 
 **Steps:**
-- `mcp.md` and `welcome/mcp.md` final: off by default and how to enable it; a Viewer service-account token covers every tool; results follow the caller's Access Roles, with a link to the access-control docs from PMM-15534; alerts are narrowed to the caller's services for consistency, while PMM's alert page shows the same user every alert; Advisor results are not in MCP (ADR-18).
+- `mcp.md` and `welcome/mcp.md` final: off by default and how to enable it; a Viewer service-account token covers every tool; results follow the caller's Access Roles, with a link to the access-control docs from PMM-15534; alerts are narrowed to the caller's services for consistency, while PMM's alert page shows the same user every alert of the folders it can read; Advisor results are not in MCP (ADR-18).
 - The release-notes entry goes in `next.md`, which the release-candidate job turns into the version's page (percona/pmm `documentation/AGENTS.md:190-192` on `main`): what MCP is (Tech Preview), that it is off by default and how to enable it, and Access Roles and service-account tokens (PMM-15534).
 - Commit `PMM-15532 Finish the MCP docs and release notes`. Then the last step of the plan's PR (00): merge `origin/PMM-MCP-GA` into the branch, with `PMM-MCP-GA` behind 0; run a Feature Build from the branch, verify live, and open the PR `PMM-15532 Instrument and document MCP for the release` into `PMM-MCP-GA`.
 

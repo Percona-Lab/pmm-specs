@@ -41,7 +41,7 @@
 ### Task 1: The caller's service list from series (ADR-08)
 
 **Files:**
-- Modify: `managed/services/mcp/deps.go` (`callerAuthFromHeader`), `tools_inventory.go` (`serviceInfo`, `listServices` `:146`, `inventory`; delete `nodeNames`), `tools_qan.go` (`serviceEngine` `:605`, `engineOf` `:678`), `tools_config.go` (`service_name` lookup), `links.go` (`serviceURL`), `deps.go` and `client.go` (drop `ListServices`, `ListNodes`), `mock_pmm_api_test.go`, `helpers_test.go` (routes by query text), `testdata/tools_list.golden.json`, `documentation/docs/api/mcp.md`
+- Modify: `managed/services/mcp/tools_inventory.go` (`serviceInfo`, `listServices` `:146`, `inventory`; delete `nodeNames`), `tools_qan.go` (`serviceEngine` `:605`, `engineOf` `:678`), `tools_config.go` (`service_name` lookup), `links.go` (`serviceURL`), `deps.go` (`callerAuthFromHeader`) and `client.go` (drop `ListServices`, `ListNodes` from both), `mock_pmm_api_test.go`, `helpers_test.go` (routes by query text), `testdata/tools_list.golden.json`, `documentation/docs/api/mcp.md`
 - Test data: new `testdata/vm_up_services.json`; remove `services.json`, `services_with_mongo.json`, `nodes.json`
 - Test: `tools_inventory_test.go`, `hardening_test.go` (config tests live there, next to `TestConfigAcceptsServiceID`), `tools_qan_test.go`, plan 04's `resolve_test.go`, `api-tests/mcp/mcp_test.go` (`TestInventory`)
 

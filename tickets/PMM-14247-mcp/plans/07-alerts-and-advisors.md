@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Needs plan 06 (`listServices`), which needs plan 03, and the design review (00). Branch `PMM-15790-alerts`, cut from `PMM-MCP-GA`; one PR into it, opened after Task 5 (00).
-- **MCP's narrowing here is consistency, not a security boundary.** Grafana's alerting APIs don't apply Access Roles. The same caller reads them unfiltered by Access Roles with the same credentials, and in the PMM UI. Tests, docs and tool descriptions never call the narrowing a restriction. Applying Access Roles to it is ADR-16's work, which is deferred.
+- **MCP's narrowing here is consistency, not a security boundary.** Grafana's alerting APIs don't apply Access Roles. The same caller reads them unfiltered by Access Roles with the same credentials, and in the PMM UI. Tests, docs and tool descriptions never call the narrowing a restriction. Applying Access Roles to them is ADR-16's work, which is deferred.
 - **The caller's service list `L`** is plan 06's list: services of every `service_type` (ProxySQL, HAProxy and the rest included) and every node in it, hosts with only node_exporter included. For `pmm_alerts`, `L` is `listServicesOver(ctx, auth, alertListLookback)`, 7 days (ADR-17). Its query takes a slot of plan 05's limit on requests to VictoriaMetrics, like every request MCP sends there.
 - **Alert narrowing** (ADR-17), against `L`:
   - only four labels count, each checked against one set of `L`: `service_id` against the service IDs, `service_name` against the service names, `node_id` against the node IDs, `node_name` against the node names;

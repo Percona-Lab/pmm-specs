@@ -48,6 +48,9 @@
 - **A model that asks for `rate(x[5m])` over exactly 7 days** gets a refusal that gives the span it would read and the cap, not a generic error: Task 2 tests the hint's span (`7d5m`) and cap.
 - **An OR group without a metric name or a scope** is refused like a selector of its own: Task 2. metricsql copies a name matched with `=` into every group, but not a regex name, so `{__name__=~"mysql_global_status_.*", service_name="db1" or service_name="db2"}` has a second group with no name [V at v0.84.3].
 - **A result with one huge series and many small ones** keeps the huge one in the top N and says how many were left out: Task 3 tests `total_series` and the hint.
+- **`with (` inside a quoted label value** is not a template and passes; a real `WITH` template is refused before parsing: Task 2.
+- **A selector over the series cap** is refused after its `series` request and before any `query_range` request: Task 4.
+- **Requests to VictoriaMetrics from several tools at once** never exceed the per-replica limit, and one that can't get a slot before its deadline sends nothing: Task 1.
 - **One NaN from a ratio** arrives as `null` with a note; it never fails the call: Tasks 3 and 7.
 - **VictoriaMetrics answering 422 for a bad expression** must surface as `invalid_input` with VictoriaMetrics' message, not `pmm_unavailable`: Task 1 tests the mapping.
 - **Node signals under a service-filtered Access Role** report `no_data` with the note that it can mean "hidden", never a value or an error: Task 7 tests it.
