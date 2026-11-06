@@ -44,7 +44,7 @@
   - anonymous access: `auth_request` refuses `/mcp` with 403 to every caller Grafana resolves as anonymous, one that sends only a junk cookie included (ADR-10, plan 02);
   - credentials: which header wins when a request carries both `Authorization` and `Cookie` (ADR-10), their forwarding over loopback, and that they are never logged (ADR-03); the caller key ([00](00-roadmap.md#terms), plan 02) and the per-caller limits it keys (ADR-05);
   - the caller's service list from Access-Role-filtered series, every service lookup built on it (ADR-08, plan 06), and service-account tokens under Access Roles (ADR-12, PMM-15534);
-  - MCP's narrowing of alerts: it is consistency, not a security boundary, because the same caller reads Grafana's alert API unfiltered by Access Roles (ADR-03, ADR-17);
+  - MCP's narrowing of live inspection and alerts: narrowed, not filtered, so it is consistency, not a security boundary (ADR-03, ADR-05, ADR-17);
   - model-written metric queries, their execution and response budgets, and plan 05's load-test numbers (ADR-15);
   - live inspection a Viewer can start, its limits, and the cancelling of abandoned actions (ADR-05);
   - redaction across text and structured content (ADR-07, ADR-11);

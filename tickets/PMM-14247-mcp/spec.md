@@ -432,7 +432,7 @@ Decisions: [ADR-08](adr/ADR-08-inventory-under-access-roles.md), [ADR-03](adr/AD
 - MCP narrows to this list: live actions, resolve-first candidates, `pmm_query_detail`, `pmm_get_config` and alerts. A `service_id` or name outside it answers `not_found` with a fixed text that echoes nothing the caller sent ([§8](#8-phase-3-output-contract) item 4).
 - `pmm_inventory` reports each service's `last_seen`, the newest `up` sample time, whatever its value. A target scraped with `up=0` stays listed with a current `last_seen`; a service leaves the list only when no `up` sample at all arrived in the last hour. MCP derives no health state of its own, so it never disagrees with PMM's own service status, which uses other metrics and rules (`managed/services/management/service.go:61-76`) [V].
 - A service that QAN shows but that sent no `up` sample in the last hour appears in `pmm_top_queries` (filtered by qan-api2) and answers `not_found` from detail, explain and schema ([§13](#13-risks-and-mitigations)).
-- Alerts are narrowed, not filtered: not a security boundary (ADR-03). Filtering them by Access Role is PMM-wide work, deferred ([ADR-16](adr/ADR-16-access-roles-on-pmm-apis.md)).
+- Live inspection and alerts are narrowed, not filtered: not a security boundary (ADR-03). Filtering them by Access Role is PMM-wide work, deferred ([ADR-16](adr/ADR-16-access-roles-on-pmm-apis.md)).
 - Trade-offs: no address or port in `pmm_inventory`, and a service with no series in the last hour is not listed ([ADR-08](adr/ADR-08-inventory-under-access-roles.md)).
 
 ### 9.3 Access-Role permissions: separate ticket
@@ -463,7 +463,7 @@ Decision: [ADR-13](adr/ADR-13-access-role-permissions.md). `mcp:use` as a requir
 2. **Security review, in two passes.** A design review of this folder and `tool-contract.md` before plans 04 to 07, which took place on 2026-11-06 ([§3.1](#31-order-from-here)), and an implementation review before the merge back. Scope of both:
    - `/mcp` served only through nginx, the Origin check, and the refusal of anonymous callers (ADR-10);
    - credentials: which header wins, forwarding `Authorization` and `Cookie` over loopback, that no hop on the path logs them at any log level, and the caller key (ADR-03, ADR-05, ADR-10);
-   - `/mcp` at `viewer`; the caller's service list and MCP's narrowing, including that for alerts it is not a security boundary (ADR-03, ADR-08, ADR-17);
+   - `/mcp` at `viewer`; the caller's service list and MCP's narrowing, including that for live inspection and alerts it is not a security boundary (ADR-03, ADR-05, ADR-08, ADR-17);
    - model-written metric queries and their limits (ADR-15);
    - service-account tokens under Access Roles (ADR-12);
    - live inspection a Viewer can start, including live EXPLAIN, its caps and cancellation (ADR-05);
@@ -526,7 +526,7 @@ Additionally:
 
 ## 13. Risks and mitigations
 
-- **MCP's narrowing of alerts is not a security boundary.** A restricted caller still reads them unfiltered through the API and the UI. *Accepted* for the Tech Preview; the fix is PMM-wide (ADR-16, deferred), and the implementation review signs off on it.
+- **MCP's narrowing is not a security boundary** for live inspection (EXPLAIN, DDL, indexes) and for alerts: both are narrowed, not filtered (ADR-03). A restricted caller still reads alerts, unfiltered by Access Roles, through Grafana's API and UI. *Accepted* for the Tech Preview; the fix is PMM-wide (ADR-16, deferred), and the implementation review signs off on it.
 - **Advisor results stay out of MCP** (ADR-18): their texts can carry account details and security posture, and the Editor token they need can also write alerting and Advisor checks. *Accepted*: a triage through MCP doesn't see failed checks; PMM's Advisors page still shows them.
 - **Model-written metric queries** load PMM's own VictoriaMetrics, whose limits (§7.1) are sized for dashboards and don't bound an AI client in a loop. *Mitigation:* the execution budget with its series cap per selector, the bounded read of every response, the caps per caller and per replica, one limit on every request MCP sends to VictoriaMetrics, the rate per caller, and the load test on the smallest supported size with a pass threshold (ADR-15).
 - **Caps are per token or session and per replica, not per user** (ADR-05). A service account with several tokens, or an HA cluster, gets more. *Accepted*; the per-replica caps and the per-service cap bound the total. They protect load, not fairness: one principal can hold several caller keys. Revisit with plan 06.
@@ -538,7 +538,7 @@ Additionally:
 - **A long-lived branch in a repository with generated code.** *Mitigation:* `*.pb.go` and Swagger conflicts are resolved by regenerating, never by hand (roadmap); PMM-wide changes land on `main` through their own tickets, not on the branch.
 - **Live inspection under an AI-client loop.** *Mitigation:* the caps, one live call per service per replica, and cancellation when a call ends early (ADR-05). A MongoDB explain still runs its candidate plans, on the stored example only.
 - **Response size.** Structured content repeats the text's data. *Mitigation:* the phase 3 token measurement covers both before the caps are fixed.
-- **Credentials pass through pmm-managed in memory** (ADR-03). *Mitigation:* MCP's code never logs them; the implementation review checks every hop on the path, at every log level.
+- **Credentials pass through pmm-managed in memory** (ADR-03). *Requirement:* no hop on `/mcp`'s path logs credentials, at any log level, and a test enforces it: plan 04's test covers MCP's own log output, and the implementation review checks the rest of the path.
 - **A front proxy that isn't on loopback** makes `/mcp` answer 404, like a disabled endpoint (ADR-10). *Accepted*; `mcp.md` says so.
 - **HA failover is untested** [I]. *Mitigation:* one failover check before the merge back ([§11](#11-testing-and-verification)).
 - **VictoriaMetrics is on the path of every tool call**, because the caller's service list comes from it (ADR-08). *Accepted*: when it fails, the tool answers `pmm_unavailable`, never an unfiltered list.
@@ -551,8 +551,12 @@ Additionally:
 - **QAN and ClickHouse load.** Settled by the security design review: the QAN tools share the metric-call caps, with a 30-day window (plan 05).
 - **MetricsQL `WITH` templates.** Settled by the security design review: refused (plan 05).
 - **The Editor token** `pmm_advisors` would need. Settled by the security design review: `pmm_advisors` is out of the Tech Preview (ADR-18).
-- **Comments in SQL fingerprints** reach the model even with raw SQL off; stripping or capping them is an option (ADR-07, plan 03).
+- **Comments in SQL fingerprints.** Settled: with raw SQL off, fail-closed masking masks the text of comments in fingerprints (`maskSQLLiterals`, `redact.go`) [V]. `pmm_query_detail`'s `example` isn't masked the same way yet: see the follow-ups below.
 - **Clients that need OAuth.** `/mcp` takes static tokens only; MCP's OAuth flow and protected-resource metadata are not supported, and `mcp.md` recommends token expiry (plan 08).
+
+**Follow-ups from the security design review.** Each is built in a plan before the implementation review, or accepted in writing by it:
+- `pmm_top_queries` escapes `%` and `_` in `search`, and with `PMM_MCP_RAW_SQL` off, a `search` drops the rows whose fingerprint is withheld.
+- `pmm_query_detail`'s `example` is masked like `fingerprint`, numbers and comment text included.
 
 **Open questions, settled before the ADRs that depend on them are accepted:**
 - what a Viewer gets from Grafana's rules API, the silence join by rule UID, and whether the rules API identifies PMM's own rules by UID or by provenance (ADR-17, plan 07 Task 1);
