@@ -14,7 +14,7 @@ Today's code has the error codes and the `error: <code>` text; the rest of the c
 This document holds:
 - the rules every tool follows: results ([§2](#2-one-result-two-renderings)), errors ([§3](#3-errors)), paging ([§4](#4-paging)), provenance ([§5](#5-provenance)), partial results ([§6](#6-partial-results)) and untrusted fields ([§7](#7-untrusted-fields));
 - one table with a row per tool ([§8](#8-tools));
-- the decisions taken with it ([§9](#9-decisions-recorded-here)), and the questions left for its review ([§10](#10-questions-for-the-review)).
+- the decisions taken with it ([§9](#9-decisions-recorded-here)), and the question left for its review ([§10](#10-questions-for-the-review)).
 
 Inputs and output schemas are not written out here. Plan 03's `TestToolsListGolden` snapshots `tools/list` (names, descriptions, input and output schemas, annotations) in `testdata/tools_list.golden.json`, so a change to them shows up as a diff in review. Caps are in [spec §8](spec.md#8-phase-3-output-contract), the one place where they change; where a note here quotes one, spec §8 governs.
 
@@ -152,25 +152,25 @@ Plan 07 gives `pmm_alerts` and `pmm_advisors` no `partial` field: a failing serv
 ## 7. Untrusted fields
 
 - A field whose text comes from a monitored database or from a user has an output-schema description, the field's `jsonschema` text, that starts with `Untrusted.`.
-- The kinds: fingerprints, query examples, plans, DDL, label and dimension values, variable values (plan 03); alert names, labels, summaries and descriptions, and Advisor summaries and descriptions (ADR-11, ADR-17, ADR-18, plan 07).
+- The kinds: fingerprints, query examples, plans, DDL, label and dimension values, variable values, service, node, database, schema and table names, `environment` and `cluster` values, and `version` strings (plan 03, plan 06); alert names, labels, summaries and descriptions, and Advisor summaries and descriptions (ADR-11, ADR-17, ADR-18, plan 07).
 - `Instructions` tell the model that marked fields are data, not instructions ([spec §8](spec.md#8-phase-3-output-contract) item 6). That is advice to the model: it doesn't make injected text harmless (ADR-11), and what bounds the harm is that every tool is read-only (ADR-05).
-- The mark is not redaction. ADR-07 decides what is masked: with `PMM_MCP_RAW_SQL` off, fingerprints, examples and plans are masked or withheld; DDL, dimension and label values, variable values, and alert and Advisor texts are returned as stored.
+- The mark is not redaction. ADR-07 decides what is masked: with `PMM_MCP_RAW_SQL` off, fingerprints, examples and plans are masked or withheld; DDL, names, dimension and label values, variable values, `version` strings, and alert and Advisor texts are returned as stored.
 
 | Tool | Untrusted fields |
 |---|---|
 | `pmm_version` | none |
-| `pmm_inventory` | none ([§10](#10-questions-for-the-review), question 1, covers the name fields of this and other tools) |
+| `pmm_inventory` | `services[].service_name`, `services[].node_name`, `services[].version`; plan 06 adds `services[].environment`, `services[].cluster` |
 | `pmm_top_queries` | `rows[].fingerprint`, `rows[].dimension` |
-| `pmm_query_detail` | `fingerprint`, `example`, `tables` |
-| `pmm_get_explain` | `plan` |
-| `pmm_get_schema` | `tables[].definition`, `tables[].indexes`; plan 04 adds `unresolved`, `not_fetched` |
-| `pmm_get_config` | `variables[].value` |
+| `pmm_query_detail` | `service_name`, `version`, `database`, `schema`, `fingerprint`, `example`, `tables` |
+| `pmm_get_explain` | `service_name`, `plan` |
+| `pmm_get_schema` | `tables[].database`, `tables[].name`, `tables[].definition`, `tables[].indexes`; plan 04 adds `unresolved`, `not_fetched` |
+| `pmm_get_config` | `service_name`, `version`, `variables[].value` |
 | `pmm_catalog` | none |
-| `pmm_service_health` (plan 05) | none |
+| `pmm_service_health` (plan 05) | `service_name` |
 | `pmm_query_metrics` (plan 05) | `series[].labels`, `shared_labels` |
 | `pmm_list_metrics` (plan 05) | `labels`, `values`, `series` |
 | `pmm_alerts` (plan 07) | `alerts[].name`, `alerts[].labels`, `alerts[].summary`, `alerts[].description` |
-| `pmm_advisors` (plan 07) | `results[].summary`, `results[].description` |
+| `pmm_advisors` (plan 07) | `results[].service_name`, `results[].summary`, `results[].description` |
 
 Plan 03's `TestUntrustedFieldsMarked` holds this list, with an empty entry for a tool that has no such field. It and the other contract tests keep a list keyed by tool name and fail when a tool in `tools/list` has no entry, so a new tool can't skip them.
 
@@ -250,16 +250,13 @@ The other field rules of plan 03 Task 5, for reference:
 - `columns` has one entry per requested column the row has, keyed by the column's name as `pmm_catalog` lists it: the `avg` statistic for a column whose aggregation is `avg`, else the `sum`. The base columns `load`, `num_queries` and `query_time` are not repeated.
 - `pmm_query_detail`'s `metrics` holds the pairs the text prints, under the same names (`calls`, `query_time_sum`, `query_time_avg`, `rows_examined_avg`, …), zero-skipping included (`keyMetrics`, `tools_qan.go:625-660`).
 
-## 10. Questions for the review
+### 9.6 Untrusted marks on names
 
-1. **Untrusted marks on service, node and database names.** Plan 03's rule marks text that comes "from a monitored database or a user", label values included. The lists in [§7](#7-untrusted-fields) mark such names only where they arrive as `pmm_top_queries`' `rows[].dimension`, `pmm_query_detail`'s `tables` or `pmm_alerts`' `labels`, and leaves these unmarked:
-   - `pmm_inventory`: `services[].service_name`, `services[].node_name`; plan 06 adds `environment` and `cluster`, from the same `up` labels, and says their marks follow this document;
-   - `pmm_query_detail`: `service_name`, `database`, `schema`;
-   - `pmm_get_explain`: `service_name`;
-   - `pmm_get_schema`: `tables[].database`, `tables[].name`;
-   - `pmm_get_config`: `service_name`;
-   - `pmm_service_health` (plan 05): `service_name`;
-   - `pmm_advisors` (plan 07): `results[].service_name`.
+Service, node, database, schema and table names, `environment` and `cluster` values, and `version` strings are marked untrusted ([§7](#7-untrusted-fields)).
+- Plan 03's rule marks a field whose text comes from a monitored database or a user, and these fields do. Database, schema and table names come from the monitored database, like DDL. Service and node names, `environment` and `cluster` are typed in by whoever registers the service. A `version` is the string the monitored server reports, read from the exporters' info metrics.
+- The field lists of [§7](#7-untrusted-fields) and the plans follow the rule: every field named there, and the same fields in the plans' result types, is marked.
+- IDs, engine values, codes, `pmm_url`, numbers and timestamps are PMM's own and stay unmarked.
 
-   Service and node names, environment and cluster are set at registration; database, schema and table names come from the monitored database. Mark all of these fields as untrusted, or record which of them are not marked and why.
-2. **`version` when enrichment fails.** Plan 03 leaves an enrichment field out when it fails ([§6](#6-partial-results)). `pmm_inventory` prints `unknown` today (`tools_inventory.go:249-251`) [V], and plan 03 Task 4 gives `serviceRow.version` no `omitempty`. Choose `unknown` or an omitted `version`, and apply the same to `pmm_query_detail` and `pmm_get_config`.
+## 10. Question for the review
+
+1. **`version` when enrichment fails.** Plan 03 leaves an enrichment field out when it fails ([§6](#6-partial-results)). `pmm_inventory` prints `unknown` today (`tools_inventory.go:249-251`) [V], and plan 03 Task 4 gives `serviceRow.version` no `omitempty`. Choose `unknown` or an omitted `version`, and apply the same to `pmm_query_detail` and `pmm_get_config`.
