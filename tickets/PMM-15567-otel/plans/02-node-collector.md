@@ -470,7 +470,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
     - a `Credential *syscall.Credential` field in `Params` (:75-87);
     - in `toStarting` (:150-178), set `p.cmd.SysProcAttr.Credential` **after** `pdeathsig.Set`, so `Pdeathsig` is kept.
   - `agent/agents/supervisor/supervisor.go`:
-    - a `case inventoryv1.AgentType_AGENT_TYPE_OTEL_COLLECTOR` in `processParams` (:1118-1219). It creates `<OtelCollectorDataDir>/<agentID>` with `os.MkdirAll` (mode 0700), calls `Render`, writes the YAML to `config.yaml` there with mode 0600, chowns that directory tree to the credential, and sets `Path = cfg.Paths.OtelCollector`, `Args = ["--config=<file>"]`, `Env = ["PATH=/usr/bin:/bin"]` and `Credential`;
+    - a `case inventoryv1.AgentType_AGENT_TYPE_OTEL_COLLECTOR` in `processParams` (:1118-1219). It creates each missing directory down to `OtelCollectorDataDir` with mode 0755, then `<agentID>` with mode 0700, owned by the credential. Not one `os.MkdirAll` with 0700: it gives every level it creates the same mode, so a root pmm-agent would leave `data/otelcol` as root:root 0700, and the collector, running as `pmm-agent`, couldn't reach its config. The packages don't create `/usr/local/percona/pmm/data`. If an existing parent isn't searchable by the credential, the agent status is `INITIALIZATION_ERROR`, naming that directory. Then it calls `Render`, writes the YAML to `config.yaml` there with mode 0600, chowns that directory tree to the credential, and sets `Path = cfg.Paths.OtelCollector`, `Args = ["--config=<file>"]`, `Env = ["PATH=/usr/bin:/bin"]` and `Credential`;
     - it assigns `RenderInput.TelemetryPort` from the supervisor's port range, the way exporters get theirs, and reports it as the agent's `listen_port` (Task 9 scrapes it);
     - `version()` (:1262-1283) with a regex for `otelcol version`, in `deps.go:26`.
   - `build/packages/rpm/client/pmm-client.spec` and `build/packages/deb/postinst`: after the user is created, `usermod -aG systemd-journal pmm-agent` when `getent group systemd-journal` succeeds, and `-aG adm` on Debian/Ubuntu when `adm` exists.
@@ -500,7 +500,8 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   ```
   Also write:
   - `TestReadableAs`, on temp files with modes 0600, 0640 and 0644 and a fake credential.
-  - In the supervisor tests, `TestProcessParamsOtelCollector`: the data directory is created, the config file exists with mode 0600, `Args[0]` starts with `--config=`, `Env` is `["PATH=/usr/bin:/bin"]`, and the rendered config's telemetry endpoint uses the assigned port.
+  - `TestProcessParamsOtelCollectorUnsearchableParent`: an existing `OtelCollectorDataDir` with mode 0700, owned by another user, gives `INITIALIZATION_ERROR` naming it.
+  - In the supervisor tests, `TestProcessParamsOtelCollector`: the data directory is created, every directory above the config file has mode 0755 (searchable by the collector's uid) and the `<agentID>` directory 0700, the config file exists with mode 0600, `Args[0]` starts with `--config=`, `Env` is `["PATH=/usr/bin:/bin"]`, and the rendered config's telemetry endpoint uses the assigned port.
 - [ ] **Step 2: Run them.** `cd agent && go test ./agents/otelcollector/ ./agents/supervisor/ ./agents/process/`. Expected: FAIL.
 - [ ] **Step 3: Implement** everything listed above, including the package scripts.
 - [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS. Then on a CHAOS VM with a Feature Build (`pmm-qa:chaos-docker-provisioning`):
@@ -545,7 +546,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   - `managed/services/otel/server_sources.go`
   - `managed/services/otel/server_sources_test.go`
 - Modify:
-  - `managed/services/agents/registry.go`: in `authenticate` (~:353-405), call `ensureServerOtelCollector` for the server's pmm-agent (`models.PMMServerAgentID`, or the HA UUID) when OTEL is enabled. Copy `addNomadAgentToPMMAgent` (:526-545).
+  - `managed/services/agents/registry.go`: in `authenticate` (~:353-405), call `ensureServerOtelCollector` for the server's pmm-agent (`models.PMMServerAgentID`, or the HA UUID) on every connect, whatever the OTEL setting, as `addNomadAgentToPMMAgent` (:526-545) does for Nomad. Task 4's `IgnoreOtelCollector` withholds the collector while OTEL is off, so turning OTEL on at runtime only needs a state push, not a reconnect (ADR-25).
 
 **Interfaces:**
 - Consumes `models.UpsertLogSource` (Task 3b) and `SendToLocalReceiver` (Task 4).
@@ -587,6 +588,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 
     and asserts each is in `DefaultServerSources` with every `ServerEnv` flag on, and that every listed file is shipped. A new program that logs to `/srv/logs` without a source then fails CI.
   - `TestServerSourcesFollowEnv`: with built-in PostgreSQL and ClickHouse off and external VictoriaMetrics (the HA case), the list has no `postgresql.log`, `clickhouse-server.log` or `victoriametrics.log`. Nomad off means no `nomad-server.log`.
+  - `TestEnableOtelPushesServerCollectorWithoutReconnect`: the server's pmm-agent connects with OTEL off, so the collector and its sources exist but `sendSetStateRequest` leaves the collector out; after OTEL is turned on, the next state update for that pmm-agent includes the `otel-collector` process.
   - `TestEnsureServerOtelCollectorIdempotent` (`testdb`): calling it twice gives one collector and 13 sources (Nomad off).
 - [ ] **Step 2: Run them.** `cd managed && go test ./services/otel/ ./services/agents/ -run 'ServerSources|EnsureServerOtel'`. Expected: FAIL.
 - [ ] **Step 3: Implement** the source list and the ensure hook.

@@ -107,7 +107,7 @@ Plan 05 adds `OtelTracesReceiver traces_receiver = 5` to `OtelCollectorParams`. 
 | `SuggestLogParserPreset` | `POST /v1/otel/log-sources/{log_source_id}:suggestPreset` | 04 |
 | `ChangeTracesReceiver` | `POST /v1/otel/traces-receiver` | 05 |
 
-**Logs read API** (`api/logs/v1/logs.proto`, package `logs.v1`, service `LogsService`, in pmm-managed, reading as `otel_reader`). The auth rule is `"/v1/logs": admin` in plan 08; plan 06 changes it to viewer with LBAC.
+**Logs read API** (`api/logs/v1/logs.proto`, package `logs.v1`, service `LogsService`, in pmm-managed, reading as `otel_reader`). The auth rule is `"/v1/logs": admin` in plan 08; plan 06 opens it to viewers, with LBAC, only while access control is enabled.
 
 | RPC | HTTP | Plan |
 |---|---|---|

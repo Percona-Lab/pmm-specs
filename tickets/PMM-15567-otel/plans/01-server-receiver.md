@@ -368,7 +368,8 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - the program `otel-collector` (Task 6);
   - from `supervisord.Service`, both of which exist: `RestartSupervisedService(ctx context.Context, name string) error` and `UpdateConfiguration(settings *models.Settings) error` (`supervisord.go:96`), in the `supervisordService` interface in `deps.go`. Not `StartSupervisedService`: it is a bare `supervisorctl start`, which fails once Task 6 has removed `otel-collector.ini`.
 - Produces:
-  - `func New(params Params) *Service`, with `Params{DB *reform.DB; Supervisord supervisordService; ConfigPath string; ClickHouse ServerConfigParams}`;
+  - `func New(params Params) *Service`, with `Params{DB *reform.DB; Supervisord supervisordService; StateUpdater stateUpdater; ServerAgentID string; ConfigPath string; ClickHouse ServerConfigParams}`. `stateUpdater` is `RequestStateUpdate(ctx context.Context, pmmAgentID string)` in `deps.go`. `ServerAgentID` is this pod's own pmm-agent (`models.PMMServerAgentID`, or the HA UUID);
+  - when the OTEL settings change, `Run` also calls `StateUpdater.RequestStateUpdate(ctx, ServerAgentID)`. In HA, each pod's pmm-agent talks only to its own pod's pmm-managed (F14), so the replica that made the change can't push to the others' agents; this is how their server collectors start or stop (plan 02, Task 8);
   - `func (s *Service) UpdateConfiguration(ctx context.Context, settings *models.Settings) error`. It creates the parent directory with `os.MkdirAll`, writes the config atomically with mode 0600 only when the content changed, and restarts the program if it changed while it should run;
   - `func (s *Service) Run(ctx context.Context)`, a ticker that calls `UpdateConfiguration` when the OTEL settings differ from the last applied ones, and calls `Supervisord.UpdateConfiguration(settings)` when the effective running state changes. That writes or removes `otel-collector.ini` and runs `supervisorctl update otel-collector` (Task 6), so it both stops and starts the program. This is how a replica that didn't make the change, or the leader after the cleaner pauses or resumes ingest, stops or starts its collector.
   - Two unexported fields exist so tests can drive the loop: `reconcileInterval time.Duration`, set to 30 s by `New`, and `onApplied func(enabled bool)`. The hook is nil in production and is called after each apply with the effective running state.
@@ -416,6 +417,8 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       sv.AssertCalled(t, "UpdateConfiguration", mock.MatchedBy(func(s *models.Settings) bool { return !s.IsOtelCollectorEnabled() }))
   }
   ```
+  Add `TestRunRequestsStateUpdateForLocalAgent`: after another replica turns OTEL on, `RequestStateUpdate` is called once with `ServerAgentID`.
+
   Add `TestRunStartsCollectorAfterIniRemoved`: the same setup, disable, then enable again; the last `UpdateConfiguration` call carries settings with `IsOtelCollectorEnabled()` true. Do the same for `IngestPaused` true then false.
 - [ ] **Step 2: Run them.** `cd managed && go test ./services/otel/`. Expected: FAIL.
 - [ ] **Step 3: Implement** the service and the wiring. Generate the `supervisordService` mock with mockery (`.mockery.yaml`).

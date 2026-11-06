@@ -23,7 +23,8 @@
   - a role with an empty filter means full access;
   - a missing label equals `""`;
   - regexes are anchored.
-- **Fail closed.** A request without `X-Proxy-Filter` is full access: `auth_server` sends no header when LBAC is off or the user has no filters (the `len(filters) == 0` return after `getLBACFilters` in `managed/services/grafana/auth_server.go`), and passes selectors through unparsed, so `LogsService` denies a selector that doesn't parse. The guard against serving a restricted user unfiltered is that `/v1/logs` and `/v1/traces` are in `lbacPrefixes`. Service-account and anonymous credentials skip LBAC today (the `userID <= 0` return in `maybeAddLBACFilters`), so `/v1/logs` opens to non-Admins only after plan 07, Task 3 gives them an explicit rule.
+- **Admin-only without access control.** While access control is disabled (the default, `AccessControlEnabledDefault = false`), `/v1/logs` and `/v1/traces` stay Admin-only (ADR-23). The auth rules are a static map that `resolveRule` reads without looking at LBAC, so the auth handler checks `s.accessControl.isEnabled()` (`auth_server.go:447`) for these two prefixes and requires `admin` when it is false.
+- **Fail closed** (access control enabled). A request without `X-Proxy-Filter` is full access: `auth_server` sends no header when LBAC is off or the user has no filters (the `len(filters) == 0` return after `getLBACFilters` in `managed/services/grafana/auth_server.go`), and passes selectors through unparsed, so `LogsService` denies a selector that doesn't parse. The guard against serving a restricted user unfiltered is that `/v1/logs` and `/v1/traces` are in `lbacPrefixes`. Service-account and anonymous credentials skip LBAC today (the `userID <= 0` return in `maybeAddLBACFilters`), so `/v1/logs` opens to non-Admins only after plan 07, Task 3 gives them an explicit rule.
 - No raw SQL from clients. Every filter is a bound parameter.
 - Admins are not exempt from LBAC, consistent with today.
 
@@ -77,13 +78,14 @@ Plan 08 builds `LogsService` (`Search`, `Context`, `Histogram`, `Facets`) for Ad
 
 - **Files:**
   - `managed/services/logs/lbac.go`, plus changes to `query.go` and `service.go` and their tests
-  - `managed/services/grafana/auth_server.go`: change the rule to `"/v1/logs": viewer`, and add `/v1/logs` to `lbacPrefixes`
+  - `managed/services/grafana/auth_server.go`: `/v1/logs` requires `viewer` while access control is enabled and `admin` while it is disabled (the check above, next to `resolveRule`), and `/v1/logs` goes into `lbacPrefixes`
   - `pmm.conf`: a `/v1/logs` location that sets `X-Proxy-Filter`, like `/v1/qan` (:339-344)
 - **Produces:**
   - `func AllowedIDs(q *reform.Querier, s lbac.Selectors) (pairs []ServiceNode, nodes []string, err error)`, cached on the inventory TTL;
   - the predicate `(PmmServiceId, PmmNodeId) IN {pairs} OR (PmmServiceId = '' AND PmmNodeId IN {nodes})`, added by `BuildSearchQuery` and by the histogram, facets, context and patterns queries, all through bound parameters. Patterns returns a sample line per group, so it must be filtered too.
 - **Tests:**
   - `TestLBACPrefixesCoverOtelReadPaths` (auth_server unit test: `/v1/logs:search` and `/v1/traces:search` get the header), `TestSearchDeniesBadSelector`;
+  - `TestOtelReadPathsAdminOnlyWithoutAccessControl` (auth_server unit test): with access control disabled, a Viewer gets 403 on `/v1/logs:search` and an Admin gets 200; with it enabled, a Viewer with the full-access role gets 200;
   - api-test `TestRestrictedUserGetsFilterHeader`: a user with a filtered role gets only the allowed services from `/v1/logs:search`, and a user with the full-access role gets everything;
   - `TestSearchHidesSpoofedServiceRow`, `TestSearchNodeLogsNeedNodeLabel`;
   - `TestFacetsRespectLBAC`: a restricted user doesn't see facet values for hidden services;
@@ -92,7 +94,7 @@ Plan 08 builds `LogsService` (`Search`, `Context`, `Histogram`, `Facets`) for Ad
 
 ### Task 4: `TracesService.Search` and `GetTrace`
 
-- The same predicate, applied to each span. `GetTrace` returns `partial: true` when spans were filtered out.
+- The same predicate and the same access rule as Task 3 (Admin-only while access control is disabled), applied to each span. `GetTrace` returns `partial: true` when spans were filtered out.
 - Traces store no `PmmServiceId`: plan 05 deletes `pmm.service_id` at ingest. So the span predicate is node-only, plus the services that plan 05's correlation assigns. Decide at re-plan.
 - **Tests:** `TestGetTracePartial`, plus the fail-closed tests from Task 3.
 

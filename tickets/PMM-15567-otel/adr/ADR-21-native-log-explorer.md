@@ -28,7 +28,7 @@ Option 3:
   - It resolves node and service names from inventory.
 - **Page:** a PMM UI page, `/logs`, built with peak-ui and TanStack Query, offers filters with counts, a severity histogram, a table, a details pane with surrounding lines, live tail, export, and shareable URLs.
 - **Links:** service dashboards and Inventory link into it.
-- **Access:** Admins only until ADR-18 is implemented. Then the same API applies LBAC and the page opens to every role.
+- **Access:** Admins only until ADR-18 is implemented. Then, where access control is enabled, the same API applies LBAC and the page opens to every role; where it is disabled, logs stay Admin-only (ADR-23).
 - **Grafana:** no OTEL datasource or Logs dashboard (ADR-23).
 
 ## Consequences

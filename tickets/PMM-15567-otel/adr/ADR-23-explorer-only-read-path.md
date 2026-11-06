@@ -24,7 +24,7 @@
 Option 2.
 
 **Kept from ADR-07:**
-- Reading logs is Admin-only until ADR-18 is implemented. The rule is `"/v1/logs": admin`.
+- Reading logs is Admin-only until ADR-18 is implemented, and after that whenever access control is disabled. The rule is `"/v1/logs": admin`.
 - The ClickHouse user `otel_reader` has `SELECT` on `otel.*` only. `LogsService` in pmm-managed reads as that user.
 - The server collector redacts bearer and `glsa_` tokens, `Authorization` headers and `password=` values before storage.
 

@@ -321,7 +321,8 @@ A user restricted by LBAC sees no logs in Phase 1. That is fail-closed, and it m
    - Evaluate them with `labels.Matcher.Matches` against `MergeLabels(node, svc, nil)` for each service, and `MergeLabels(node, nil, nil)` for each node. A missing label counts as `""`, the VictoriaMetrics semantics, including anchored regexes.
    - Bind the resulting lists as query parameters: `(PmmServiceId, PmmNodeId) IN {allowed pairs} OR (PmmServiceId = '' AND PmmNodeId IN {allowed nodes})` (ADR-18). The pairs mean that a record claiming another node's service never matches that service.
 4. **Fail closed.**
-   - `/v1/logs` and `/v1/traces` are in `lbacPrefixes`, so a restricted user's request always carries the header. A request without it is full access, because the auth server sends none when LBAC is off or the user has no filters.
+   - While access control is disabled (the default, `AccessControlEnabledDefault = false`), `/v1/logs` and `/v1/traces` stay Admin-only (ADR-23).
+   - With access control enabled, `/v1/logs` and `/v1/traces` are in `lbacPrefixes`, so a restricted user's request always carries the header. A request without it is full access, because the auth server sends none when the user has no filters.
    - Any selector that doesn't parse means deny.
    - Service-account tokens get an explicit decision rather than today's skip.
 5. **UI.** A log explorer and a trace view in the PMM UI built on this API.

@@ -26,6 +26,10 @@ Option 2. If PMM-15592 hasn't passed by 3.12.0 code freeze, these flip for 3.12.
 
 Everything else stays: the settings, the API, the explorer, and the safeguards of ADR-05. An Admin turns OTEL on with no restart (ADR-12).
 
+Because turning OTEL on at runtime is how every 3.12.0 install opts in under this fallback, it must work without a restart:
+- PMM Server's own collector and its log sources are created on every connect of the server's pmm-agent, whatever the setting, and withheld while OTEL is off (plan 02, Task 8);
+- turning OTEL on pushes the collector to that pmm-agent; in HA, each pod's reconcile loop pushes it to its own pod's pmm-agent (plan 01, Task 6b).
+
 ## Consequences
 
 - 3.12.0 ships on time either way.
