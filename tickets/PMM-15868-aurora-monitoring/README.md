@@ -14,4 +14,5 @@
 | [plans/01-rds-exporter.md](plans/01-rds-exporter.md) | Release 1 plan, percona/rds_exporter: info series, cluster storage, empty `fstype` |
 | [plans/02-pmm-dashboards.md](plans/02-pmm-dashboards.md) | Release 1 plan, percona/pmm: Aurora Details fixes, CPU Saturation, docs; its overview task was replaced by the native Amazon RDS page |
 | [plans/03-pmm-qa.md](plans/03-pmm-qa.md) | Release 1 plan, percona/pmm-qa; replaced by Playwright tests PMM-T2504 and PMM-T2505 |
+| [plans/04-aurora-postgresql.md](plans/04-aurora-postgresql.md) | Release 2 plan, all four repos: Aurora queries, CloudWatch list, dashboard, RDS page link, docs, test, Feature Build |
 | [tools/panelcheck.py](tools/panelcheck.py) | Panel sweep: runs every panel query of a dashboard against a live PMM and reports empty panels |
