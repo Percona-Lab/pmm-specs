@@ -1,7 +1,7 @@
 # ADR-11: Output contract
 
 - Status: Accepted (2026-11-05), after the review in pmm-specs#4
-- Date: 2026-10-22, revised 2026-10-24, 2026-10-26, 2026-10-30 and 2026-11-02
+- Date: 2026-10-22, revised 2026-10-24, 2026-10-26, 2026-10-30, 2026-11-02 and 2026-11-06
 - Tickets: PMM-14247, PMM-15530
 - Implemented: not yet (phase 3; the contract is written before the rest of phase 2)
 
@@ -21,7 +21,7 @@ Option 3.
 - Each tool has a Go output type `T`. The handler builds the value once; the Go SDK (v1.8.0) validates a non-nil output against its schema and sends it as `structuredContent`. Registration is described under "How errors are returned". The text is rendered from the same value. A map field is either always non-nil or `omitempty`, because the schema of a map doesn't allow `null`.
 - Redaction (ADR-07) runs on the value, before either rendering.
 - Every listing tool takes `limit` and `offset` and reports `total`, `offset`, `limit` and `truncated`; the text ends with an explicit truncation marker. Starting caps are in [spec §8](../spec.md#8-phase-3-output-contract).
-- The error codes are part of the contract: the eight in `errors.go` plus `rate_limited` (ADR-05). An error stays an `isError` result. Its text starts with `error: <code>` for the model, and its `_meta` carries `com.percona/error: {code, retryable}` for programs (a reverse-DNS prefix, as MCP asks for `_meta` keys). `timeout`, `agent_unreachable`, `pmm_unavailable` and `rate_limited` are retryable; the others are not.
+- The error codes are part of the contract: the eight in `errors.go` plus `rate_limited` (ADR-05). An error stays an `isError` result. Its text starts with `error: <code>` for the model, and its `_meta` carries `com.percona/error: {code, retryable}` for programs (a reverse-DNS prefix, as MCP asks for `_meta` keys), plus `retry_after` in seconds when a per-caller rate limit refused the call (ADR-05, ADR-15). `timeout`, `agent_unreachable`, `pmm_unavailable` and `rate_limited` are retryable; the others are not.
 - **How errors are returned.** With go-sdk v1.8.0, a handler that returns a Go error loses its own result, `_meta` included, and a tool registered with a typed `Out` sends `Out`'s zero value as structured content even next to `isError` (`mcp/server.go:420-468`) [V]. So every tool is registered with `Out = any` and an explicit `OutputSchema` built with `jsonschema.For[T]()`, and a failing call returns its own `isError` result, with `_meta`, a nil output and a nil Go error: no structured content. The golden `tools/list` test and `tool-contract.md` record this. An argument the SDK's input schema refuses is answered by the SDK before the handler runs, without this envelope; `tool-contract.md` records that shape.
 - Reference data moves out of tool descriptions into one read-only tool, `pmm_catalog(kind, engine)`: `kind: qan_columns` is the QAN column catalogue, `kind: metrics` the metrics catalogue (ADR-15).
 - For a metrics result, the text carries the summary table and leaves raw points to the structured content, so the points are not sent twice.

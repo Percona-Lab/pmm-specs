@@ -105,7 +105,10 @@ These numbers live in [spec §8](../spec.md#8-phase-3-output-contract) and are c
 | Value | Where |
 |---|---|
 | Live-inspection calls in flight: 2 per caller, 8 per replica | spec §8; plan 02 |
-| Metric calls in flight: 4 per caller, 8 per replica | spec §8; plan 05 |
+| Live-inspection calls in flight on one service: 1 per replica | spec §8; plan 04 |
+| Metric and QAN calls in flight: 4 per caller, 8 per replica; QAN window 30 days | spec §8; plan 05 |
+| Calls started per caller: live 10 per minute, burst 4; metric 60 per minute, burst 10 | spec §8; plan 05 |
+| Requests to VictoriaMetrics in flight: half of the explicit `-search.maxConcurrentRequests` | spec §8; plan 05 |
 | Inventory 50/200, config variables 200/1000, plan 64 KiB, DDL 32 KiB | spec §8; plan 03 |
-| Metrics: 20/100 series, 2,000 points, 16 KiB, 25 s VictoriaMetrics timeout, 7 days read, 4 KiB and 10 selectors | spec §8; plan 05 |
+| Metrics: 20/100 series, 2,000 points, 16 KiB, 25 s VictoriaMetrics timeout, 7 days read, 4 KiB and 10 selectors, 2,000 series per selector, 4 MiB read per response | spec §8; plan 05 |
 | `pmm_list_metrics` 100/1000, `pmm_alerts` 50/200 | spec §8; plans 05, 07 |

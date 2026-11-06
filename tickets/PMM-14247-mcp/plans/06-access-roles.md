@@ -21,6 +21,7 @@
   - no address and no port.
 - Any `up` value counts. A target scraped with `up=0` stays listed with a current `last_seen`, because the service exists. A service leaves the list only when no `up` sample at all arrived in the last hour, for example when its pmm-agent or vmagent stopped.
 - The list is built per tool call with the caller's own credentials, never cached or shared between callers (ADR-03). A failing list query fails the tool call; it never falls back to an unfiltered source.
+- The list query goes through `QueryInstant`, so it takes a slot of plan 05's limit on requests to VictoriaMetrics, and its response is read within plan 05's size cap. If this plan lands first, plan 05 Task 1 covers it when it wraps `QueryInstant`.
 - After Task 1, no MCP tool calls `/v1/inventory/`. After Task 2, `GET /v1/inventory/services` and `/nodes` are Admin-only again.
 - A `service_id` or service name outside the list answers `not_found` with the fixed text "not in your service list (services that sent metrics in the last hour)", plus the tool's existing hint. A `not_found` message never echoes the ID or name the caller sent, and no error text, hint or candidate list names a service outside the list.
 - Tools that need an engine (`pmm_get_explain`, `pmm_get_schema`, `pmm_get_config`) still accept only MySQL, PostgreSQL and MongoDB, with their existing `invalid_input` for another `service_type`.

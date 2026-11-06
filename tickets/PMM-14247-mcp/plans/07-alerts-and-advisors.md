@@ -14,7 +14,7 @@
 
 - Needs plan 06 (`listServices`), which needs plan 03, and the design review (00). Branch `PMM-15790-alerts`, cut from `PMM-MCP-GA`; one PR into it, opened after Task 5 (00).
 - **MCP's narrowing here is consistency, not a security boundary.** Grafana's alerting APIs don't apply Access Roles. The same caller reads them unfiltered by Access Roles with the same credentials, and in the PMM UI. Tests, docs and tool descriptions never call the narrowing a restriction. Applying Access Roles to it is ADR-16's work, which is deferred.
-- **The caller's service list `L`** is plan 06's list: services of every `service_type` (ProxySQL, HAProxy and the rest included) and every node in it, hosts with only node_exporter included. For `pmm_alerts`, `L` is `listServicesOver(ctx, auth, alertListLookback)`, 7 days (ADR-17).
+- **The caller's service list `L`** is plan 06's list: services of every `service_type` (ProxySQL, HAProxy and the rest included) and every node in it, hosts with only node_exporter included. For `pmm_alerts`, `L` is `listServicesOver(ctx, auth, alertListLookback)`, 7 days (ADR-17). Its query takes a slot of plan 05's limit on requests to VictoriaMetrics, like every request MCP sends there.
 - **Alert narrowing** (ADR-17), against `L`:
   - only four labels count, each checked against one set of `L`: `service_id` against the service IDs, `service_name` against the service names, `node_id` against the node IDs, `node_name` against the node names;
   - an alert of PMM's own rules is shown whatever it names: those are PMM's HA and PMM Server component rules, whose `node_id`, `node_name` and `service_name` name PMM Server replicas and components, never in `L` (ADR-17). They are identified by rule UID or provenance, as Task 1 records, never by a label;
@@ -144,5 +144,6 @@
   - a Viewer whose Access Role allows A gets A's alert, the node alert of A's node and the server-level alert from `pmm_alerts`, and nothing of B;
   - an alert of the folder without Viewer access doesn't reach a Viewer;
   - a Viewer whose Access Role is `{service_name!="B"}` doesn't get B's alerts, and gets the node-only alerts of every host;
+- Run plan 05's load test again (plan 05 Task 9 Step 4) with a fourth loop per caller that calls `pmm_alerts`, which reads the 7-day list. The same pass threshold applies.
 - Record the results on PMM-15790.
 - The last step of the plan (00): merge `origin/PMM-MCP-GA` into the branch, with `PMM-MCP-GA` behind 0; run a Feature Build from the branch, verify live, and open the PR `PMM-15790 Add pmm_alerts` into `PMM-MCP-GA`.
