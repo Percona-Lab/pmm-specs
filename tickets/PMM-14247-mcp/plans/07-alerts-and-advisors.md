@@ -125,7 +125,7 @@
 - `TestInitializeAndListTools`: the instructions contain `pmm_alerts`. Run, see FAIL.
 - Add one line to `Instructions`: "For what is wrong now, call pmm_alerts (firing alerts)." Plan 03's line on untrusted fields covers their texts. Run, see PASS.
 - `mcp.md`:
-  - the tool, its filters and caps;
+  - the tool, its filters and caps; alert summaries and descriptions are returned as written (ADR-07);
   - Advisor results are not in MCP (ADR-18);
   - the list is narrowed to the caller's services to match its other results;
   - a service with no `up` sample for an hour leaves the list of the other tools, but its alerts stay in `pmm_alerts` for 7 days; after 7 days without samples they leave it too;

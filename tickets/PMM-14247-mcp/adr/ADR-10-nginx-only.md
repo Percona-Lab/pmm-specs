@@ -34,5 +34,7 @@ Option 3.
 - `/mcp` can't be reached around nginx, even when `PMM_INTERFACE_TO_BIND` makes pmm-managed's port routable.
 - A front proxy that connects to pmm-managed other than over loopback makes MCP look switched off.
 - A page on another origin can't call `/mcp` from a browser, with or without the user's cookie.
+- PMM's node service-account tokens are Admin (ADR-12), so a node's token can use `/mcp` with Admin's role. Accepted: MCP gives a token no capability beyond what it has through the REST API (ADR-03).
+- Revoking a token can take up to 60 s to reach MCP, because pmm-managed's auth server caches its answers for that long [V]. Accepted; `mcp.md` says so (plan 04).
 - Tests: a cross-site `Origin` gets 403; a request without `Origin` is served; a same-origin browser request is served, and so is a request whose `Origin` is the server's address without `Sec-Fetch-Site`; an anonymous caller gets 403; a non-loopback peer gets 404; a backing call carries a token as `Authorization: Bearer <token>` with no `Cookie`, and Basic credentials and a cookie unchanged.
 - All of this is part of the security design review ([spec §10](../spec.md#10-phase-5-release), item 2).

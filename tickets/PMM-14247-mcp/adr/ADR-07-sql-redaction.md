@@ -1,7 +1,7 @@
 # ADR-07: Redaction of SQL literals
 
 - Status: Accepted (2026-11-05), after the review in pmm-specs#4
-- Date: 2026-10-22
+- Date: 2026-10-22, revised 2026-11-06
 - Tickets: PMM-14247, PMM-15528, PMM-15529
 - Implemented: `PMM-MCP-GA`, percona/pmm#6068 (D9 in `DECISIONS.md`); D10 on `PMM-15529-top-queries-reporting`
 
@@ -24,9 +24,9 @@ With it off:
 - In plan bodies, every string is masked with `?` unless it is known plan structure, a statistic, or a key that holds only names (table, index, column). MongoDB numbers are masked too; MySQL and PostgreSQL plan numbers are kept, because they are estimates and those engines print literals only inside expression strings. A field a new engine version adds is masked; a plan that can't be parsed is withheld.
 - Agent errors are kept only when known to name only identifiers or hosts; otherwise they are withheld.
 - A SQL fingerprint with a literal outside its comments is treated as a raw statement and withheld. When the engine of a report is unknown, a quote that either MySQL or PostgreSQL reads as a string withholds the fingerprint.
-- `pmm_get_schema` DDL is not masked.
-- QAN dimension values in `pmm_top_queries` (`group_by=username`, `client_host`) are shown (D10): Viewers already see them in QAN, and this ADR is about SQL literals.
-- Metric label values, alert summaries and descriptions, and Advisor texts are returned as stored: they are not SQL statements, and the same caller sees them in PMM.
+- `pmm_get_schema` DDL is not masked: disclosed in `mcp.md`; no switch.
+- QAN dimension values in `pmm_top_queries` (`group_by=username`, `client_host`) are shown (D10): disclosed in `mcp.md`; no switch.
+- Metric label values, and alert summaries and descriptions, are returned as stored: disclosed in `mcp.md`; no switch.
 
 Turning off query examples in PMM removes one more source of literals. DDL and the other exceptions above still return what the database or the user stored, so no setting guarantees that no literal leaves the server.
 

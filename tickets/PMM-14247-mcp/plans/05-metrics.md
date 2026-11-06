@@ -369,5 +369,5 @@
   - **Pass:** the loaded run adds no rule-evaluation failure beyond the baseline's, and the dashboard probe's p95 under load is at most twice the baseline's. Otherwise lower the caps in spec §8 through a pmm-specs PR, then here, and run again.
   - **Record** both runs (CPU, memory, dashboard p95, rule-evaluation failures, MCP call count and p95, `rate_limited` count) on PMM-15790 for the security review.
   - **Fleet size:** state the number of monitored services the passing run had as the supported fleet size, in spec §8 through a pmm-specs PR and in `mcp.md`.
-- [ ] **Step 5: Document the tools, budgets and errors in `mcp.md`, with the rate limits and `retry_after`, the 30-day QAN window and the supported fleet size; commit** `PMM-15790 Document and verify the metrics tools`.
+- [ ] **Step 5: Document the tools, budgets and errors in `mcp.md`, with the rate limits and `retry_after`, the 30-day QAN window, the supported fleet size, and that label values are returned as stored (ADR-07); commit** `PMM-15790 Document and verify the metrics tools`.
 - [ ] **Step 6: Open the PR** ([00](00-roadmap.md#branch-and-pr-rules)): merge `origin/PMM-MCP-GA` (behind 0) into the branch, run a Feature Build, run the api-tests and the triage on it, and open `PMM-15790 Add the MCP metrics tools` into `PMM-MCP-GA` with the Feature Build link.
