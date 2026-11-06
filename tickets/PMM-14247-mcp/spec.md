@@ -224,7 +224,7 @@ MCP client ──HTTPS──▶ nginx  location /mcp
 ### 5.2 Implementation notes that stay in the spec
 
 - **Lenient decoding of two QAN responses.** qan-api2 encodes non-finite sparkline floats as the strings `"NaN"` and `"Infinity"`, which the generated Swagger client rejects. `qan:getMetrics` and `qan/metrics:getReport` therefore go through a raw POST into types that accept numeric strings [V]. Remove the workaround when PMM-15535 is fixed.
-- **Action polling.** 300 ms initial delay, ×1.5 backoff, 2 s maximum, bounded by `PMM_MCP_ACTION_TIMEOUT`. pmm-agent applies its own fixed 10 s limit per action, and runs at most 2 actions at once per database instance and 32 in total (`agent/runner/runner.go:43-44`) [V].
+- **Action polling.** 300 ms initial delay, ×1.5 backoff, 2 s maximum, bounded by `PMM_MCP_ACTION_TIMEOUT`. pmm-agent applies its own fixed 10 s limit per action (`agent/runner/runner.go:42`) [V]. MCP doesn't rely on pmm-agent's concurrency limits: it bounds live inspection with its own caps, one live call per service per replica among them ([§8](#8-phase-3-output-contract), plan 04).
 
 ---
 
@@ -246,7 +246,7 @@ MCP is stateless (ADR-04), so the window a model used for one tool doesn't carry
 - The caller's `service_id` is never used unchecked to fetch a plan.
 - `pmm_query_detail` follows the same rule: a `service_id` outside the caller's list answers `not_found`, and without one, QAN rows of services outside the list are dropped.
 - A MongoDB explain runs on the example QAN returns for the resolved service and window, and its `service_id` is checked against that service. A MySQL EXPLAIN runs on the statement pmm-managed picks for the resolved service and `queryid`, which ignores the window (`managed/services/agents/actions.go:78`) [V]. An example from another service with the same fingerprint is never used.
-- A live MySQL or MongoDB plan is the plan the database would choose now, not the plan it chose during the window; the result says so. A PostgreSQL plan is the one pg_stat_monitor stored.
+- A live MySQL or MongoDB plan is the plan the database would choose now, not the plan it chose during the window; the result says so, in its text and in its structured content. A PostgreSQL plan is the one pg_stat_monitor stored.
 - **Without a stored example** (examples turned off, ADR-07, or a statement that left `performance_schema` before pmm-agent sampled it): a MySQL EXPLAIN answers `invalid_input` and asks for `placeholders`, the values of the fingerprint's `?` in order, and `database`; a MongoDB explain answers `no_query_source`. `pmm_get_schema` by `queryid` can't then find the tables: on MySQL it answers like EXPLAIN, and on PostgreSQL, when QAN recorded no `tables`, `no_query_source`.
 
 ### 6.2 `pmm_get_schema` from a `queryid`
@@ -256,7 +256,7 @@ MCP is stateless (ADR-04), so the window a model used for one tool doesn't carry
 **Where the table list comes from:**
 - **PostgreSQL:** the example's `tables`. pg_stat_monitor sends its relations, and pg_stat_statements parses the query with `pg_query_go` [V].
 - **MongoDB:** not supported; `pmm_get_schema` is MySQL and PostgreSQL only and answers `invalid_input` for MongoDB.
-- **MySQL:** the QAN agents (perfschema and slowlog) never fill `tables` [V]. So: run `mysql_explain_json`, walk the whole plan tree (`query_block`, `nested_loop`, subqueries, materialized and union nodes) and collect every table entry. Resolve aliases to real names against the explained statement in the action output. A table that can't be resolved is listed as unresolved, never guessed.
+- **MySQL:** the QAN agents (perfschema and slowlog) never fill `tables` [V]. So: run `mysql_explain_json`, walk the whole plan tree (`query_block`, `nested_loop`, subqueries, materialized and union nodes) and collect every table entry. Resolve aliases to real names against the explained statement in the action output, reading only its code: a quoted string or a comment never yields a name. A table that can't be resolved is listed as unresolved, never guessed, and a name the plan doesn't lead to is never returned.
 
 MySQL discovery is **best effort** and doesn't block the rest of phase 2. Base tables named in the plan are returned. Derived tables, CTEs and names that the alias map can't resolve are listed as unresolved.
 
@@ -288,7 +288,7 @@ PMM-15529's criteria stand, with the `pmm_get_config` item removed:
 - No `pmm_get_explain` or `pmm_get_schema` call runs longer than `PMM_MCP_ACTION_TIMEOUT` plus 45 s, and its actions stop within `PMM_MCP_ACTION_TIMEOUT`. Every other tool call is bounded by the tool deadline (`PMM_MCP_ACTION_TIMEOUT` plus 45 s), and each of its backing calls by 30 s (`callTimeout`).
 - A call that times out or is cancelled leaves none of its actions running on pmm-agent.
 - A `service_id` the query was not seen on, or that is not in the caller's service list, returns `not_found`, for `pmm_query_detail` too. A query seen on several services returns `invalid_input` listing only services in the caller's list.
-- A third live-inspection call from the same caller, while two are in flight, returns `rate_limited`; so does a ninth on one replica across callers.
+- A third live-inspection call from the same caller, while two are in flight, returns `rate_limited`; so does a ninth on one replica across callers, and a second on a service that already has one in flight on that replica, whoever the callers are.
 - A `query_ref` returned by `pmm_top_queries` for a window a day old, passed to `pmm_get_explain` and `pmm_get_schema`, resolves the same service as `pmm_query_detail` did for that window, and for MongoDB the same example. The same `queryid` alone, outside the last hour, returns `not_found` and names the window it searched.
 
 ---
@@ -373,6 +373,7 @@ Decision: [ADR-11](adr/ADR-11-output-contract.md).
    | Limit | Per caller | Per replica | Notes |
    |---|---|---|---|
    | Live-inspection calls in flight | 2 | 8 | A further call answers `rate_limited` immediately (ADR-05). |
+   | Live-inspection calls in flight on one service | — | 1 | Per `service_id`, across callers; a further call answers `rate_limited` immediately (ADR-05, plan 04). |
    | Actions in flight within one live-inspection call | — | — | 4 (ADR-05). |
    | Metric calls in flight | 4 | 8 | One call counts once, however many queries it runs (ADR-15). |
    | VictoriaMetrics `timeout` argument | — | — | 25 s, below the 30 s timeout of every backing call (`callTimeout`, `client.go:53`). |
@@ -518,14 +519,14 @@ Additionally:
 - **MCP's narrowing of alerts is not a security boundary.** A restricted caller still reads them unfiltered through the API and the UI. *Accepted* for the Tech Preview; the fix is PMM-wide (ADR-16, deferred), and the implementation review signs off on it.
 - **Advisor results stay out of MCP** (ADR-18): their texts can carry account details and security posture, and the Editor token they need can also write alerting and Advisor checks. *Accepted*: a triage through MCP doesn't see failed checks; PMM's Advisors page still shows them.
 - **Model-written metric queries** load PMM's own VictoriaMetrics, whose limits (§7.1) are sized for dashboards and don't bound an AI client in a loop. *Mitigation:* the execution budget, the caps per caller and per replica, and the load test on the smallest supported size (ADR-15).
-- **Caps are per token or session and per replica, not per user** (ADR-05). A service account with several tokens, or an HA cluster, gets more. *Accepted*; the per-replica cap and pmm-agent's own limits bound the total.
+- **Caps are per token or session and per replica, not per user** (ADR-05). A service account with several tokens, or an HA cluster, gets more. *Accepted*; the per-replica caps and the per-service cap bound the total.
 - **The service list depends on metrics** (ADR-08). A service with no series in the last hour is not listed. Alerts use a 7-day list, so a silent agent's alerts, its down alert included, stay for 7 days. *Accepted*: `last_seen` shows how fresh each entry is; a longer look-back for every tool would make the query behind every call read more, and plan 06 records the cost of the 1-hour, 24-hour and 7-day lists.
 - **Catalog drift.** The built-in signals and the metrics catalog follow exporter metric names. *Mitigation:* the fixture tests catch renames, at the cost of keeping the fixtures current.
 - **A renamed Metrics datasource** breaks the metric reads (ADR-09). *Accepted*; the tools answer `pmm_unavailable` and say why.
 - **Untrusted text reaches the model.** Query text, DDL comments, labels and alert annotations can carry injected instructions. *Mitigation:* the contract marks them and `Instructions` warn the model; neither stops a client that acts on them, and every tool is read-only (ADR-05).
 - **No per-user MCP switch until ADR-13 ships.** With Access Control on, every Viewer and above can use MCP once an admin enables it. *Accepted*; Access Roles still scope what each sees.
 - **A long-lived branch in a repository with generated code.** *Mitigation:* `*.pb.go` and Swagger conflicts are resolved by regenerating, never by hand (roadmap); PMM-wide changes land on `main` through their own tickets, not on the branch.
-- **Live inspection under an AI-client loop.** *Mitigation:* pmm-agent's limits, the caps, and cancellation when a call ends early (ADR-05). A MongoDB explain still runs its candidate plans, on the stored example only.
+- **Live inspection under an AI-client loop.** *Mitigation:* the caps, one live call per service per replica, and cancellation when a call ends early (ADR-05). A MongoDB explain still runs its candidate plans, on the stored example only.
 - **Response size.** Structured content repeats the text's data. *Mitigation:* the phase 3 token measurement covers both before the caps are fixed.
 - **Credentials pass through pmm-managed in memory** (ADR-03). *Mitigation:* MCP's code never logs them; the implementation review checks every hop on the path, at every log level.
 - **A front proxy that isn't on loopback** makes `/mcp` answer 404, like a disabled endpoint (ADR-10). *Accepted*; `mcp.md` says so.
@@ -534,7 +535,7 @@ Additionally:
 - **Services QAN shows but the list lacks** (no `up` sample in the last hour) appear in `pmm_top_queries` and answer `not_found` from detail, explain and schema. *Accepted*; the error text says the list holds services that sent metrics in the last hour.
 
 **Open design questions, raised in the second review of pmm-specs#4.** Each is settled in the plan named, or accepted in writing by the implementation review:
-- **Load on pmm-agent.** The caps count calls, not actions: 8 calls of 4 actions can occupy every runner slot of one pmm-agent, whose per-instance slots backups and the QAN UI share. Counting actions, or one MCP action per service at a time, is an option (plan 02).
+- **Load on pmm-agent.** Settled by the security design review: MCP holds at most one live call per service per replica (plan 04).
 - **Requests that reach VictoriaMetrics.** The metric caps don't count `pmm_service_health`'s fan-out, the service-list query or datasource lookups, and the load test has no fixed threshold. One per-replica cap on every VictoriaMetrics request MCP makes is an option (plan 05).
 - **Fleet size.** No supported fleet size is stated, and a literal metric name with no scope over 7 days is accepted at any size (plan 05).
 - **QAN and ClickHouse load.** The QAN tools have no caps and no maximum window (plan 03).
