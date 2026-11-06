@@ -51,7 +51,9 @@ Order: plan 01, plan 02, plan 03. The security design review starts once plan 03
 
 **Why the contract comes before plans 04 and 05.** Plan 03 puts the contract's plumbing first (typed results, errors, paging, `pmm_catalog`), so the new tools in plans 04 and 05 are written once, in their final shape, instead of text-only and then reworked. The contract document still comes first (plan 03, Task 1).
 
-**Security design review** (spec §3.1, §10.2) reads this folder and `tool-contract.md`, so it runs after plan 03 Task 1. It gates plans 04 to 07, which add data paths and the narrowing to the caller's service list. Plans 01 to 03 add none and don't wait for it. Book it during plan 01; record the outcome on PMM-15532.
+**Security design review** (spec §3.1, §10.2) reads this folder and `tool-contract.md`, so it runs after plan 03 Task 1. It gates plans 04 to 07, which add data paths and the narrowing to the caller's service list. Plans 01 to 03 add none and don't wait for it.
+
+It took place on 2026-11-06, against pmm-specs `main` at `80c9b8b` and percona/pmm `PMM-MCP-GA` at `83baa4430`, by three independent reviewers. Its findings are recorded in Jira (Developers-only); those about code PMM already ships are reported privately, as `SECURITY.md` requires. The spec, the ADRs, `tool-contract.md` and the plans carry the design changes it asked for. Plans 04 to 07 may start.
 
 ## Branch and PR rules
 

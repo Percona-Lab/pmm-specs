@@ -1,6 +1,6 @@
 # MCP endpoint in PMM Server: analysis and design (PMM-14247)
 
-- **Date:** 2026-10-22, revised 2026-10-24, 2026-10-26, 2026-10-30, 2026-11-02 and 2026-11-04 after reviews of [pmm-specs#4](https://github.com/Percona-Lab/pmm-specs/pull/4).
+- **Date:** 2026-10-22, revised 2026-10-24, 2026-10-26, 2026-10-30, 2026-11-02 and 2026-11-04 after reviews of [pmm-specs#4](https://github.com/Percona-Lab/pmm-specs/pull/4), and 2026-11-06 after the security design review ([§3.1](#31-order-from-here)).
 - **Epic:** [PMM-14247](https://perconadev.atlassian.net/browse/PMM-14247), phases PMM-15527 to PMM-15532 ([§2](#2-sources)).
 - **Code base:** percona/pmm branch `PMM-MCP-GA` at `826945906`, and the phase 2 branches listed in [§3](#3-where-the-work-stands). Line numbers refer to those commits; re-check them before you edit.
 - **Plans that implement this document:** [`plans/00-roadmap.md`](plans/00-roadmap.md) and the plans next to it.
@@ -119,7 +119,7 @@ The order, the dependencies and the branch rules are in [plans/00-roadmap.md](pl
 1. Land the phase 2 pull requests ([plan 01](plans/01-land-phase-2.md)).
 2. Harden `/mcp`: the Origin check, the refusal of anonymous callers, and the caps and cancellation of live inspection ([plan 02](plans/02-origin-and-limits.md)).
 3. The output contract ([plan 03](plans/03-output-contract.md), [§8](#8-phase-3-output-contract)); its first task writes `tool-contract.md`.
-4. A security design review of this folder and `tool-contract.md`, before plans 04 to 07.
+4. A security design review of this folder and `tool-contract.md`, before plans 04 to 07. It took place on 2026-11-06, against pmm-specs `main` at `80c9b8b` and percona/pmm `PMM-MCP-GA` at `83baa4430`, by three independent reviewers. Its findings are recorded in Jira (Developers-only); those about code PMM already ships are reported privately, as `SECURITY.md` requires. The design changes it asked for are in this folder. Plans 04 to 07 may start.
 5. Resolve first ([plan 04](plans/04-resolve-first.md), [§6](#6-phase-2-the-rest-of-query-intelligence)).
 6. Metrics ([plan 05](plans/05-metrics.md), [§7.1](#71-metrics)).
 7. The caller's service list ([plan 06](plans/06-access-roles.md), [§9](#9-phase-4-identity-and-access-roles)); PMM-15534 lands on `main` meanwhile.
@@ -447,7 +447,7 @@ Decision: [ADR-13](adr/ADR-13-access-role-permissions.md). `mcp:use` as a requir
    - PMM-15697 is fixed, or the implementation review accepts in writing that PostgreSQL stored plans are not yet filtered;
    - PMM-15702 is fixed, or the implementation review accepts in writing that QAN tools fail for Access Roles whose filter values contain a quote or a colon;
    - the implementation review has assessed PMM-15339, PMM-15703, PMM-15715 and PMM-15838 for their effect on MCP.
-2. **Security review, in two passes.** A design review of this folder and `tool-contract.md` before plans 04 to 07 ([§3.1](#31-order-from-here)), and an implementation review before the merge back. Scope of both:
+2. **Security review, in two passes.** A design review of this folder and `tool-contract.md` before plans 04 to 07, which took place on 2026-11-06 ([§3.1](#31-order-from-here)), and an implementation review before the merge back. Scope of both:
    - `/mcp` served only through nginx, the Origin check, and the refusal of anonymous callers (ADR-10);
    - credentials: which header wins, forwarding `Authorization` and `Cookie` over loopback, that no hop on the path logs them at any log level, and the caller key (ADR-03, ADR-05, ADR-10);
    - `/mcp` at `viewer`; the caller's service list and MCP's narrowing, including that for alerts and Advisor results it is not a security boundary (ADR-03, ADR-08, ADR-17, ADR-18);
