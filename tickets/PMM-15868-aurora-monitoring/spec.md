@@ -209,7 +209,7 @@ Known limitations and follow-ups:
     | info | `aws_rds_instance_info`, also kept for one hour after it stops | yes |
     | role | Aurora MySQL `mysql_global_variables_innodb_read_only`; MySQL and MariaDB `mysql_global_variables_read_only`; PostgreSQL `pg_replication_is_replica` or `pg_settings_in_hot_standby` | no |
     | throughput | MySQL family `rate(mysql_global_status_queries)`; PostgreSQL `rate(pg_stat_database_xact_commit)` + `rate(pg_stat_database_xact_rollback)` | no |
-    | storage | Aurora `aws_rds_volume_bytes_used_average`; others `aws_rds_free_storage_space_average`, or Enhanced Monitoring `node_filesystem_free_bytes` | no |
+    | storage | Aurora `aws_rds_volume_bytes_used_average`; others CloudWatch `FreeStorageSpace`, which rds_exporter publishes as `node_filesystem_free_bytes` with an empty `mountpoint` | no |
 
     A failed required query shows an error; a failed optional one leaves its values blank. Grafana answers 400 for the whole request when one query fails, with every result in the body.
     Rows start from the database exporters' `up` series and take AWS labels from the info series by `node_id`, so a service without an info series is never lost (Alternative E). Only services on `remote_rds` Nodes are listed.
@@ -348,11 +348,11 @@ Paths are relative to each repository's root.
 |---|---|---|
 | 1 | Aurora Details opened without URL variables lists the Aurora MySQL services only, and its panels have data except the rows named as conditional. | Met: PMM-T2505. |
 | 2 | The page lists an Aurora MySQL instance under its Aurora cluster, with region, engine, "1 / 1", "1 writer", role, Up, and a new-tab link to Aurora Details. | Met: PMM-T2504 and UI tests. |
-| 3 | Grouping: Aurora cluster, Multi-AZ DB cluster, replication group (cross-region and cascaded), standalone instance, "AWS info unavailable" per region and engine. | Met in UI unit tests. **Live check pending** for plain RDS standalone and read replica; Multi-AZ DB cluster not checked live. |
+| 3 | Grouping: Aurora cluster, Multi-AZ DB cluster, replication group (cross-region and cascaded), standalone instance, "AWS info unavailable" per region and engine. | Met in UI unit tests; Aurora clusters and a Multi-AZ DB cluster checked live. **Live check pending** for plain RDS standalone and read replica. |
 | 4 | Role per engine: Aurora MySQL, MySQL and MariaDB, PostgreSQL and Aurora PostgreSQL. | Met in UI unit tests. **Live check pending** for an Aurora PostgreSQL reader and a plain RDS replica; Aurora failover not checked live. |
-| 5 | The menu shows only when an RDS Node exists, for viewers too. | Met: navigation tests, pmm-managed and API tests for `nodes:getTypes`. |
-| 6 | rds_exporter series carry the Node's shared `environment`, `cluster` and `replication_set`, so an LBAC role filtering on them sees RDS metrics; the labels follow Service changes. | Met in pmm-managed unit tests (`rds_test.go`, `services_test.go`). |
-| 7 | Alerts: firing, unsilenced, matched by `service_name` or `node_name`; unknown until silences load; links to rule and Alert groups. | Met in UI tests. |
+| 5 | The menu shows only when an RDS Node exists, for viewers too. | Met: navigation tests, pmm-managed and API tests for `nodes:getTypes`; checked live with a Viewer. |
+| 6 | rds_exporter series carry the Node's shared `environment`, `cluster` and `replication_set`, so an LBAC role filtering on them sees RDS metrics; the labels follow Service changes. | Met in pmm-managed unit tests (`rds_test.go`, `services_test.go`); checked live, including a query with an LBAC `extra_filters` matcher. |
+| 7 | Alerts: firing, unsilenced, matched by `service_name` or `node_name`; unknown until silences load; links to rule and Alert groups. | Met in UI tests; checked live with a test alert rule. |
 | 8 | A failed optional query blanks only its values; a failed `up` or `info` query shows an error. | Met in UI tests. |
 | 9 | Search and filters survive a reload through URL parameters. | Met in UI tests. |
 | 10 | Cluster storage per Aurora cluster, `max` not `sum`; legacy `aurora` engine included. | Met in rds_exporter and UI tests. |
