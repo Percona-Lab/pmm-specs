@@ -1,7 +1,7 @@
 # Aurora monitoring in PMM
 
 *   **Author:** Tibi (tibor.korocz@percona.com)
-*   **Status:** Release 1 implemented, in code review. Live checks of plain RDS and of an Aurora PostgreSQL reader are pending (see [Verification](#verification-and-acceptance-criteria)). Release 2 (Aurora PostgreSQL Details) designed, in review.
+*   **Status:** Release 1 implemented, in code review. Live checks of plain RDS and of an Aurora PostgreSQL reader are pending (see [Verification](#verification-and-acceptance-criteria)). Release 2 (Aurora PostgreSQL Details) implemented and checked live on a Feature Build, in code review; its pmm-qa case still needs a Jenkins `@instances` run (see [Verification](#verification-and-acceptance-criteria)).
 *   **Date:** 2026-11-04, updated to the as-built design on 2026-11-06; Release 2 design added on 2026-11-06
 *   **Epic:** [PMM-15868](https://perconadev.atlassian.net/browse/PMM-15868)
 *   **Inputs:** [research.md](research.md) (live check and code reading before this epic), [concepts_brief.md](concepts_brief.md) (two review rounds, history only)
@@ -49,6 +49,8 @@ Changes from the design as first reviewed, and why.
 | 12 | Release 2 drops "WAL Writes on Aurora". The generic WAL panel stays as it is; the Aurora PostgreSQL dashboard shows write activity from CloudWatch. | Aurora PostgreSQL exposes no WAL byte position: `pg_current_wal_lsn()` needs `wal_level=logical`, `pg_stat_wal` is not supported, and `pg_stat_replication` is empty because readers don't stream WAL (checked live, [section 7](#7-release-2-aurora-postgresql-details)). |
 | 13 | Release 2 adds no Aurora PostgreSQL CloudWatch metrics; it only removes the MySQL-only ones for PostgreSQL. | Wraparound age and replica lag are already collected. The logical replication, Optimized Reads and Serverless metrics can't be checked on the test clusters. |
 | 14 | A role signal for Aurora PostgreSQL 13 and older stays out of Release 2. | Not needed for the details view; the new `aurora_replica_status()` series could provide it later (see Known limitations). |
+| 15 | Release 2 also registers the dashboard in `dashboards/pmm-app/src/plugin.json`, and Oldest Transaction ID Age shows two decimals. | The repository's dashboard guide requires the registration, which the plan missed; with no decimals, 1.5 billion displayed as "2 Bil" (final review). |
+| 16 | The pmm-qa branches of both releases merge pmm-qa `main`. | Release 1's Feature Build turned 9 e2e jobs red because its test branch predated the native-Inventory test update (percona/pmm-qa#1613). |
 
 ## The Problem
 
@@ -449,9 +451,9 @@ Paths are relative to each repository's root.
 *   `e2e_tests/tests/inventory/remoteInstances.test.ts`: PMM-T2504 (the Amazon RDS page lists the Aurora instance under its cluster, with type, engine, instances, writer, role, status and a new-tab link to Aurora Details) and PMM-T2505 (Aurora Details lists Aurora MySQL services without URL variables, and its panels have data), both `@instances`, version-gated to 3.10.1 in `e2e_tests/helpers/versionGates.ts`.
 *   `e2e_tests/pages/amazonRds.page.ts`, `e2e_tests/pages/dashboards/mysql/mysqlAmazonAuroraDetails.ts`, `e2e_tests/fixtures/pmmTest.ts`, `e2e_tests/testdata/remoteInstances.ts`.
 
-### Release 2 (planned)
+### Release 2
 
-Each repository gets a branch `PMM-15868-aurora-postgres-details`, cut from its Release 1 branch (from `main` in postgres_exporter, which has none), with its own draft PR and one Feature Build for all four.
+Each repository has a branch `PMM-15868-aurora-postgres-details`, cut from its Release 1 branch (from `main` in postgres_exporter, which has none): [percona/postgres_exporter#442](https://github.com/percona/postgres_exporter/pull/442), [percona/rds_exporter#128](https://github.com/percona/rds_exporter/pull/128), [percona/pmm#6289](https://github.com/percona/pmm/pull/6289), [percona/pmm-qa#1742](https://github.com/percona/pmm-qa/pull/1742); Feature Build [Percona-Lab/pmm-submodules#4686](https://github.com/Percona-Lab/pmm-submodules/pull/4686).
 
 #### percona/postgres_exporter (ships in pmm-client)
 
@@ -466,7 +468,7 @@ Each repository gets a branch `PMM-15868-aurora-postgres-details`, cut from its 
 
 #### percona/pmm (ships in PMM Server)
 
-*   **Dashboard:** `dashboards/dashboards/PostgreSQL/PostgreSQL_Amazon_Aurora_Details.json` (new), checked with `dashboards/misc/cleanup-dash.py --check-only`.
+*   **Dashboard:** `dashboards/dashboards/PostgreSQL/PostgreSQL_Amazon_Aurora_Details.json` (new), checked with `dashboards/misc/cleanup-dash.py --check-only`; registered in `dashboards/pmm-app/src/plugin.json`.
 *   **UI:** `ui/apps/pmm/src/pages/amazon-rds/AmazonRds.constants.ts`, `AmazonRds.utils.ts`, `AmazonRds.utils.test.ts`, and the link messages.
 *   **Docs:** `documentation/docs/reference/dashboards/dashboard-postgresql-amazon-aurora-details.md` (new, with the `rds_superuser` grant and the Replication row's reader condition), `images/PMM_PostgreSQL_Amazon_Aurora_Details.png` (new), `mkdocs-base.yml`, `use/dashboards-panels/index.md`, `use/amazon-rds-overview.md` (the Service link for Aurora PostgreSQL), `release-notes/next.md`.
 
@@ -499,19 +501,19 @@ Each repository gets a branch `PMM-15868-aurora-postgres-details`, cut from its 
 
 Pending live check, on a Feature Build with the rds_exporter and pmm branches on a CHAOS VM: a plain RDS standalone instance and read replica, and an Aurora PostgreSQL cluster with a reader. PMM-T2504 and PMM-T2505 run in pmm-qa `@instances` against the same build.
 
-Release 2, all planned:
+Release 2 was checked live on 2026-11-06 with the Feature Build server image `perconalab/pmm-server-fb:PR-4686-8aee6d4`, which replaced the Release 1 server of a test VM on the same data volume. The VM monitored a single-writer Aurora PostgreSQL 15.15 cluster, a writer-and-reader Aurora PostgreSQL 17.9 cluster, five Aurora MySQL and three RDS MySQL instances.
 
-| # | Criterion | How it is checked |
+| # | Criterion | Status |
 |---|---|---|
-| 16 | PostgreSQL Amazon Aurora Details opened without URL variables lists the Aurora PostgreSQL services only. | New pmm-qa case; live check. |
-| 17 | Its top panels and the Cache and Instance rows have data for an Aurora PostgreSQL writer and reader, on PostgreSQL 15 and 17. | New pmm-qa case (writer); live check on a writer-and-reader cluster. |
-| 18 | With a reader, the Replication row shows each reader's lag, from the engine and from CloudWatch. | Live check. |
-| 19 | On self-managed and plain RDS PostgreSQL, the new blocks send no SQL and log no errors. | postgres_exporter unit test; live check on PMM Server's own PostgreSQL (done once during design). |
-| 20 | rds_exporter makes 28 CloudWatch calls per scrape for plain RDS PostgreSQL and 29 for Aurora PostgreSQL; MySQL engines are unchanged. | rds_exporter unit test; `rds_exporter_requests_total` rate compared before and after on the Feature Build. |
-| 21 | On the Amazon RDS page, an Aurora PostgreSQL service opens the new dashboard; plain RDS PostgreSQL still opens PostgreSQL Instance Summary. | UI unit test; live check. |
-| 22 | Docs and release notes describe the dashboard and the changed link. | Docs build preview. |
+| 16 | PostgreSQL Amazon Aurora Details opened without URL variables lists the Aurora PostgreSQL services only. | Met: PMM-T2506 passed on the Feature Build server; live, the list held the three Aurora PostgreSQL services and not PMM Server's own PostgreSQL. |
+| 17 | Its top panels and the Cache and Instance rows have data for an Aurora PostgreSQL writer and reader, on PostgreSQL 15 and 17. | Met: `tools/panelcheck.py` found every such panel with data on the 17.9 writer and reader and the 15.15 writer; Statement Latency shows 0, not gaps, for idle statement types. |
+| 18 | With a reader, the Replication row shows each reader's lag, from the engine and from CloudWatch. | Met on the 17.9 cluster: engine-side lag on writer and reader; CloudWatch shows `AuroraReplicaLag` on the reader and the maximum on the writer, as AWS reports them. |
+| 19 | On self-managed and plain RDS PostgreSQL, the new blocks send no SQL and log no errors. | Met: postgres_exporter unit test; no `pg_custom_aurora` error in the agent log and no `aurora_` statement in PMM Server's own PostgreSQL log. Not checked on plain RDS PostgreSQL (none available). |
+| 20 | rds_exporter makes 28 CloudWatch calls per scrape for plain RDS PostgreSQL and 29 for Aurora PostgreSQL; MySQL engines are unchanged. | Met: rds_exporter unit test; `rds_exporter_requests_total` went from 529.7 to 471.3 a minute for the same 11 instances (expected drop 57), and `aws_rds_*` series per node didn't change. |
+| 21 | On the Amazon RDS page, an Aurora PostgreSQL service opens the new dashboard; plain RDS PostgreSQL still opens PostgreSQL Instance Summary. | Met: UI unit tests; live on the 17.9 writer and reader. Plain RDS PostgreSQL by unit test only. |
+| 22 | Docs and release notes describe the dashboard and the changed link. | Met: docs build with the new page. |
 
-The Release 2 live check runs on a new CHAOS VM from the Feature Build, with the Aurora PostgreSQL 15 cluster, a writer-and-reader Aurora PostgreSQL 17 cluster and an Aurora MySQL cluster. No plain RDS PostgreSQL instance is available, so criteria 19 and 20 rest on code and the AWS metric reference there.
+Pending: PMM-T2506 in a Jenkins `@instances` run. That job must pass the `PMM_QA_RDS_AURORA_PGSQL15_*` secrets to its Playwright stage, which can't be confirmed from the pmm-qa repository; the GitHub Actions Feature Build suite runs only `@fb-instances`. The case stays Needs Automation in Zephyr until that run passes.
 
 --------------------------------------------------------------------------------
 
