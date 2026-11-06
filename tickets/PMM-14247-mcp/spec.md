@@ -151,9 +151,9 @@ MCP client ──HTTPS──▶ nginx  location /mcp
                          ▼
      ┌───────────────────┼──────────────────────┬──────────────────────────────┐
      ▼                   ▼                      ▼                              ▼
-  pmm-managed         qan-api2              Grafana alert API             Grafana datasource proxy
-  inventory           QAN: filtered by      (ADR-17): folder              ──▶ vmproxy: filtered by
-  (narrowed by MCP)   Access Roles          permissions only;             Access Roles ──▶ VictoriaMetrics
+  pmm-managed         qan-api2              Grafana rules API             Grafana datasource proxy
+  inventory           QAN: filtered by      (ADR-17): folder-scoped,      ──▶ vmproxy: filtered by
+  (narrowed by MCP)   Access Roles          no Access Roles;              Access Roles ──▶ VictoriaMetrics
   ──▶ pmm-agent       (Grafana role         narrowed by MCP               metrics and the caller's
   actions (EXPLAIN,   checked first)                                      service list (ADR-08, ADR-09)
   SHOW CREATE TABLE)
@@ -183,7 +183,7 @@ MCP client ──HTTPS──▶ nginx  location /mcp
 | `pmm_service_health` | The triage signals of one service, summarized, with each one's newest sample time | Datasource proxy: `/api/v1/query_range` | Passive | 2b |
 | `pmm_query_metrics` | Instant or range query results, summarized per series | Datasource proxy: `/api/v1/query`, `/api/v1/query_range` | Passive | 2b |
 | `pmm_list_metrics` | Metric names by substring search, label names, label values, or series | Datasource proxy: `/api/v1/labels`, `/api/v1/label/{name}/values`, `/api/v1/series` | Passive | 2b |
-| `pmm_alerts` | Firing alerts with labels, summary and start time, narrowed to the caller's services | Grafana's alert API through nginx (ADR-17) | Passive | 2b |
+| `pmm_alerts` | Firing alerts with labels, summary and start time, narrowed to the caller's services | Grafana's folder-scoped rules API through nginx (ADR-17) | Passive | 2b |
 
 `pmm_advisors`, planned for phase 2b, is out of the Tech Preview ([ADR-18](adr/ADR-18-advisors.md), [§7.3](#73-advisors)).
 
@@ -313,8 +313,8 @@ Decision: [ADR-15](adr/ADR-15-metrics-tools.md); the caps are in [§8](#8-phase-
 
 Decision: [ADR-17](adr/ADR-17-alerts.md).
 
-- `pmm_alerts` reads the current alerts from Grafana's alert API through nginx with the caller's credentials, so Grafana's folder permissions apply. Grafana's alert APIs carry no Access Role filter [V]. Which endpoint, and what a Viewer gets from it, is settled on a Feature Build and recorded in ADR-17 before that ADR is accepted.
-- MCP keeps an alert that names a service when every service label it carries is in the caller's list, whatever node it names, since PMM's down templates name the pmm-agent's node (`pmm-server` for RDS and Azure services); an alert that names only nodes when they are in the list, which holds services and nodes of every type (ADR-08); and, as Grafana's UI shows them to the same caller, an alert with no service or node label and every alert labelled `pmm_provisioned="1"`, PMM's own HA and PMM Server component rules. The list used for alerts covers 7 days of `up` samples, not 1 hour, so a service whose pmm-agent went silent keeps its firing alerts, its down alert included, for 7 days ([§13](#13-risks-and-mitigations)). Narrowed, not filtered (ADR-03).
+- `pmm_alerts` reads the firing alerts from Grafana's rules API through nginx with the caller's credentials. That API is folder-scoped, so `pmm_alerts` shows a Viewer what PMM's own alert page shows; Grafana's alert list endpoints are not folder-scoped and never supply the list. Silence state comes from the Alertmanager, joined by rule UID only. No Grafana alerting API carries an Access Role filter [V]. Plan 07 Task 1 checks this on a Feature Build and records it in ADR-17 before that ADR is accepted.
+- MCP keeps an alert that names a service when every service label it carries is in the caller's list, whatever node it names, since PMM's down templates name the pmm-agent's node (`pmm-server` for RDS and Azure services); an alert that names only nodes when they are in the list, which holds services and nodes of every type (ADR-08); and, as Grafana's UI shows them to the same caller, an alert with no service or node label and every alert of PMM's own HA and PMM Server component rules, identified by rule UID or provenance, never by a label. The list used for alerts covers 7 days of `up` samples, not 1 hour, so a service whose pmm-agent went silent keeps its firing alerts, its down alert included, for 7 days ([§13](#13-risks-and-mitigations)). Narrowed, not filtered (ADR-03).
 - It returns firing alerts, silenced or not (and until when), with name, severity, labels, summary, description, start time and a link, and filters by service, node and severity. Summaries and descriptions are untrusted text (ADR-11) and never used for narrowing.
 - The tool description and every result say "Currently firing alerts only; resolved alerts are not shown." Alert history is a follow-up (ADR-17).
 
@@ -333,7 +333,7 @@ Decision: [ADR-18](adr/ADR-18-advisors.md), option 4: `pmm_advisors` is out of t
 - `pmm_catalog(kind: metrics)` returns entries for each engine. The CI test fails when an entry's metric disappears from the exporter fixtures.
 - `pmm_query_metrics` answers an instant and a range query. No response exceeds the point and size budget: a result that would is summarized or cut to the top N series, says so, and suggests a narrower query built from the caller's expression. A NaN value arrives as `null`.
 - `pmm_list_metrics` with `search: mongodb` returns only names that contain `mongodb`; over the limit, it groups them by prefix with counts. With `search: ".*"` it returns only names containing the literal `.*` (none).
-- With an Access Role that allows one service: `pmm_service_health`, `pmm_query_metrics` and `pmm_list_metrics` return only that service's series and label values; `pmm_alerts` returns only that service's alerts, plus alerts with no service or node label and PMM's own `pmm_provisioned` alerts. That service's down alert is among them even when its pmm-agent runs on another node.
+- With an Access Role that allows one service: `pmm_service_health`, `pmm_query_metrics` and `pmm_list_metrics` return only that service's series and label values; `pmm_alerts` returns only that service's alerts, plus alerts with no service or node label and the alerts of PMM's own rules. That service's down alert is among them even when its pmm-agent runs on another node. A Viewer gets no alert of a rule in a folder it can't read.
 - A fifth metric call from the same caller, while four are in flight, returns `rate_limited`; so does a ninth on one replica across callers.
 - These answer `invalid_input` with a hint and never reach VictoriaMetrics: `{__name__=~".+"}`; a selector without a metric name, including one OR group without it; `{__name__=~"mysql_.*"}` without a service or node matcher, or with `service_name=~".+"`; `rate(x[365d])` as an instant query; `[30d:5m]` subqueries; nested subqueries whose lookbehinds add up past the cap; `@`; a range over the cap; and an expression over the length or selector cap.
 - **Load on VictoriaMetrics.** On the smallest supported server size, with at least 50 monitored services, five callers each run broad accepted queries in a loop for 10 minutes: `rate(mysql_global_status_questions[5m])` without aggregation over 6 days, an instant query with a 6-day window, and `{__name__=~"mysql_global_status_.*", service_name=~"db1|db2|…"}` naming 10 services. Record VictoriaMetrics' CPU and memory and the p95 latency of dashboard queries, with and without that load. Pass: the implementation review signs off on the recorded numbers, or lowers the caps in §8; a fixed threshold is an open question ([§13](#13-risks-and-mitigations)).
@@ -431,7 +431,7 @@ Decision: [ADR-13](adr/ADR-13-access-role-permissions.md). `mcp:use` as a requir
 ### 9.4 Acceptance
 
 - A service-account token resolves to its Grafana user ID.
-- An Access Role whose filter matches one service, assigned to a service account or to an interactive Viewer: `pmm_inventory`, `pmm_top_queries`, `pmm_query_detail`, `pmm_get_explain`, `pmm_get_schema`, `pmm_get_config` and the metrics tools return only that service's data. `pmm_alerts` returns only that service's alerts, its down alert included when its pmm-agent runs on another node, plus those with no service or node label and PMM's own `pmm_provisioned` alerts.
+- An Access Role whose filter matches one service, assigned to a service account or to an interactive Viewer: `pmm_inventory`, `pmm_top_queries`, `pmm_query_detail`, `pmm_get_explain`, `pmm_get_schema`, `pmm_get_config` and the metrics tools return only that service's data. `pmm_alerts` returns only that service's alerts, its down alert included when its pmm-agent runs on another node, plus those with no service or node label and the alerts of PMM's own rules.
 - With that role, one `queryid` recorded on the allowed service and on a hidden one: `pmm_query_detail`, `pmm_get_explain` and `pmm_get_schema` resolve to the allowed service; given the hidden service's `service_id`, they return `not_found`, and no error names it. For PostgreSQL stored plans this holds once PMM-15697 is fixed ([§10](#10-phase-5-release)).
 - Two services on one node, a role that allows one of them: the other service and its alerts are hidden.
 - A Viewer token gets `unauthorized` from `GET /v1/inventory/services`.
@@ -544,7 +544,7 @@ Additionally:
 - **Clients that need OAuth.** `/mcp` takes static tokens only; MCP's OAuth flow and protected-resource metadata are not supported, and `mcp.md` recommends token expiry (plan 08).
 
 **Open questions, settled before the ADRs that depend on them are accepted:**
-- which Grafana alert endpoint `pmm_alerts` reads, and what a Viewer gets from it (ADR-17);
+- what a Viewer gets from Grafana's rules API, the silence join by rule UID, and whether the rules API identifies PMM's own rules by UID or by provenance (ADR-17, plan 07 Task 1);
 - how MySQL's JSON formats report aliases (§6.2);
 - how MongoDB's default explain verbosity behaves across supported versions (ADR-05);
 - how `http.CrossOriginProtection` answers MCP clients that send `Origin` without `Sec-Fetch-Site`, behind nginx (ADR-10).
