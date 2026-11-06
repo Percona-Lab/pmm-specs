@@ -49,4 +49,4 @@ ADR-01 to ADR-10 started from decisions that were taken in the epic, in pull req
 | [15](ADR-15-metrics-tools.md) | Metrics tools | Accepted | Plan 05 |
 | [16](ADR-16-access-roles-on-pmm-apis.md) | Access Roles on PMM's service-scoped APIs | Deferred | A PMM ticket not yet filed, on `main`, outside this epic |
 | [17](ADR-17-alerts.md) | Alerts | Proposed | Plan 07 |
-| [18](ADR-18-advisors.md) | Advisors | Proposed | Plan 07 |
+| [18](ADR-18-advisors.md) | Advisors | Proposed | Nothing to build: `pmm_advisors` is out of the Tech Preview |

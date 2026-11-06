@@ -15,7 +15,7 @@ MCP here is the [Model Context Protocol](https://modelcontextprotocol.io).
 
 ## 1. Summary
 
-**What gets built.** One read-only MCP tool layer inside pmm-managed, served at `https://<pmm-server>/mcp` over MCP Streamable HTTP. The tools cover query triage (QAN, EXPLAIN, schema, configuration), metrics, firing alerts and Advisor results. Any MCP client (Claude Code, Cursor, a customer's own agent) drives it with an ordinary PMM service-account token. Every tool call goes back out through PMM's public REST API on the nginx loopback with the caller's own credentials, so the MCP layer can never do more than the same token can do with `curl`.
+**What gets built.** One read-only MCP tool layer inside pmm-managed, served at `https://<pmm-server>/mcp` over MCP Streamable HTTP. The tools cover query triage (QAN, EXPLAIN, schema, configuration), metrics and firing alerts. Any MCP client (Claude Code, Cursor, a customer's own agent) drives it with an ordinary PMM service-account token. Every tool call goes back out through PMM's public REST API on the nginx loopback with the caller's own credentials, so the MCP layer can never do more than the same token can do with `curl`.
 
 **Where it stands.** Phases 0 and 1 are merged into the integration branch `PMM-MCP-GA`. Phase 2 is partly written in three stacked pull requests. Phases 2b to 5 have not started ([§3](#3-where-the-work-stands)).
 
@@ -23,7 +23,7 @@ MCP here is the [Model Context Protocol](https://modelcontextprotocol.io).
 - It records the decisions already implemented as ADR-01 to ADR-10. They were taken in the epic, in pull requests and in `managed/services/mcp/DECISIONS.md`, but none had an architect review, so all start as **Proposed** ([§5](#5-decisions-already-taken)).
 - It designs the remaining work:
   - the rest of phase 2: [§6](#6-phase-2-the-rest-of-query-intelligence);
-  - phase 2b, metrics, alerts and Advisors: ADR-15, ADR-17, ADR-18, [§7](#7-phase-2b-metrics-alerts-and-advisors);
+  - phase 2b, metrics and alerts, with Advisor results left out of the Tech Preview: ADR-15, ADR-17, ADR-18, [§7](#7-phase-2b-metrics-alerts-and-advisors);
   - phase 3, the output contract: ADR-11, [§8](#8-phase-3-output-contract);
   - phase 4, the caller's service list and service-account tokens: ADR-08, ADR-12, [§9](#9-phase-4-identity-and-access-roles);
   - phase 5, the release: ADR-14, [§10](#10-phase-5-release).
@@ -41,7 +41,7 @@ PMM users want to ask an AI client about their databases: which queries are slow
 - An AI client reads PMM data through MCP with the caller's own PMM credentials, and never gets more than those credentials give through PMM's API.
 - Metrics and QAN data are filtered by the caller's Access Roles, for interactive users and service-account tokens alike; MCP narrows its other results to the services those roles allow (not a security boundary, ADR-03).
 - A slow-query triage (inventory, top queries, detail, EXPLAIN, schema, configuration) works on MySQL, PostgreSQL and MongoDB, with bounded responses and bounded load on the monitored databases and on VictoriaMetrics.
-- Metrics, firing alerts and Advisor results are readable the same way.
+- Metrics and firing alerts are readable the same way.
 - The release ships off by default, as a Tech Preview; tool-usage telemetry informs when the label drops ([ADR-14](adr/ADR-14-default-state.md)).
 
 ### 1.3 Non-goals
@@ -49,6 +49,7 @@ PMM users want to ask an AI client about their databases: which queries are slow
 - Write tools of any kind ([ADR-05](adr/ADR-05-read-only-tools.md)).
 - Access Roles on pmm-managed's own APIs and on Grafana's alerts ([ADR-16](adr/ADR-16-access-roles-on-pmm-apis.md), deferred).
 - Alert history ([ADR-17](adr/ADR-17-alerts.md)).
+- Advisor results ([ADR-18](adr/ADR-18-advisors.md)).
 - String-valued configuration ([§6.4](#64-pmm_get_config-beyond-numeric-variables)).
 - A per-user MCP switch before the release ([ADR-13](adr/ADR-13-access-role-permissions.md)).
 - Propagating the caller's identity to upstreams, a machine principal, and a role picker for service accounts ([ADR-12](adr/ADR-12-service-accounts-as-principals.md)).
@@ -123,7 +124,7 @@ The order, the dependencies and the branch rules are in [plans/00-roadmap.md](pl
 5. Resolve first ([plan 04](plans/04-resolve-first.md), [§6](#6-phase-2-the-rest-of-query-intelligence)).
 6. Metrics ([plan 05](plans/05-metrics.md), [§7.1](#71-metrics)).
 7. The caller's service list ([plan 06](plans/06-access-roles.md), [§9](#9-phase-4-identity-and-access-roles)); PMM-15534 lands on `main` meanwhile.
-8. Alerts and Advisors ([plan 07](plans/07-alerts-and-advisors.md), [§7.2](#72-alerts), [§7.3](#73-advisors)).
+8. Alerts ([plan 07](plans/07-alerts-and-advisors.md), [§7.2](#72-alerts)); Advisor results stay out of the Tech Preview ([§7.3](#73-advisors)).
 9. The release ([plan 08](plans/08-release.md), [§10](#10-phase-5-release)).
 
 ---
@@ -151,7 +152,7 @@ MCP client ──HTTPS──▶ nginx  location /mcp
      ┌───────────────────┼──────────────────────┬──────────────────────────────┐
      ▼                   ▼                      ▼                              ▼
   pmm-managed         qan-api2              Grafana alert API             Grafana datasource proxy
-  inventory, Advisors QAN: filtered by      (ADR-17): folder              ──▶ vmproxy: filtered by
+  inventory           QAN: filtered by      (ADR-17): folder              ──▶ vmproxy: filtered by
   (narrowed by MCP)   Access Roles          permissions only;             Access Roles ──▶ VictoriaMetrics
   ──▶ pmm-agent       (Grafana role         narrowed by MCP               metrics and the caller's
   actions (EXPLAIN,   checked first)                                      service list (ADR-08, ADR-09)
@@ -183,7 +184,8 @@ MCP client ──HTTPS──▶ nginx  location /mcp
 | `pmm_query_metrics` | Instant or range query results, summarized per series | Datasource proxy: `/api/v1/query`, `/api/v1/query_range` | Passive | 2b |
 | `pmm_list_metrics` | Metric names by substring search, label names, label values, or series | Datasource proxy: `/api/v1/labels`, `/api/v1/label/{name}/values`, `/api/v1/series` | Passive | 2b |
 | `pmm_alerts` | Firing alerts with labels, summary and start time, narrowed to the caller's services | Grafana's alert API through nginx (ADR-17) | Passive | 2b |
-| `pmm_advisors` | Failed Advisor checks of the caller's services | `GET /v1/advisors/checks/failed` | Passive | 2b |
+
+`pmm_advisors`, planned for phase 2b, is out of the Tech Preview ([ADR-18](adr/ADR-18-advisors.md), [§7.3](#73-advisors)).
 
 **Configuration** [V]:
 
@@ -293,7 +295,7 @@ PMM-15529's criteria stand, with the `pmm_get_config` item removed:
 
 ## 7. Phase 2b: metrics, alerts and Advisors
 
-Ticket: PMM-15790, under PMM-14247. The tools are passive (ADR-05) and follow the contract ([§8](#8-phase-3-output-contract)). Metrics are filtered by the caller's Access Roles in vmproxy; alerts and Advisor results are narrowed by MCP to the caller's service list (ADR-03), so they come after that list ([§9.2](#92-the-callers-service-list)).
+Ticket: PMM-15790, under PMM-14247. The tools are passive (ADR-05) and follow the contract ([§8](#8-phase-3-output-contract)). Metrics are filtered by the caller's Access Roles in vmproxy; alerts are narrowed by MCP to the caller's service list (ADR-03), so they come after that list ([§9.2](#92-the-callers-service-list)). Advisor results are out of the Tech Preview ([§7.3](#73-advisors)).
 
 ### 7.1 Metrics
 
@@ -318,10 +320,12 @@ Decision: [ADR-17](adr/ADR-17-alerts.md).
 
 ### 7.3 Advisors
 
-Decision: [ADR-18](adr/ADR-18-advisors.md).
+Decision: [ADR-18](adr/ADR-18-advisors.md), option 4: `pmm_advisors` is out of the Tech Preview, and plan 07 doesn't build it.
 
-- `pmm_advisors` calls `GET /v1/advisors/checks/failed` (`checks.go:117`) [V], which requires the Editor Grafana role (`auth_server.go:84-86`) [V] and applies no Access Role filter. MCP keeps the results of services in the caller's list; as for alerts, this is not a security boundary.
-- It returns failed checks per service, with severity, summary, description and read-more link, and filters by service and severity. A Viewer token gets `unauthorized`.
+- Advisor texts can carry account details and the security posture of a monitored database, which `pmm_advisors` would send to the model provider as written.
+- `GET /v1/advisors/checks/failed` (`checks.go:117`) [V] requires the Editor Grafana role (`auth_server.go:84-86`) [V], and an Editor token in an AI client also carries write access to alerting and to Advisor checks.
+- Viewers can already read fleet-wide counts of failed Advisor checks through PMM's metrics; that is accepted.
+- ADR-18 keeps the design of the narrowed tool (its option 2) for a later ticket, which needs a new ADR.
 
 ### 7.4 Acceptance
 
@@ -329,11 +333,10 @@ Decision: [ADR-18](adr/ADR-18-advisors.md).
 - `pmm_catalog(kind: metrics)` returns entries for each engine. The CI test fails when an entry's metric disappears from the exporter fixtures.
 - `pmm_query_metrics` answers an instant and a range query. No response exceeds the point and size budget: a result that would is summarized or cut to the top N series, says so, and suggests a narrower query built from the caller's expression. A NaN value arrives as `null`.
 - `pmm_list_metrics` with `search: mongodb` returns only names that contain `mongodb`; over the limit, it groups them by prefix with counts. With `search: ".*"` it returns only names containing the literal `.*` (none).
-- With an Access Role that allows one service: `pmm_service_health`, `pmm_query_metrics` and `pmm_list_metrics` return only that service's series and label values; `pmm_alerts` and `pmm_advisors` return only that service's alerts and results, plus alerts with no service or node label and PMM's own `pmm_provisioned` alerts. That service's down alert is among them even when its pmm-agent runs on another node.
+- With an Access Role that allows one service: `pmm_service_health`, `pmm_query_metrics` and `pmm_list_metrics` return only that service's series and label values; `pmm_alerts` returns only that service's alerts, plus alerts with no service or node label and PMM's own `pmm_provisioned` alerts. That service's down alert is among them even when its pmm-agent runs on another node.
 - A fifth metric call from the same caller, while four are in flight, returns `rate_limited`; so does a ninth on one replica across callers.
 - These answer `invalid_input` with a hint and never reach VictoriaMetrics: `{__name__=~".+"}`; a selector without a metric name, including one OR group without it; `{__name__=~"mysql_.*"}` without a service or node matcher, or with `service_name=~".+"`; `rate(x[365d])` as an instant query; `[30d:5m]` subqueries; nested subqueries whose lookbehinds add up past the cap; `@`; a range over the cap; and an expression over the length or selector cap.
 - **Load on VictoriaMetrics.** On the smallest supported server size, with at least 50 monitored services, five callers each run broad accepted queries in a loop for 10 minutes: `rate(mysql_global_status_questions[5m])` without aggregation over 6 days, an instant query with a 6-day window, and `{__name__=~"mysql_global_status_.*", service_name=~"db1|db2|…"}` naming 10 services. Record VictoriaMetrics' CPU and memory and the p95 latency of dashboard queries, with and without that load. Pass: the implementation review signs off on the recorded numbers, or lowers the caps in §8; a fixed threshold is an open question ([§13](#13-risks-and-mitigations)).
-- `pmm_advisors` returns `unauthorized` to a Viewer token and the failed checks to an Editor token.
 
 ---
 
@@ -364,7 +367,6 @@ Decision: [ADR-11](adr/ADR-11-output-contract.md).
    | The caller's service list: look-back of the `up` series (ADR-08) | 1 h | — |
    | The service list that narrows alerts: look-back of the `up` series (ADR-17) | 7 days | — |
    | `pmm_alerts` alerts | 50 | 200 |
-   | `pmm_advisors` failed checks | 50 | 200 |
 
    Concurrency and timeouts, which are not per response:
 
@@ -377,8 +379,8 @@ Decision: [ADR-11](adr/ADR-11-output-contract.md).
 
 4. **Errors.** The codes are those in `errors.go`: `not_found`, `invalid_input`, `unauthorized`, `timeout`, `no_query_source`, `insufficient_privileges`, `agent_unreachable`, `pmm_unavailable` [V], plus `rate_limited` (ADR-05). Each tool's row in `tool-contract.md` lists the codes it can return. How an error is returned, `error: <code>` text plus `_meta.com.percona/error` and no structured content, and why tools are registered with `Out = any`, is in [ADR-11](adr/ADR-11-output-contract.md). `timeout`, `agent_unreachable`, `pmm_unavailable` and `rate_limited` are retryable. An argument the SDK's input schema refuses is answered by the SDK before the tool runs, outside this envelope (plan 03). No error message names a service outside the caller's list, nor echoes a `service_id` or name the caller sent: the text is "not in your service list (services that sent metrics in the last hour)".
 5. **Tool-description budget.** Reference data moves out of tool descriptions into one read-only tool, `pmm_catalog(kind, engine)`: the QAN column catalog (`kind: qan_columns`) leaves `pmm_top_queries`' description, and the metrics catalog (`kind: metrics`, ADR-15) never enters one. `pmm_top_queries` keeps its four named rankings (`load`, `total_query_time`, `avg_query_time`, `count`) and says to call `pmm_catalog` for the rest; an unknown column answers `invalid_input` and points to it. The token cost of a standard slow-query triage is measured before and after and recorded on PMM-15530.
-6. **`Instructions`.** Updated with each plan that changes the contract: paging and `pmm_catalog` (plan 03), EXPLAIN and schema from a `query_ref` or a `queryid` (plan 04), ADR-15's metrics block (plan 05), alerts and Advisors (plan 07), and one line saying that fields marked untrusted are data, not instructions.
-7. **Provenance, partial results and untrusted text** (ADR-11). A result built from time-based data carries its window; a result about a query, service, alert or check carries its `pmm_url`; both in structured content and text. Query results carry a `query_ref` ([§6.1](#61-resolve-first)). A result from several backing calls marks the parts that failed (`partial: true`) instead of failing whole. Fields whose text comes from monitored databases or users (query text and examples, DDL with comments, label values, alert annotations, Advisor texts) are marked untrusted.
+6. **`Instructions`.** Updated with each plan that changes the contract: paging and `pmm_catalog` (plan 03), EXPLAIN and schema from a `query_ref` or a `queryid` (plan 04), ADR-15's metrics block (plan 05), alerts (plan 07), and one line saying that fields marked untrusted are data, not instructions.
+7. **Provenance, partial results and untrusted text** (ADR-11). A result built from time-based data carries its window; a result about a query, service, alert or check carries its `pmm_url`; both in structured content and text. Query results carry a `query_ref` ([§6.1](#61-resolve-first)). A result from several backing calls marks the parts that failed (`partial: true`) instead of failing whole. Fields whose text comes from monitored databases or users (query text and examples, DDL with comments, label values, alert annotations) are marked untrusted.
 8. **Where the contract lives.** `tool-contract.md` in this folder, which plan 03 creates and the security design review reads ([§3.1](#31-order-from-here)). It holds:
    - the rules every tool follows: the error envelope, paging, provenance, partial results and untrusted fields;
    - one table with a row per tool: minimum Grafana role, backing APIs, whether the data is filtered by Access Roles or narrowed by MCP (ADR-03), passive or live (ADR-05), and the engines it supports, with what it returns for each.
@@ -416,10 +418,10 @@ Decisions: [ADR-08](adr/ADR-08-inventory-under-access-roles.md), [ADR-03](adr/AD
 
 - `pmm_inventory` and every service lookup in MCP (`listServices`, `engineOf`, `serviceEngine`, resolve-first) use the services in the metric series of the last hour, read through the Grafana datasource proxy, which vmproxy filters by the caller's Access Roles: `up` grouped by `service_id`, `service_name`, `service_type`, `node_id`, `node_name`, `environment` and `cluster`, with the newest sample time as `last_seen`. Scrape targets carry these labels (`MergeLabels`, `scrape_configs.go:160`) [V].
 - The Viewer rules for `GET /v1/inventory/services` and `/nodes` that #5942 added (`auth_server.go:161-167`) [V] are removed; the inventory API stays Admin-only, as on `main`.
-- MCP narrows to this list: live actions, resolve-first candidates, `pmm_query_detail`, `pmm_get_config`, alerts and Advisor results. A `service_id` or name outside it answers `not_found` with a fixed text that echoes nothing the caller sent ([§8](#8-phase-3-output-contract) item 4).
+- MCP narrows to this list: live actions, resolve-first candidates, `pmm_query_detail`, `pmm_get_config` and alerts. A `service_id` or name outside it answers `not_found` with a fixed text that echoes nothing the caller sent ([§8](#8-phase-3-output-contract) item 4).
 - `pmm_inventory` reports each service's `last_seen`, the newest `up` sample time, whatever its value. A target scraped with `up=0` stays listed with a current `last_seen`; a service leaves the list only when no `up` sample at all arrived in the last hour. MCP derives no health state of its own, so it never disagrees with PMM's own service status, which uses other metrics and rules (`managed/services/management/service.go:61-76`) [V].
 - A service that QAN shows but that sent no `up` sample in the last hour appears in `pmm_top_queries` (filtered by qan-api2) and answers `not_found` from detail, explain and schema ([§13](#13-risks-and-mitigations)).
-- Alerts and Advisor results are narrowed, not filtered: not a security boundary (ADR-03). Filtering them by Access Role is PMM-wide work, deferred ([ADR-16](adr/ADR-16-access-roles-on-pmm-apis.md)).
+- Alerts are narrowed, not filtered: not a security boundary (ADR-03). Filtering them by Access Role is PMM-wide work, deferred ([ADR-16](adr/ADR-16-access-roles-on-pmm-apis.md)).
 - Trade-offs: no address or port in `pmm_inventory`, and a service with no series in the last hour is not listed ([ADR-08](adr/ADR-08-inventory-under-access-roles.md)).
 
 ### 9.3 Access-Role permissions: separate ticket
@@ -429,9 +431,9 @@ Decision: [ADR-13](adr/ADR-13-access-role-permissions.md). `mcp:use` as a requir
 ### 9.4 Acceptance
 
 - A service-account token resolves to its Grafana user ID.
-- An Access Role whose filter matches one service, assigned to a service account or to an interactive Viewer: `pmm_inventory`, `pmm_top_queries`, `pmm_query_detail`, `pmm_get_explain`, `pmm_get_schema`, `pmm_get_config` and the metrics tools return only that service's data. `pmm_alerts` returns only that service's alerts, its down alert included when its pmm-agent runs on another node, plus those with no service or node label and PMM's own `pmm_provisioned` alerts; with an Editor token, `pmm_advisors` returns only that service's results.
+- An Access Role whose filter matches one service, assigned to a service account or to an interactive Viewer: `pmm_inventory`, `pmm_top_queries`, `pmm_query_detail`, `pmm_get_explain`, `pmm_get_schema`, `pmm_get_config` and the metrics tools return only that service's data. `pmm_alerts` returns only that service's alerts, its down alert included when its pmm-agent runs on another node, plus those with no service or node label and PMM's own `pmm_provisioned` alerts.
 - With that role, one `queryid` recorded on the allowed service and on a hidden one: `pmm_query_detail`, `pmm_get_explain` and `pmm_get_schema` resolve to the allowed service; given the hidden service's `service_id`, they return `not_found`, and no error names it. For PostgreSQL stored plans this holds once PMM-15697 is fixed ([§10](#10-phase-5-release)).
-- Two services on one node, a role that allows one of them: the other service, its alerts and its Advisor results are hidden.
+- Two services on one node, a role that allows one of them: the other service and its alerts are hidden.
 - A Viewer token gets `unauthorized` from `GET /v1/inventory/services`.
 - With a restricted default role, a registered node's own account still lists, removes and unregisters its services with `pmm-admin`, and `pmm-agent setup` finds its node. PMM-15534's PR tests this on `main`; plan 06 repeats it after merging `main`.
 - With Access Control off, or a role without a filter: every service with metrics, as on dashboards.
@@ -450,19 +452,18 @@ Decision: [ADR-13](adr/ADR-13-access-role-permissions.md). `mcp:use` as a requir
 2. **Security review, in two passes.** A design review of this folder and `tool-contract.md` before plans 04 to 07, which took place on 2026-11-06 ([§3.1](#31-order-from-here)), and an implementation review before the merge back. Scope of both:
    - `/mcp` served only through nginx, the Origin check, and the refusal of anonymous callers (ADR-10);
    - credentials: which header wins, forwarding `Authorization` and `Cookie` over loopback, that no hop on the path logs them at any log level, and the caller key (ADR-03, ADR-05, ADR-10);
-   - `/mcp` at `viewer`; the caller's service list and MCP's narrowing, including that for alerts and Advisor results it is not a security boundary (ADR-03, ADR-08, ADR-17, ADR-18);
-   - the Editor token `pmm_advisors` needs (ADR-18);
+   - `/mcp` at `viewer`; the caller's service list and MCP's narrowing, including that for alerts it is not a security boundary (ADR-03, ADR-08, ADR-17);
    - model-written metric queries and their limits (ADR-15);
    - service-account tokens under Access Roles (ADR-12);
    - live inspection a Viewer can start, including live EXPLAIN, its caps and cancellation (ADR-05);
    - redaction across text and structured content (ADR-07, ADR-11);
-   - the sensitivity of EXPLAIN output, DDL, QAN dimension values such as user and client host, and Advisor findings.
+   - the sensitivity of EXPLAIN output, DDL, and QAN dimension values such as user and client host.
 
    Findings are closed or accepted in writing.
 3. **Default state.** Decision: [ADR-14](adr/ADR-14-default-state.md). Off in the release that lands `PMM-MCP-GA`, on new and upgraded servers alike. A later ADR decides the default for the release that drops the Tech Preview label.
 4. **Tool-usage telemetry and operator metrics.** In pmm-managed: a counter `pmm_managed_mcp_tool_calls_total{tool, code}`, where `code` is `ok` or one of the error codes; a histogram `pmm_managed_mcp_tool_duration_seconds{tool}`; and a gauge `pmm_managed_mcp_tool_calls_in_flight{tool}`. The existing `pmm-managed` scrape job carries them into VictoriaMetrics (`scrape_configs.go:83`) [V], so operators can see MCP's load next to VictoriaMetrics' own. Telemetry reads only the counter: one new item in `managed/services/telemetry/config.default.yml` reads 24-hour totals per tool and code through the `VM` data source [V], plus whether MCP is enabled. No arguments, queries, service names or users are recorded.
 5. **percona/pmm-mcp.** Archive it with a README that points to `/mcp`, and close its two contributor PRs with thanks and the reason (ADR-01).
-6. **Docs.** `documentation/docs/api/mcp.md` and `documentation/api/welcome/mcp.md` go live with the release, plus a release-notes entry: what it is, that it is off by default and how to enable it, how Access Roles apply to service-account tokens, that `pmm_inventory` lists services from their metrics, and that `pmm_advisors` needs an Editor token, best a separate one.
+6. **Docs.** `documentation/docs/api/mcp.md` and `documentation/api/welcome/mcp.md` go live with the release, plus a release-notes entry: what it is, that it is off by default and how to enable it, how Access Roles apply to service-account tokens, and that `pmm_inventory` lists services from their metrics.
 
 ---
 
@@ -479,7 +480,7 @@ Additionally:
 - **Hardening (plan 02):** the caps on live inspection, and that a call that times out leaves no action running.
 - **Phase 2:** MySQL EXPLAIN fixtures from each supported version, and a multi-table join on a live server.
 - **Phase 3:** the acceptance in [§8](#8-phase-3-output-contract), and the golden `tools/list` test.
-- **Phase 2b:** the built-in signals and the metrics catalog against exporter fixtures; the response budget on a result with 300 series, with its narrowing hint; summaries; the execution budget's refusals; the load test on VictoriaMetrics ([§7.4](#74-acceptance)); `rate_limited` for metric calls; alerts and Advisors on a server with firing alerts and failed checks, narrowed for a restricted caller.
+- **Phase 2b:** the built-in signals and the metrics catalog against exporter fixtures; the response budget on a result with 300 series, with its narrowing hint; summaries; the execution budget's refusals; the load test on VictoriaMetrics ([§7.4](#74-acceptance)); `rate_limited` for metric calls; alerts on a server with firing alerts, narrowed for a restricted caller.
 - **Phase 4:** the Access Role matrix over every tool ([§9.4](#94-acceptance)): Access Control on and off; interactive Viewer, Editor, service token and Admin; a role that allows one service, two roles with different filters, a negative filter, and the default role; two services on one node; alerts with and without service labels; PMM's node accounts under a restricted default role.
 - **Phase 5:**
   - Clients: Claude Code and Cursor against a Feature Build, with a service-account token, at whatever protocol version each sends; a scripted go-sdk client covers each version the SDK negotiates. For each client, record whether it passes `Instructions` and structured content to the model. Go SDK v1.8.0 supports 2024-11-05 to 2026-07-28 and defaults to 2026-07-28 (`mcp/shared.go:50`) [V].
@@ -494,8 +495,8 @@ Additionally:
 
 | Ticket | Says | Correction |
 |---|---|---|
-| PMM-14247 | Phases 0 to 5 | Phase 2b added: metrics, alerts and Advisors (ADR-15, ADR-17, ADR-18), PMM-15790. |
-| PMM-14247 | Access Roles applied by MCP's backing APIs | MCP narrows alerts and Advisor results to the caller's service list (ADR-03); Access Roles on PMM's own APIs are deferred (ADR-16). |
+| PMM-14247 | Phases 0 to 5 | Phase 2b added: metrics and alerts (ADR-15, ADR-17), PMM-15790; Advisor results stay out of the Tech Preview (ADR-18). |
+| PMM-14247 | Access Roles applied by MCP's backing APIs | MCP narrows alerts to the caller's service list (ADR-03); Access Roles on PMM's own APIs are deferred (ADR-16). |
 | PMM-15527, PMM-15528 | In Progress | Both are merged into `PMM-MCP-GA`; close them or list what is left. |
 | PMM-15529 | Read `real_table_name` "out of the EXPLAIN plan" | It is parsed from SQL text, one table only; walk the plan instead ([§6.2](#62-pmm_get_schema-from-a-queryid)). |
 | PMM-15529 | ~90-column catalog | 76 columns, kept in step with qan-api2 by a test [V]. |
@@ -514,14 +515,14 @@ Additionally:
 
 ## 13. Risks and mitigations
 
-- **MCP's narrowing of alerts and Advisor results is not a security boundary.** A restricted caller still reads them unfiltered through the API and the UI. *Accepted* for the Tech Preview; the fix is PMM-wide (ADR-16, deferred), and the implementation review signs off on it.
-- **Advisors need an Editor token**, which can also write alerting templates (ADR-18). *Mitigation:* `mcp.md` recommends a separate Editor token used only where Advisor results are needed.
+- **MCP's narrowing of alerts is not a security boundary.** A restricted caller still reads them unfiltered through the API and the UI. *Accepted* for the Tech Preview; the fix is PMM-wide (ADR-16, deferred), and the implementation review signs off on it.
+- **Advisor results stay out of MCP** (ADR-18): their texts can carry account details and security posture, and the Editor token they need can also write alerting and Advisor checks. *Accepted*: a triage through MCP doesn't see failed checks; PMM's Advisors page still shows them.
 - **Model-written metric queries** load PMM's own VictoriaMetrics, whose limits (§7.1) are sized for dashboards and don't bound an AI client in a loop. *Mitigation:* the execution budget, the caps per caller and per replica, and the load test on the smallest supported size (ADR-15).
 - **Caps are per token or session and per replica, not per user** (ADR-05). A service account with several tokens, or an HA cluster, gets more. *Accepted*; the per-replica cap and pmm-agent's own limits bound the total.
-- **The service list depends on metrics** (ADR-08). A service with no series in the last hour is not listed, and its Advisor results are dropped with it. Alerts use a 7-day list, so a silent agent's alerts, its down alert included, stay for 7 days. *Accepted*: `last_seen` shows how fresh each entry is; a longer look-back for every tool would make the query behind every call read more, and plan 06 records the cost of the 1-hour, 24-hour and 7-day lists.
+- **The service list depends on metrics** (ADR-08). A service with no series in the last hour is not listed. Alerts use a 7-day list, so a silent agent's alerts, its down alert included, stay for 7 days. *Accepted*: `last_seen` shows how fresh each entry is; a longer look-back for every tool would make the query behind every call read more, and plan 06 records the cost of the 1-hour, 24-hour and 7-day lists.
 - **Catalog drift.** The built-in signals and the metrics catalog follow exporter metric names. *Mitigation:* the fixture tests catch renames, at the cost of keeping the fixtures current.
 - **A renamed Metrics datasource** breaks the metric reads (ADR-09). *Accepted*; the tools answer `pmm_unavailable` and say why.
-- **Untrusted text reaches the model.** Query text, DDL comments, labels, alert annotations and Advisor texts can carry injected instructions. *Mitigation:* the contract marks them and `Instructions` warn the model; neither stops a client that acts on them, and every tool is read-only (ADR-05).
+- **Untrusted text reaches the model.** Query text, DDL comments, labels and alert annotations can carry injected instructions. *Mitigation:* the contract marks them and `Instructions` warn the model; neither stops a client that acts on them, and every tool is read-only (ADR-05).
 - **No per-user MCP switch until ADR-13 ships.** With Access Control on, every Viewer and above can use MCP once an admin enables it. *Accepted*; Access Roles still scope what each sees.
 - **A long-lived branch in a repository with generated code.** *Mitigation:* `*.pb.go` and Swagger conflicts are resolved by regenerating, never by hand (roadmap); PMM-wide changes land on `main` through their own tickets, not on the branch.
 - **Live inspection under an AI-client loop.** *Mitigation:* pmm-agent's limits, the caps, and cancellation when a call ends early (ADR-05). A MongoDB explain still runs its candidate plans, on the stored example only.
@@ -538,7 +539,7 @@ Additionally:
 - **Fleet size.** No supported fleet size is stated, and a literal metric name with no scope over 7 days is accepted at any size (plan 05).
 - **QAN and ClickHouse load.** The QAN tools have no caps and no maximum window (plan 03).
 - **MetricsQL `WITH` templates** expand during parsing, before the caps apply [I]; refusing `WITH` is an option (plan 05).
-- **The Editor token** `pmm_advisors` needs can do more than write alerting templates; the implementation review lists its full surface (ADR-18).
+- **The Editor token** `pmm_advisors` would need. Settled by the security design review: `pmm_advisors` is out of the Tech Preview (ADR-18).
 - **Comments in SQL fingerprints** reach the model even with raw SQL off; stripping or capping them is an option (ADR-07, plan 03).
 - **Clients that need OAuth.** `/mcp` takes static tokens only; MCP's OAuth flow and protected-resource metadata are not supported, and `mcp.md` recommends token expiry (plan 08).
 

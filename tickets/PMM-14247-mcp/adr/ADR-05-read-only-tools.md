@@ -1,7 +1,7 @@
 # ADR-05: Read-only tools
 
 - Status: Proposed
-- Date: 2026-10-22, revised 2026-10-24, 2026-10-26 and 2026-11-02
+- Date: 2026-10-22, revised 2026-10-24, 2026-10-26, 2026-11-02 and 2026-11-06
 - Tickets: PMM-14247, PMM-15529
 - Implemented: read-only tool set in `PMM-MCP-GA` (percona/pmm#5942); caps, cancellation and the caller key not yet (plan 02)
 
@@ -24,7 +24,7 @@ For the limits on live inspection:
 Option 1. Every tool carries `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. The hints are metadata for clients; what keeps a tool read-only is the backing calls it makes.
 
 Tools are of two kinds:
-- **Passive** tools read what PMM has already collected: `pmm_version`, `pmm_inventory`, `pmm_top_queries`, `pmm_query_detail`, `pmm_catalog`, `pmm_get_config`, `pmm_service_health`, `pmm_query_metrics`, `pmm_list_metrics`, `pmm_alerts`, `pmm_advisors`, and `pmm_get_explain` for PostgreSQL (the stored plan).
+- **Passive** tools read what PMM has already collected: `pmm_version`, `pmm_inventory`, `pmm_top_queries`, `pmm_query_detail`, `pmm_catalog`, `pmm_get_config`, `pmm_service_health`, `pmm_query_metrics`, `pmm_list_metrics`, `pmm_alerts`, and `pmm_get_explain` for PostgreSQL (the stored plan).
 - **Live inspection** starts a pmm-agent action on the monitored database: `pmm_get_explain` for MySQL and MongoDB, and `pmm_get_schema`. MySQL EXPLAIN is always the non-executing form, never `EXPLAIN ANALYZE`. MongoDB `explain` is sent without a verbosity, so the server's default applies, which runs the candidate plans to collect statistics [I]; it never modifies data. It runs on the example QAN stored for the resolved service (spec §6.1); the free-form `query` input is removed once resolve-first lands, so a model can't have an arbitrary statement run. `queryPlanner` verbosity, which doesn't execute, needs a pmm-agent change and is left out of this epic.
 
 Live inspection is bounded (values in [spec §8](../spec.md#8-phase-3-output-contract)):

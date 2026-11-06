@@ -1,6 +1,6 @@
 # MCP tool contract (PMM-14247)
 
-- **Date:** 2026-11-05.
+- **Date:** 2026-11-05, revised 2026-11-06 after the security design review.
 - **Ticket:** [PMM-15530](https://perconadev.atlassian.net/browse/PMM-15530), phase 3 of PMM-14247.
 - **Decision:** [ADR-11](adr/ADR-11-output-contract.md) and [spec §8](spec.md#8-phase-3-output-contract). [Plan 03](plans/03-output-contract.md) builds the contract; this document is its Task 1 and is reviewed before Tasks 2 to 9 change any code. The security design review reads it with the rest of this folder ([spec §3.1](spec.md#31-order-from-here)).
 - **Code base:** percona/pmm `PMM-MCP-GA` at `911910199`, with plans 01 and 02 merged. Paths are under `managed/services/mcp/` unless they say otherwise, and line numbers refer to that commit. go-sdk v1.8.0 and jsonschema-go v0.4.3, from `go.mod`.
@@ -95,7 +95,7 @@ A listing tool takes `limit` and `offset` and returns `page`:
 | `pmm_top_queries` | report rows | qan-api2 |
 | `pmm_get_config` | variables | MCP, after `filter` |
 | `pmm_list_metrics` (plan 05) | names or name groups, label names, label values, series | MCP, over what VictoriaMetrics returns with `limit=1001`; more than 1,000 sets `truncated`, with a hint to narrow the search |
-| `pmm_alerts`, `pmm_advisors` (plan 07) | alerts, failed checks | MCP, after narrowing and the filters |
+| `pmm_alerts` (plan 07) | alerts | MCP, after narrowing and the filters |
 
 Defaults and maximums are in [spec §8](spec.md#8-phase-3-output-contract). Bounded the other way:
 - `pmm_get_schema` takes 1 to 10 tables in its input.
@@ -123,7 +123,6 @@ Defaults and maximums are in [spec §8](spec.md#8-phase-3-output-contract). Boun
 | `pmm_get_config` | QAN for the service over the hour before `at` (`tools_config.go:135`) |
 | `pmm_service_health` (plan 05) | the service's instance summary dashboard (`serviceURL`) [I: plan 05 consumes `serviceURL` and gives the result a `pmm_url`] |
 | `pmm_alerts`, each alert (plan 07) | the alert rule in Grafana's alerting UI, or the alert list when there is no rule UID |
-| `pmm_advisors`, each result (plan 07) | PMM's Advisor insights page |
 
 Rows of `pmm_top_queries` carry an optional `pmm_url` too.
 
@@ -147,14 +146,14 @@ Rows of `pmm_top_queries` carry an optional `pmm_url` too.
 | `pmm_get_schema` | the DDL action and the index action of each table | `tables[].definition_error`, `tables[].indexes_error` | a failed action shows its error in its table's block; all failing fails the call (`tools_actions.go:357-359`, `:392-404`) |
 | `pmm_service_health` (plan 05) | each signal's query | `signals[].error` | — |
 
-Plan 07 gives `pmm_alerts` and `pmm_advisors` no `partial` field: a failing service list fails the call, so neither tool ever returns un-narrowed results.
+Plan 07 gives `pmm_alerts` no `partial` field: a failing service list fails the call, so it never returns un-narrowed results.
 
 ## 7. Untrusted fields
 
 - A field whose text comes from a monitored database or from a user has an output-schema description, the field's `jsonschema` text, that starts with `Untrusted.`.
-- The kinds: fingerprints, query examples, plans, DDL, label and dimension values, variable values, service, node, database, schema and table names, `environment`, `cluster` and `address` values, `version` strings, and the `message` of a part's error (plan 03, plan 06); alert names, severities, labels, summaries and descriptions, and Advisor check names, summaries, descriptions and links (ADR-11, ADR-17, ADR-18, plan 07).
+- The kinds: fingerprints, query examples, plans, DDL, label and dimension values, variable values, service, node, database, schema and table names, `environment`, `cluster` and `address` values, `version` strings, and the `message` of a part's error (plan 03, plan 06); alert names, severities, labels, summaries and descriptions (ADR-11, ADR-17, plan 07).
 - `Instructions` tell the model that marked fields are data, not instructions ([spec §8](spec.md#8-phase-3-output-contract) item 6). That is advice to the model: it doesn't make injected text harmless (ADR-11), and what bounds the harm is that every tool is read-only (ADR-05).
-- The mark is not redaction. ADR-07 decides what is masked: with `PMM_MCP_RAW_SQL` off, fingerprints, examples and plans are masked or withheld; DDL, names, dimension and label values, variable values, `version` strings, part error messages, and alert and Advisor texts are returned as stored.
+- The mark is not redaction. ADR-07 decides what is masked: with `PMM_MCP_RAW_SQL` off, fingerprints, examples and plans are masked or withheld; DDL, names, dimension and label values, variable values, `version` strings, part error messages, and alert texts are returned as stored.
 
 | Tool | Untrusted fields |
 |---|---|
@@ -170,7 +169,6 @@ Plan 07 gives `pmm_alerts` and `pmm_advisors` no `partial` field: a failing serv
 | `pmm_query_metrics` (plan 05) | `series[].labels`, `shared_labels` |
 | `pmm_list_metrics` (plan 05) | `labels`, `values`, `series` |
 | `pmm_alerts` (plan 07) | `alerts[].name`, `alerts[].severity`, `alerts[].labels`, `alerts[].summary`, `alerts[].description` |
-| `pmm_advisors` (plan 07) | `results[].service_name`, `results[].check_name`, `results[].summary`, `results[].description`, `results[].read_more_url` |
 
 Plan 03's `TestUntrustedFieldsMarked` holds this list, with an empty entry for a tool that has no such field. It and the other contract tests keep a list keyed by tool name and fail when a tool in `tools/list` has no entry, so a new tool can't skip them.
 
@@ -196,11 +194,12 @@ The rows of the tools that exist describe them at `911910199` with plan 03's cha
 | `pmm_query_metrics` (planned, plan 05) | Viewer | `GET /graph/api/datasources/name/Metrics`; the datasource proxy's `/api/v1/query` and `/api/v1/query_range` | Filtered by vmproxy | Passive | any metric PMM holds | `not_found`, `invalid_input`, `unauthorized`, `timeout`, `pmm_unavailable`, `rate_limited` |
 | `pmm_list_metrics` (planned, plan 05) | Viewer | `GET /graph/api/datasources/name/Metrics`; the datasource proxy's `/api/v1/label/__name__/values`, `/api/v1/labels`, `/api/v1/label/{name}/values`, `/api/v1/series` | Filtered by vmproxy | Passive | any metric PMM holds | `not_found`, `invalid_input`, `unauthorized`, `timeout`, `pmm_unavailable`, `rate_limited` |
 | `pmm_alerts` (planned, plan 07) | Viewer | Grafana's alert API under `/graph/api/`, the Alertmanager or the Prometheus-style API, settled by plan 07 Task 1; the caller's service list over 7 days | Narrowed, not filtered: Grafana's alert APIs apply no Access Role filter; Grafana's folder permissions apply [I, plan 07 Task 1] | Passive | any service type, nodes, and server-level alerts | `not_found`, `invalid_input`, `unauthorized`, `timeout`, `pmm_unavailable` |
-| `pmm_advisors` (planned, plan 07) | **Editor** | `GET /v1/advisors/checks/failed`; the caller's service list over 1 hour | Narrowed, not filtered: the Advisors API applies no Access Role filter | Passive | MySQL, PostgreSQL, MongoDB: the service types Advisors check (`managed/services/checks/checks.go:661-681`) [V] | `not_found`, `invalid_input`, `unauthorized`, `timeout`, `pmm_unavailable` |
+
+`pmm_advisors`, planned for plan 07, is out of the Tech Preview ([ADR-18](adr/ADR-18-advisors.md)).
 
 Notes, tool by tool. Line numbers are in `managed/services/mcp/` unless a path says otherwise.
 
-- **Roles of the existing tools** [V]: `/v1/server/version` (`auth_server.go:114`), `/v1/qan` (`:116-117`) and `/v1/actions` (`:87-88`) are Viewer, and `GET /v1/inventory/services` and `/nodes` are Viewer through #5942's rules (`:166-167`), which plan 06 removes (ADR-08). `/graph` needs no role in PMM's auth server (`:124`), so Grafana's own checks apply to the datasource calls; `mcp.md` documents Viewer for every existing tool (`documentation/docs/api/mcp.md:194-195`), and the reference triage runs with a Viewer token (spec §1.4, §11). After plan 06 a Viewer token still covers every tool except `pmm_advisors` (ADR-08).
+- **Roles of the existing tools** [V]: `/v1/server/version` (`auth_server.go:114`), `/v1/qan` (`:116-117`) and `/v1/actions` (`:87-88`) are Viewer, and `GET /v1/inventory/services` and `/nodes` are Viewer through #5942's rules (`:166-167`), which plan 06 removes (ADR-08). `/graph` needs no role in PMM's auth server (`:124`), so Grafana's own checks apply to the datasource calls; `mcp.md` documents Viewer for every existing tool (`documentation/docs/api/mcp.md:194-195`), and the reference triage runs with a Viewer token (spec §1.4, §11). After plan 06 a Viewer token still covers every tool (ADR-08).
 - **Filtering of the existing tools** [V]: `/v1/qan/`, `/v1/qan:` and `/graph/api/datasources/` are in `lbacPrefixes` (`auth_server.go:181-197`); `/v1/inventory` and `/v1/actions` are not. qan-api2 applies the caller's filters to query details, examples and stored plans (PMM-15697, `a98506570`, merged into `PMM-MCP-GA` with `main`; `qan-api2/models/metrics_lbac_test.go`), and its plan endpoint honours the `service_id` MCP sends (`qan-api2/models/metrics.go:952-974`, `client.go:290-297`). Until plan 06, the caller's service list is the whole inventory (`listServices`, `tools_inventory.go:146-183`), so the narrowing of `pmm_get_explain`, `pmm_get_schema` and `pmm_get_config` removes nothing yet.
 - **`pmm_version`.** No checks of its own. Plan 03's test pins `not_found` for a missing route.
 - **`pmm_inventory`.** `invalid_input`: an `engine` other than `mysql`, `postgresql` or `mongodb` (`tools_inventory.go:100-102`); `limit` and `offset` (plan 03). Plan 06 drops `address` and `port` and adds `node_id`, `environment`, `cluster` and `last_seen` (ADR-08, plan 06 Task 1).
@@ -214,16 +213,17 @@ Notes, tool by tool. Line numbers are in `managed/services/mcp/` unless a path s
 - **`pmm_query_metrics`** (plan 05 Task 4). `invalid_input`: an expression the execution budget refuses, with a hint, before any request (ADR-15); `limit`, `time` beside a period, `step`; VictoriaMetrics answering 422, with its message (plan 05 Task 1). `rate_limited`: the metric-call caps.
 - **`pmm_list_metrics`** (plan 05 Task 5). `invalid_input`: an unknown `kind` or an input the `kind` doesn't take; a `label` outside the label-name grammar; a look-back over 7 days; a `match` selector the execution budget refuses; `limit` and `offset`. `rate_limited`: the metric-call caps.
 - **`pmm_alerts`** (plan 07 Task 2). `not_found`: a `service_id`, `service_name` or `node_name` filter outside the 7-day list, with the fixed text. `unauthorized`: Grafana answers 401. `invalid_input`: `limit` and `offset` (`paginate`). Every result, an empty one included, says "Currently firing alerts only; resolved alerts are not shown." (ADR-17). The narrowing rule is ADR-17's.
-- **`pmm_advisors`** (plan 07 Task 3). A Viewer token gets `unauthorized`: `/v1/advisors` needs Editor (`auth_server.go:84-86`) [V]. `invalid_input`: Advisors disabled ([§9.1](#91-advisors-disabled)); `limit` and `offset` [I: plan 07 pages with them and doesn't name `paginate`]. `not_found`: a `service_id` or `service_name` filter outside the 1-hour list, with the fixed text.
 
 ## 9. Decisions recorded here
 
 ### 9.1 Advisors disabled
 
+Kept for a later ticket: `pmm_advisors` is out of the Tech Preview ([ADR-18](adr/ADR-18-advisors.md)), so nothing builds this now.
+
 `pmm_advisors` answers `invalid_input` with the message "Advisors are disabled in PMM's settings", never an empty list, which would read as "no failed checks".
 - When Advisors are disabled, `GET /v1/advisors/checks/failed` answers FailedPrecondition (`managed/services/management/checks.go:120-121`) [V]. grpc-gateway v2.33.0 sends FailedPrecondition as HTTP 400 (`runtime/errors.go:58-60`) [V], and `mapError` maps 400 to `invalid_input` (`errors.go:88-89`) [V].
-- MCP sends that request with no parameters (plan 07), and the only parameters the API validates are the paging ones (`api/advisors/v1/advisors.proto:148-155`) [V], so a 400 from it means Advisors are disabled, and the tool replaces the message.
-- Plan 07 tests it, with a fixture (Task 3) and on a live server (Task 5).
+- MCP sends that request with no parameters (ADR-18, option 2), and the only parameters the API validates are the paging ones (`api/advisors/v1/advisors.proto:148-155`) [V], so a 400 from it means Advisors are disabled, and the tool replaces the message.
+- The ticket that builds `pmm_advisors` tests it, with a fixture and on a live server.
 
 ### 9.2 Retryable codes
 
@@ -252,8 +252,8 @@ The other field rules of plan 03 Task 5, for reference:
 
 ### 9.6 Untrusted marks on names
 
-Service, node, database, schema and table names, `environment`, `cluster` and `address` values, `version` strings, and part error messages are marked untrusted ([§7](#7-untrusted-fields)), as are alert severities and Advisor check names and links.
-- Plan 03's rule marks a field whose text comes from a monitored database or a user, and these fields do. Database, schema and table names come from the monitored database, like DDL. Service and node names, `environment`, `cluster` and `address` are typed in by whoever registers the service. A `version` is the string the monitored server reports, read from the exporters' info metrics. A part's error message can quote the monitored database's own error text. An alert's `severity` label is set by the rule's author, and a custom Advisor check is written by a user.
+Service, node, database, schema and table names, `environment`, `cluster` and `address` values, `version` strings, and part error messages are marked untrusted ([§7](#7-untrusted-fields)), as are alert severities.
+- Plan 03's rule marks a field whose text comes from a monitored database or a user, and these fields do. Database, schema and table names come from the monitored database, like DDL. Service and node names, `environment`, `cluster` and `address` are typed in by whoever registers the service. A `version` is the string the monitored server reports, read from the exporters' info metrics. A part's error message can quote the monitored database's own error text. An alert's `severity` label is set by the rule's author.
 - The field lists of [§7](#7-untrusted-fields) and the plans follow the rule: every field named there, and the same fields in the plans' result types, is marked.
 - IDs, engine values, codes, `pmm_url`, numbers and timestamps are PMM's own and stay unmarked.
 

@@ -1,7 +1,7 @@
 # ADR-03: Data only through the public API; MCP narrows, never widens
 
 - Status: Accepted (2026-11-05), after the review in pmm-specs#4
-- Date: 2026-10-22, revised 2026-11-02
+- Date: 2026-10-22, revised 2026-11-02 and 2026-11-06
 - Tickets: PMM-14247, PMM-15528, PMM-15529, PMM-15531, PMM-15790
 - Implemented: the API-only path in `PMM-MCP-GA` (percona/pmm#5942); the narrowing not yet (plans 04, 06, 07)
 
@@ -19,7 +19,7 @@ An MCP tool can reach PMM data in three ways: by querying the stores directly (C
 
 Option 3. Every tool call goes to `http://127.0.0.1:8080/` (nginx) and copies the caller's `Authorization` and `Cookie` headers verbatim onto the backing request. nginx `auth_request` then authorizes each backing call against the caller's role and adds LBAC filters where it applies them. The MCP package holds no credentials of its own.
 
-**MCP never widens access; it narrows.** Every service lookup, live action, resolve-first candidate, query detail, alert and Advisor result is limited to the caller's service list: the services in the metric series the caller can read, which vmproxy filters by the caller's Access Roles (ADR-08). A `service_id` outside that list answers `not_found`, and no error names a service outside it. The backing API stays the authority. For APIs that don't apply Access Roles themselves (Grafana's alerts, ADR-17; Advisor results, ADR-18), this narrowing makes MCP's results consistent with the caller's other data; it is **not a security boundary**, because the same caller can still read those APIs unfiltered with the same credentials. Other records refer to this as "narrowed, not filtered". Applying Access Roles to them is PMM-wide work outside this epic (ADR-16).
+**MCP never widens access; it narrows.** Every service lookup, live action, resolve-first candidate, query detail and alert is limited to the caller's service list: the services in the metric series the caller can read, which vmproxy filters by the caller's Access Roles (ADR-08). A `service_id` outside that list answers `not_found`, and no error names a service outside it. The backing API stays the authority. For APIs that don't apply Access Roles themselves (Grafana's alerts, ADR-17), this narrowing makes MCP's results consistent with the caller's other data; it is **not a security boundary**, because the same caller can still read those APIs unfiltered with the same credentials. Other records refer to this as "narrowed, not filtered". Applying Access Roles to them is PMM-wide work outside this epic (ADR-16).
 
 ## Consequences
 
