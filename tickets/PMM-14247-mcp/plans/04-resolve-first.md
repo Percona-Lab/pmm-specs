@@ -209,7 +209,7 @@
   - `pmm_get_explain` with the same `query_ref` returns a MySQL plan labelled as live;
   - at least one hour after the workload stops, `pmm_get_schema` with that `queryid` alone answers `not_found` naming the window, and with the saved `query_ref` returns the two tables;
   - on PostgreSQL 17 with pg_stat_monitor, a query on `public.<table>` returns its DDL, and a table in a schema outside the monitoring user's `search_path` answers `not_found` for that table only.
-- [ ] **Step 6: Update `documentation/docs/api/mcp.md`:** `query_ref`, `pmm_get_schema` by `queryid`, best-effort MySQL tables, the `search_path` limit, the removed MongoDB `query` input; that a revoked token can keep working for up to 60 s (ADR-10). Commit `PMM-15529 Fetch a query's table definitions from its reference`.
+- [ ] **Step 6: Update `documentation/docs/api/mcp.md`:** `query_ref`, `pmm_get_schema` by `queryid`, best-effort MySQL tables, the `search_path` limit, the removed MongoDB `query` input; that a revoked token can keep working for up to 60 s (ADR-10); a warning against combining `/mcp` with unattended tools that can send data out of the client (ADR-11). Commit `PMM-15529 Fetch a query's table definitions from its reference`.
 
 ### Task 8: `pmm_query_detail` narrowed to the caller's service list
 

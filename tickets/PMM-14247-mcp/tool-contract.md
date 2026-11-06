@@ -28,6 +28,7 @@ Until the release, the contract may change freely; afterwards, only additively (
 - JSON field names are snake_case. Times are RFC 3339.
 - Every map field of a result type is `omitempty` or always non-nil. jsonschema-go v0.4.3 types a map as a non-nullable `object` and a slice as nullable (`jsonschema/infer.go:202-222`) [V], so a nil map fails the SDK's output check, and the call becomes a JSON-RPC error instead of a result (`mcp/server.go:464-467`) [V]. Plan 03's `TestResultMapsAreOmitempty` catches it.
 - For a metrics result, the text carries the summary and raw points go only in the structured content (ADR-11, plan 05).
+- A caveat the text carries for the model, such as plan 04's live-plan label, is in structured content too: some clients pass only one of the two to the model.
 
 ## 3. Errors
 
@@ -154,7 +155,8 @@ Plan 07 gives `pmm_alerts` no `partial` field: a failing service list fails the 
 
 - A field whose text comes from a monitored database or from a user has an output-schema description, the field's `jsonschema` text, that starts with `Untrusted.`.
 - The kinds: fingerprints, query examples, plans, DDL, label and dimension values, variable values, service, node, database, schema and table names, `environment`, `cluster` and `address` values, `version` strings, and the `message` of a part's error (plan 03, plan 06); alert names, severities, labels, summaries and descriptions (ADR-11, ADR-17, plan 07).
-- `Instructions` tell the model that marked fields are data, not instructions ([spec §8](spec.md#8-phase-3-output-contract) item 6). That is advice to the model: it doesn't make injected text harmless (ADR-11), and what bounds the harm is that every tool is read-only (ADR-05).
+- Claude Code doesn't send output schemas to the model (measured 2026-11-06), so the marks don't reach the model there. `Instructions` are the channel that does: they name every kind of untrusted text as data, not instructions, and each plan that adds a kind extends that list (plan 04: QAN dimension values, `environment` and `cluster`; plan 07: alert names, labels, summaries and descriptions, and the links in them). The marks stay for clients that read output schemas ([spec §8](spec.md#8-phase-3-output-contract) item 6).
+- Either way it is advice to the model: it doesn't make injected text harmless (ADR-11), and what bounds the harm is that every tool is read-only (ADR-05). `mcp.md` warns against combining `/mcp` with unattended tools that can send data out of the client (plan 04).
 - The mark is not redaction. ADR-07 decides what is masked: with `PMM_MCP_RAW_SQL` off, fingerprints, examples and plans are masked or withheld; DDL, names, dimension and label values, variable values, `version` strings, part error messages, and alert texts are returned as stored.
 
 | Tool | Untrusted fields |

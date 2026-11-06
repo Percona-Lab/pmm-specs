@@ -122,8 +122,8 @@
 **Interfaces:** none.
 
 **Steps:**
-- `TestInitializeAndListTools`: the instructions contain `pmm_alerts`. Run, see FAIL.
-- Add one line to `Instructions`: "For what is wrong now, call pmm_alerts (firing alerts)." Plan 03's line on untrusted fields covers their texts. Run, see PASS.
+- `TestInitializeAndListTools`: the instructions contain `pmm_alerts`, and their list of untrusted text names alert summaries and descriptions. Run, see FAIL.
+- Add one line to `Instructions`: "For what is wrong now, call pmm_alerts (firing alerts)." Extend the list of untrusted text in `Instructions` (plan 04) with alert names, labels, summaries and descriptions, and the links in them: output-schema marks don't reach every model (`tool-contract.md` §7). Run, see PASS.
 - `mcp.md`:
   - the tool, its filters and caps; alert summaries and descriptions are returned as written (ADR-07);
   - Advisor results are not in MCP (ADR-18);
