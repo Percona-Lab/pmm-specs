@@ -37,7 +37,7 @@
 - Default range 1 h. `step` ≥ range / 2,000.
 - **Bounded reads.** MCP reads at most 4 MiB of any response from the datasource proxy; a longer one fails the call, `invalid_input` with a hint to narrow for a model-written expression or selector, `pmm_unavailable` otherwise (Task 1).
 - Concurrency: 4 metric calls per caller, 8 per replica. A call of `pmm_query_metrics`, `pmm_list_metrics` or `pmm_service_health` counts once, however many queries it runs. `pmm_top_queries` and `pmm_query_detail` take a slot of the same caps, and their window is at most 30 days (Task 8).
-- **VictoriaMetrics requests.** Every request MCP sends to VictoriaMetrics, from any tool, takes a slot of one per-replica limit: metric calls, each `pmm_service_health` query, the version lookup, and the service list (plan 06) and alert list (plan 07), which build on `QueryInstant`. A request waits for a slot until its call's deadline. The limit is half of the `-search.maxConcurrentRequests` that PMM sets explicitly for its VictoriaMetrics (Task 1), so dashboards and alert evaluation keep slots.
+- **VictoriaMetrics requests.** Every request MCP sends to VictoriaMetrics, from any tool, takes a slot of one per-replica limit: metric calls, each `pmm_service_health` query, the version lookup, and the service list (plan 06) and alert list (plan 07), which build on `QueryInstant`. A request waits for a slot until its call's deadline. The limit is half of VictoriaMetrics' limit on concurrent queries, at least 1 (Task 1): `VM_search_maxConcurrentRequests` when set, otherwise VictoriaMetrics' own default, `min(2 × CPUs, 16)`. PMM doesn't set `-search.maxConcurrentRequests`. Dashboards and alert evaluation keep the other half.
 - **Rate per caller.** A token bucket per caller key for live calls and one for metric calls (spec §8); an empty bucket answers `rate_limited` with `retry_after`, in seconds, in `_meta` (Task 8).
 - **Supported fleet size:** Task 9 states it, from the load test, in spec §8 and `mcp.md`.
 - Every map field in a result is `omitempty` or always non-nil: go-sdk checks an `object` schema and refuses `null`. The new tools join plan 03's `TestEmptyAndDegradedResults`.
@@ -60,7 +60,7 @@
 
 ### Task 1: Client calls with a fixed argument set
 
-**Files:** Modify `managed/services/mcp/client.go`, `deps.go` (`pmmAPI`, `nullable`), `errors.go` (422), `helpers_test.go` (`fixture.body`, routing by query), `tools_inventory_test.go` and `tools_actions_test.go` (expected query strings), `managed/services/supervisord/supervisord.go` (the VictoriaMetrics flags), `managed/testdata/supervisord.d/victoriametrics*.ini`; Test `client_test.go` (new), `managed/services/supervisord/supervisord_test.go`.
+**Files:** Modify `managed/services/mcp/client.go`, `deps.go` (`pmmAPI`, `nullable`), `errors.go` (422), `helpers_test.go` (`fixture.body`, routing by query), `tools_inventory_test.go` and `tools_actions_test.go` (expected query strings); Test `client_test.go` (new).
 
 **Interfaces:**
 - Produces:
@@ -77,8 +77,7 @@
   - `func nullable(v float64) *float64` in `deps.go`: nil for NaN and ±Inf, the values `finite()` (`deps.go:97-104`) turns into 0; the two share one check.
   - `mapError`: HTTP 422 becomes `invalid_input`, with VictoriaMetrics' message.
   - `const maxVMResponseBytes = 4 << 20`: every datasource-proxy response is read through `io.LimitReader`; one longer than that fails with `errResponseTooLarge`, which `pmm_query_metrics` and `pmm_list_metrics` answer as `invalid_input` with a hint to narrow, and every other tool as `pmm_unavailable`.
-  - In `supervisord.go`, `--search.maxConcurrentRequests` joins the other `--search.*` flags of the VictoriaMetrics template, from `defaultVMSearchMaxConcurrentRequests`, overridable with `VM_search_maxConcurrentRequests` like them. Its default is VictoriaMetrics v1.154.0's own default on the smallest supported server (4 CPUs), read from its `-help` [I], so that size sees no change.
-  - `client` gains a semaphore of `maxVMRequestsPerReplica` slots, half of the configured `-search.maxConcurrentRequests` (read the same way supervisord reads it), at least 1. `QueryInstant`, `QueryRange`, `LabelValues`, `Labels` and `Series` each hold one slot for the request; a request waits for a slot until its context ends, then fails with `timeout`.
+  - `client` gains a semaphore of `maxVMRequestsPerReplica` slots: half of VictoriaMetrics' limit on concurrent queries, at least 1. That limit is `VM_search_maxConcurrentRequests` when it is set, otherwise VictoriaMetrics v1.154.0's own default, `min(2 × CPUs, 16)`, with the CPUs as the Go runtime counts them (`GOMAXPROCS`). PMM doesn't set `-search.maxConcurrentRequests`. `QueryInstant`, `QueryRange`, `LabelValues`, `Labels` and `Series` each hold one slot for the request; a request waits for a slot until its context ends, then fails with `timeout`.
   - `fixture` gains `body []byte`, served instead of `file` when set. A route key may end in ` ?<text>`: it matches a request with that method and path whose `query` parameter contains `<text>`, wins over the plain key (`helpers_test.go:81`), and the longest matching text wins. This is plan 06 Task 1's convention; whichever plan lands first adds it. One test can then answer several metric queries.
 
 - [ ] **Step 1: Start the load-test server** of Task 9 Step 4 now, because it must collect for at least 6 days before the run: the smallest supported size, 4 CPUs and 8 GB (`documentation/docs/install-pmm/plan-pmm-installation/hardware_and_system.md:13-15`), from `PMM-MCP-GA`'s latest Feature Build, with at least 50 MySQL services (`pmm-admin add mysql --service-name db<N>` against a few instances is enough) and a steady workload on them.
@@ -89,7 +88,6 @@
   - `TestMapError422`, `TestNullable`;
   - `TestVMResponseBounded`: a 5 MiB response fails with `errResponseTooLarge` after reading at most 4 MiB and a byte;
   - `TestVMRequestLimit`: with 2 slots, a third concurrent request waits until one returns; one whose context ends while it waits fails with `timeout` and sends nothing;
-  - in `supervisord_test.go`, the VictoriaMetrics config carries `--search.maxConcurrentRequests` with the default, and with `VM_search_maxConcurrentRequests` set, that value;
   - the exact query strings of `TestInventoryTool` (`tools_inventory_test.go:77`) and `TestConfigTool` (`tools_actions_test.go:336`) gain `&timeout=25s`.
 - [ ] **Step 3: Run, see FAIL; implement; regenerate the `pmmAPI` mock (00); run the package, see PASS.**
 - [ ] **Step 4: Commit** `PMM-15790 Add range, label and series calls to the MCP client`.
@@ -374,3 +372,25 @@
   - **Fleet size:** state the number of monitored services the passing run had as the supported fleet size, in spec §8 through a pmm-specs PR and in `mcp.md`.
 - [ ] **Step 5: Document the tools, budgets and errors in `mcp.md`, with the rate limits and `retry_after`, the 30-day QAN window, the supported fleet size, and that label values are returned as stored (ADR-07); commit** `PMM-15790 Document and verify the metrics tools`.
 - [ ] **Step 6: Open the PR** ([00](00-roadmap.md#branch-and-pr-rules)): merge `origin/PMM-MCP-GA` (behind 0) into the branch, run a Feature Build, run the api-tests and the triage on it, and open `PMM-15790 Add the MCP metrics tools` into `PMM-MCP-GA` with the Feature Build link.
+
+## As built
+
+Deviations from the text above, in `percona/pmm` `PMM-15790-metrics-tools`, with the reason. Everything else is as written.
+
+- **Client signatures.** `QueryInstant(ctx, auth, uid, r promRequest) ([]metricSample, error)` and `Series(ctx, auth, uid, match, start, end, limit) ([]map[string]string, error)` are as Task 1 gives them; the helpers around them carry more than the plan named. `checkExpr` returns the span it read next to its error, because `pmm_service_health` sizes its window from it. `selectorsOf` takes the step, and `shapeSeries` the window and the step, so each works at the step in effect. `maxVMRequestsPerReplica` is a function, called once in `newClient`, because the limit depends on the environment and the CPU count.
+- **Exporter fixtures are gzipped** (`testdata/exporters/*.prom.gz`): the plain captures are 73 KB to 1.1 MB each, 10 to 84 KB compressed.
+- **The `Instructions` newline cap** in `TestInitializeAndListTools` rises from `< 28` (plan 04) to `< 34`: the metrics block adds lines.
+- **The api-tests retry `rate_limited`** in the shared `callTool`: the metric rate (60 a minute, burst 10) and the caps in flight are shared by every test in the package, so a run of calls is refused otherwise. The retry waits `retry_after` and gives up after a fixed number of tries.
+- **`LimitHonoured` asserts on raw values** (`kind=values`, `label=__name__`): `kind=names` returns groups, not names, past the limit, so a count of names proves nothing.
+- **`TestListMetricsSearch/Substring` searches `mongodb_ss_wt_cache`**, about 175 names: few enough to come back as names. `mongodb` alone matches so many that the result is groups, and the substring filter would go untested.
+- **The load driver pre-flights the third query** and trims `db1..db10` to the longest prefix whose series count is at or under 2,000: the query over all ten services matches more than the cap, so `pmm_query_metrics` would refuse it. On the load server that prefix is `db1..db3`, at 511 series per service.
+- **Rule-failure counters.** The driver reads `grafana_alerting_rule_evaluation_failures_total` (job `grafana`) and `vmalert_execution_errors_total` (job `vmalert`), checked on a live server; the plan marked the names [I].
+- **Query concurrency.** PMM does not set `-search.maxConcurrentRequests`; a commit that pinned it was reverted. The per-replica limit on requests to VictoriaMetrics is half of VictoriaMetrics' own limit, at least 1: `VM_search_maxConcurrentRequests` when set, else its default `min(2 × CPUs, 16)` (v1.154.0). The supervisord changes of Task 1 were dropped.
+- **More refusals in the execution budget**, added after the plan was written:
+  - functions that create a series per distinct value: `count_values`, `count_values_over_time`, `histogram`, `histogram_over_time`, and `aggr_over_time` naming one;
+  - the built-in templates `ttf`, `ru`, `range_median` and `alias`, with `WITH`;
+  - a non-ASCII character or a backslash outside a string, which can spell a template;
+  - an instant query whose root is a range selector or a subquery, with or without `offset`;
+  - a rollup over an expression, limited to 4,000 points per series, with the step raised when the caller gave none.
+- **A note when every signal is `no_data`.** `pmm_service_health` says the service and its node sent nothing in the window, or an Access Role hides their series; before, the note covered node signals only.
+- **Supported fleet size:** pending. The load test on 13 Nov sets it (Task 9 Step 4).

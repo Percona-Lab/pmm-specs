@@ -35,6 +35,7 @@
 - **A restricted Admin:** vmproxy filters an Admin's metrics by Access Role like anyone else's, so an Admin with a restricted Access Role gets a filtered list too (Task 4).
 - **Service-account tokens before PMM-15534 is merged in** see every service; Task 3 is the gate, and plan 08 checks it before the merge back.
 - **One `queryid` recorded on an allowed and on a hidden service:** `pmm_query_detail`, `pmm_get_explain` and `pmm_get_schema` return the allowed one or `not_found`, never the hidden one's data or name; for PostgreSQL stored plans, once PMM-15697 is fixed (Task 4).
+- **Before this plan, the caller's service list comes from the inventory,** which Access Roles don't filter, so a Viewer can name a service that a role hides. `pmm_service_health` answers it with every signal `no_data` and the note that every signal is empty, not with a refusal; the metrics it reads stay filtered, so no data leaks. The list from series (Task 1) closes this: a service outside it is `not_found`.
 
 ---
 
@@ -80,7 +81,7 @@
   - `TestInventoryTool`: rows carry `last_seen` and no `address`; with no series, the text says "No monitored services sent metrics in the last hour."; the `engine` filter matches `service_type`, `proxysql` included; the `node` filter works as today; each engine's version comes from its own fixture, now that queries are routed by text.
   - `TestEngineOfOutsideList`: a `service_id` absent from the series is `not_found` with the fixed text, and the message contains neither that ID nor any other service's name or ID.
   - `TestConfigByServiceName`: a name in the list returns its variables; a name outside it is `not_found` with the fixed text, without the name, and sends no metrics query.
-- Implement. Remove `ListServices` and `ListNodes` from `pmmAPI` and `client`, then regenerate the mock with `go tool mockery --config .mockery.yaml` and commit only `managed/services/mcp/mock_pmm_api_test.go`.
+- Implement. Remove `ListServices` and `ListNodes` from `pmmAPI` and `client`, then regenerate the mock with `go tool mockery --config .mockery.yaml` and `make format`, and commit only `managed/services/mcp/mock_pmm_api_test.go`.
 - Move every test that routes `GET /v1/inventory/services` or `/nodes` to the series fixture, including those of plans 04 and 05 already merged. No test records a `/v1/inventory/` request.
 - The `pmm_inventory` description says the list holds the services that sent metrics in the last hour. Regenerate the golden file (`-update`).
 - api-test `TestInventory`: compare with what `serviceListQuery` returns to the admin through the datasource proxy, not with the inventory API; no row contains `address=`.
