@@ -44,11 +44,11 @@
   - anonymous access: `auth_request` refuses `/mcp` with 403 to every caller Grafana resolves as anonymous, one that sends only a junk cookie included (ADR-10, plan 02);
   - credentials: which header wins when a request carries both `Authorization` and `Cookie` (ADR-10), their forwarding over loopback, and that they are never logged (ADR-03); the caller key ([00](00-roadmap.md#terms), plan 02) and the per-caller limits it keys (ADR-05);
   - the caller's service list from Access-Role-filtered series, every service lookup built on it (ADR-08, plan 06), and service-account tokens under Access Roles (ADR-12, PMM-15534);
-  - MCP's narrowing of alerts and Advisor results: it is consistency, not a security boundary, because the same caller reads both APIs unfiltered (ADR-03, ADR-17, ADR-18); and the Editor token `pmm_advisors` needs (ADR-18);
+  - MCP's narrowing of live inspection and alerts: narrowed, not filtered, so it is consistency, not a security boundary (ADR-03, ADR-05, ADR-17);
   - model-written metric queries, their execution and response budgets, and plan 05's load-test numbers (ADR-15);
   - live inspection a Viewer can start, its limits, and the cancelling of abandoned actions (ADR-05);
   - redaction across text and structured content (ADR-07, ADR-11);
-  - the sensitivity of EXPLAIN output, DDL, QAN dimension values, alert annotations and Advisor findings sent to a model provider;
+  - the sensitivity of EXPLAIN output, DDL, QAN dimension values and alert annotations sent to a model provider;
   - the release-gate tickets of Task 8, by key.
 - Every finding is closed or accepted in writing on PMM-15532.
 - **When a review asks for changes:**
@@ -150,8 +150,8 @@
 **Interfaces:** none.
 
 **Steps:**
-- `mcp.md` and `welcome/mcp.md` final: off by default and how to enable it; a Viewer service-account token covers every tool except `pmm_advisors`, which needs an Editor token; results follow the caller's Access Roles, with a link to the access-control docs from PMM-15534; alerts and Advisor results are narrowed to the caller's services for consistency, while Grafana and the Advisors page show the same user everything.
-- The release-notes entry goes in `next.md`, which the release-candidate job turns into the version's page (percona/pmm `documentation/AGENTS.md:190-192` on `main`): what MCP is (Tech Preview), that it is off by default and how to enable it, Access Roles and service-account tokens (PMM-15534), and that `pmm_advisors` needs an Editor token.
+- `mcp.md` and `welcome/mcp.md` final: off by default and how to enable it; a Viewer service-account token covers every tool; results follow the caller's Access Roles, with a link to the access-control docs from PMM-15534; alerts are narrowed to the caller's services for consistency, while PMM's alert page shows the same user every alert of the folders it can read; Advisor results are not in MCP (ADR-18).
+- The release-notes entry goes in `next.md`, which the release-candidate job turns into the version's page (percona/pmm `documentation/AGENTS.md:190-192` on `main`): what MCP is (Tech Preview), that it is off by default and how to enable it, and Access Roles and service-account tokens (PMM-15534).
 - Commit `PMM-15532 Finish the MCP docs and release notes`. Then the last step of the plan's PR (00): merge `origin/PMM-MCP-GA` into the branch, with `PMM-MCP-GA` behind 0; run a Feature Build from the branch, verify live, and open the PR `PMM-15532 Instrument and document MCP for the release` into `PMM-MCP-GA`.
 
 ### Task 7: percona/pmm-mcp

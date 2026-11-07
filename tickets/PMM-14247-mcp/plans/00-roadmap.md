@@ -39,11 +39,11 @@
 | [04 Resolve first](04-resolve-first.md) | PMM-15529 | plans 02, 03; design review | Full-depth |
 | [05 Metrics tools](05-metrics.md) | PMM-15790 | plans 02, 03; design review | Full-depth |
 | [06 Service list and Access Roles](06-access-roles.md) | PMM-15531 | plans 03 and 04, design review; plan 05 before its Task 4 | Task-level |
-| [07 Alerts and Advisors](07-alerts-and-advisors.md) | PMM-15790 | plan 06, design review | Task-level |
+| [07 Alerts](07-alerts-and-advisors.md) | PMM-15790 | plan 06, design review | Task-level |
 | [08 Release](08-release.md) | PMM-15532 | plans 01 to 07; the release gate of [spec §10](../spec.md#10-phase-5-release), PMM-15534 on `main` and merged into `PMM-MCP-GA` included | Task-level |
 
 - **Plan 06** builds the caller's service list from the metric series of the last hour, which vmproxy filters by the caller's Access Roles (ADR-08), uses it for every service lookup, and checks Access Roles end to end. It removes the Viewer rules for `GET /v1/inventory/services` and `/nodes` from #5942.
-- **Plan 07** reads alerts from Grafana's alert API and Advisor results from the existing Advisors API, and narrows both to the caller's service list (ADR-03, ADR-17, ADR-18). No plan changes `lbacPrefixes` or adds a pmm-managed API for them.
+- **Plan 07** reads alerts from Grafana's folder-scoped rules API and narrows them to the caller's service list (ADR-03, ADR-17). No plan changes `lbacPrefixes` or adds a pmm-managed API for them. `pmm_advisors` is out of the Tech Preview (ADR-18), so no plan builds it.
 - **PMM-15534** (ADR-12) is not a plan here. It lands on `main` through its own ticket and PR, and reaches `PMM-MCP-GA` with the next merge of `main`. Plan 08 waits for it.
 - ADR-16 is deferred to its own ticket on `main`. ADR-13 (`mcp:use`) ships on PMM-15791 after the MCP release. Neither has a plan here.
 
@@ -51,7 +51,9 @@ Order: plan 01, plan 02, plan 03. The security design review starts once plan 03
 
 **Why the contract comes before plans 04 and 05.** Plan 03 puts the contract's plumbing first (typed results, errors, paging, `pmm_catalog`), so the new tools in plans 04 and 05 are written once, in their final shape, instead of text-only and then reworked. The contract document still comes first (plan 03, Task 1).
 
-**Security design review** (spec §3.1, §10.2) reads this folder and `tool-contract.md`, so it runs after plan 03 Task 1. It gates plans 04 to 07, which add data paths and the narrowing to the caller's service list. Plans 01 to 03 add none and don't wait for it. Book it during plan 01; record the outcome on PMM-15532.
+**Security design review** (spec §3.1, §10.2) reads this folder and `tool-contract.md`, so it runs after plan 03 Task 1. It gates plans 04 to 07, which add data paths and the narrowing to the caller's service list. Plans 01 to 03 add none and don't wait for it.
+
+It took place on 2026-11-06, against pmm-specs `main` at `80c9b8b` and percona/pmm `PMM-MCP-GA` at `83baa4430`, by three independent reviewers. Its findings are recorded in Jira (Developers-only); those about code PMM already ships are reported privately, as `SECURITY.md` requires. The spec, the ADRs, `tool-contract.md` and the plans carry the design changes it asked for. Plans 04 to 07 may start.
 
 ## Branch and PR rules
 
@@ -103,7 +105,10 @@ These numbers live in [spec §8](../spec.md#8-phase-3-output-contract) and are c
 | Value | Where |
 |---|---|
 | Live-inspection calls in flight: 2 per caller, 8 per replica | spec §8; plan 02 |
-| Metric calls in flight: 4 per caller, 8 per replica | spec §8; plan 05 |
+| Live-inspection calls in flight on one service: 1 per replica | spec §8; plan 04 |
+| Metric and QAN calls in flight: 4 per caller, 8 per replica; QAN window 30 days | spec §8; plan 05 |
+| Calls started per caller: live 10 per minute, burst 4; metric 60 per minute, burst 10 | spec §8; plan 05 |
+| Requests to VictoriaMetrics in flight: half of the explicit `-search.maxConcurrentRequests` | spec §8; plan 05 |
 | Inventory 50/200, config variables 200/1000, plan 64 KiB, DDL 32 KiB | spec §8; plan 03 |
-| Metrics: 20/100 series, 2,000 points, 16 KiB, 25 s VictoriaMetrics timeout, 7 days read, 4 KiB and 10 selectors | spec §8; plan 05 |
-| `pmm_list_metrics` 100/1000, `pmm_alerts` 50/200, `pmm_advisors` 50/200 | spec §8; plans 05, 07 |
+| Metrics: 20/100 series, 2,000 points, 16 KiB, 25 s VictoriaMetrics timeout, 7 days read, 4 KiB and 10 selectors, 2,000 series per selector, 4 MiB read per response | spec §8; plan 05 |
+| `pmm_list_metrics` 100/1000, `pmm_alerts` 50/200 | spec §8; plans 05, 07 |

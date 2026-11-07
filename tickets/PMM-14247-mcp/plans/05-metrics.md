@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Needs plan 02 (`limiter`, `callerKey`, `codeRateLimited`) and plan 03 (`addTool`, `window`, `page`, `partError`, `pmm_catalog`), and the design review (00).
-- One branch, `PMM-15790-metrics-tools`, and one PR into `PMM-MCP-GA` after Task 8 ([00](00-roadmap.md#branch-and-pr-rules)).
+- One branch, `PMM-15790-metrics-tools`, and one PR into `PMM-MCP-GA` after Task 9 ([00](00-roadmap.md#branch-and-pr-rules)).
 - Every new tool follows 00's rules for new tools: `registerTools`, the name list of `TestInitializeAndListTools`, the tool lists of plan 03's `TestUntrustedFieldsMarked`, `TestErrorsCarryNoStructuredContent` and `TestRedactionInBothRenderings` (or its exemptions), and the golden file (`-update`). Every new `pmmAPI` method regenerates the mock (00).
 - A service is looked up in the caller's service list (`listServices`, `engineOf`). Plan 06 later changes where that list comes from, to metric series (ADR-08); this plan calls only those two functions.
 - **Execution budget** (`checkExpr`). Every refusal is `invalid_input` with a hint, before any request:
@@ -22,7 +22,10 @@
   - every selector names a metric: `__name__` with `=`, or with `=~` and a `regexp.LiteralPrefix` of at least 3 bytes;
   - a regex name also needs a scope in the same selector: a `service_id`, `service_name`, `node_id` or `node_name` matcher that is `=`, or `=~` whose every `|`-separated alternative parses (`regexp/syntax`) to a single literal. So `db1|db2` and `db\.prod` are scopes, and `.+` and `db.prod` are not;
   - the span read is the request's range plus the largest lookbehind of any path from the root to a selector. A path's lookbehind is the sum of the rollup windows, subquery ranges and `offset`s (absolute value) along it, so `max_over_time(rate(x[6d])[6d:1h])` reads 12 days. A path that reaches its selector through no rollup window, a bare selector (`up`) or the argument of a rollup function written without one (`rate(x)`), reads one step back [I], so it adds one `step`. The span is at most 7 days;
-  - `@` is refused.
+  - `@` is refused;
+  - a MetricsQL `WITH` template is refused before parsing, since `metricsql.Parse` expands it before any check sees the expression;
+  - a subquery's step is at least the span read ÷ 2,000; a subquery without a step takes the query's step, checked the same way.
+- **Series selected** (`pmm_query_metrics`). Before a query runs, each selector is counted over the span read with the `series` endpoint and `limit=2001`; a selector over 2,000 series refuses the query with `invalid_input` and a hint to narrow it with a `service_*` or `node_*` matcher and aggregate (Task 4).
 - **The one exception** to the selector rules is the name search of `pmm_list_metrics` (Task 5, ADR-15): it reads metric names only, from the label-values endpoint, with VictoriaMetrics' `limit` and a look-back of 1 hour by default and 7 days at most.
 - Request arguments: `query`, `time` or `start`/`end`/`step`, and `timeout` for queries; `match[]`, `start`, `end` and `limit` for the list endpoints. Nothing else passes through. Times are Unix seconds, `step` whole seconds, `timeout` `25s` (spec §8: below the 30 s `callTimeout` of every backing call, `client.go:53`).
 - Response budget:
@@ -32,7 +35,11 @@
   - NaN and ±Inf are `null`, with a note;
   - internal labels `agent_id`, `agent_type`, `node_id`, `machine_id`, `instance`, `job` dropped from rows; labels shared by every series shown once.
 - Default range 1 h. `step` ≥ range / 2,000.
-- Concurrency: 4 metric calls per caller, 8 per replica. A call of `pmm_query_metrics`, `pmm_list_metrics` or `pmm_service_health` counts once, however many queries it runs.
+- **Bounded reads.** MCP reads at most 4 MiB of any response from the datasource proxy; a longer one fails the call, `invalid_input` with a hint to narrow for a model-written expression or selector, `pmm_unavailable` otherwise (Task 1).
+- Concurrency: 4 metric calls per caller, 8 per replica. A call of `pmm_query_metrics`, `pmm_list_metrics` or `pmm_service_health` counts once, however many queries it runs. `pmm_top_queries` and `pmm_query_detail` take a slot of the same caps, and their window is at most 30 days (Task 8).
+- **VictoriaMetrics requests.** Every request MCP sends to VictoriaMetrics, from any tool, takes a slot of one per-replica limit: metric calls, each `pmm_service_health` query, the version lookup, and the service list (plan 06) and alert list (plan 07), which build on `QueryInstant`. A request waits for a slot until its call's deadline. The limit is half of the `-search.maxConcurrentRequests` that PMM sets explicitly for its VictoriaMetrics (Task 1), so dashboards and alert evaluation keep slots.
+- **Rate per caller.** A token bucket per caller key for live calls and one for metric calls (spec §8); an empty bucket answers `rate_limited` with `retry_after`, in seconds, in `_meta` (Task 8).
+- **Supported fleet size:** Task 9 states it, from the load test, in spec §8 and `mcp.md`.
 - Every map field in a result is `omitempty` or always non-nil: go-sdk checks an `object` schema and refuses `null`. The new tools join plan 03's `TestEmptyAndDegradedResults`.
 - `pmm_service_health` derives no state of its own: no `stale`, no verdict. Each signal has its summary, `last_at` and source, or `no_data`, or an error.
 
@@ -41,6 +48,9 @@
 - **A model that asks for `rate(x[5m])` over exactly 7 days** gets a refusal that gives the span it would read and the cap, not a generic error: Task 2 tests the hint's span (`7d5m`) and cap.
 - **An OR group without a metric name or a scope** is refused like a selector of its own: Task 2. metricsql copies a name matched with `=` into every group, but not a regex name, so `{__name__=~"mysql_global_status_.*", service_name="db1" or service_name="db2"}` has a second group with no name [V at v0.84.3].
 - **A result with one huge series and many small ones** keeps the huge one in the top N and says how many were left out: Task 3 tests `total_series` and the hint.
+- **`with (` inside a quoted label value** is not a template and passes; a real `WITH` template is refused before parsing: Task 2.
+- **A selector over the series cap** is refused after its `series` request and before any `query_range` request: Task 4.
+- **Requests to VictoriaMetrics from several tools at once** never exceed the per-replica limit, and one that can't get a slot before its deadline sends nothing: Task 1.
 - **One NaN from a ratio** arrives as `null` with a note; it never fails the call: Tasks 3 and 7.
 - **VictoriaMetrics answering 422 for a bad expression** must surface as `invalid_input` with VictoriaMetrics' message, not `pmm_unavailable`: Task 1 tests the mapping.
 - **Node signals under a service-filtered Access Role** report `no_data` with the note that it can mean "hidden", never a value or an error: Task 7 tests it.
@@ -50,7 +60,7 @@
 
 ### Task 1: Client calls with a fixed argument set
 
-**Files:** Modify `managed/services/mcp/client.go`, `deps.go` (`pmmAPI`, `nullable`), `errors.go` (422), `helpers_test.go` (`fixture.body`, routing by query), `tools_inventory_test.go` and `tools_actions_test.go` (expected query strings); Test `client_test.go` (new).
+**Files:** Modify `managed/services/mcp/client.go`, `deps.go` (`pmmAPI`, `nullable`), `errors.go` (422), `helpers_test.go` (`fixture.body`, routing by query), `tools_inventory_test.go` and `tools_actions_test.go` (expected query strings), `managed/services/supervisord/supervisord.go` (the VictoriaMetrics flags), `managed/testdata/supervisord.d/victoriametrics*.ini`; Test `client_test.go` (new), `managed/services/supervisord/supervisord_test.go`.
 
 **Interfaces:**
 - Produces:
@@ -66,14 +76,20 @@
   - `QueryInstant` takes `(ctx, auth, uid string, r promRequest)`. Its one caller, `queryMetrics` (`tools_inventory.go:256-262`), passes `promRequest{Query: …, Time: at, Timeout: metricsTimeout}`.
   - `func nullable(v float64) *float64` in `deps.go`: nil for NaN and ±Inf, the values `finite()` (`deps.go:97-104`) turns into 0; the two share one check.
   - `mapError`: HTTP 422 becomes `invalid_input`, with VictoriaMetrics' message.
+  - `const maxVMResponseBytes = 4 << 20`: every datasource-proxy response is read through `io.LimitReader`; one longer than that fails with `errResponseTooLarge`, which `pmm_query_metrics` and `pmm_list_metrics` answer as `invalid_input` with a hint to narrow, and every other tool as `pmm_unavailable`.
+  - In `supervisord.go`, `--search.maxConcurrentRequests` joins the other `--search.*` flags of the VictoriaMetrics template, from `defaultVMSearchMaxConcurrentRequests`, overridable with `VM_search_maxConcurrentRequests` like them. Its default is VictoriaMetrics v1.154.0's own default on the smallest supported server (4 CPUs), read from its `-help` [I], so that size sees no change.
+  - `client` gains a semaphore of `maxVMRequestsPerReplica` slots, half of the configured `-search.maxConcurrentRequests` (read the same way supervisord reads it), at least 1. `QueryInstant`, `QueryRange`, `LabelValues`, `Labels` and `Series` each hold one slot for the request; a request waits for a slot until its context ends, then fails with `timeout`.
   - `fixture` gains `body []byte`, served instead of `file` when set. A route key may end in ` ?<text>`: it matches a request with that method and path whose `query` parameter contains `<text>`, wins over the plain key (`helpers_test.go:81`), and the longest matching text wins. This is plan 06 Task 1's convention; whichever plan lands first adds it. One test can then answer several metric queries.
 
-- [ ] **Step 1: Start the load-test server** of Task 8 Step 4 now, because it must collect for at least 6 days before the run: the smallest supported size, 4 CPUs and 8 GB (`documentation/docs/install-pmm/plan-pmm-installation/hardware_and_system.md:13-15`), from `PMM-MCP-GA`'s latest Feature Build, with at least 50 MySQL services (`pmm-admin add mysql --service-name db<N>` against a few instances is enough) and a steady workload on them.
+- [ ] **Step 1: Start the load-test server** of Task 9 Step 4 now, because it must collect for at least 6 days before the run: the smallest supported size, 4 CPUs and 8 GB (`documentation/docs/install-pmm/plan-pmm-installation/hardware_and_system.md:13-15`), from `PMM-MCP-GA`'s latest Feature Build, with at least 50 MySQL services (`pmm-admin add mysql --service-name db<N>` against a few instances is enough) and a steady workload on them.
 - [ ] **Step 2: Write the tests:**
   - `TestPromRequestArguments`: for an instant and a range request, the recorded query string has exactly the expected keys (e.g. `query`, `start`, `end`, `step`, `timeout`) and `timeout=25s`; a zero `Time` sends no `time`;
   - `TestQueryRangeDecodes`: a matrix fixture into series and points, a `"NaN"` value kept as NaN;
   - `TestListCallsArguments`: each list call sends `limit`, `start`, `end` and the given `match[]`;
   - `TestMapError422`, `TestNullable`;
+  - `TestVMResponseBounded`: a 5 MiB response fails with `errResponseTooLarge` after reading at most 4 MiB and a byte;
+  - `TestVMRequestLimit`: with 2 slots, a third concurrent request waits until one returns; one whose context ends while it waits fails with `timeout` and sends nothing;
+  - in `supervisord_test.go`, the VictoriaMetrics config carries `--search.maxConcurrentRequests` with the default, and with `VM_search_maxConcurrentRequests` set, that value;
   - the exact query strings of `TestInventoryTool` (`tools_inventory_test.go:77`) and `TestConfigTool` (`tools_actions_test.go:336`) gain `&timeout=25s`.
 - [ ] **Step 3: Run, see FAIL; implement; regenerate the `pmmAPI` mock (00); run the package, see PASS.**
 - [ ] **Step 4: Commit** `PMM-15790 Add range, label and series calls to the MCP client`.
@@ -86,6 +102,8 @@
 - Produces: `const maxExprBytes = 4096`, `maxSelectors = 10`, `maxSpan = 7 * day`, `minNamePrefix = 3`; `func checkExpr(expr string, span, step time.Duration) error`.
 - `metricsql.Parse`, then a recursive walk that carries each path's lookbehind (not `VisitAll`, which loses the path): `*FuncExpr` and `*AggrFuncExpr` (`Args`), `*BinaryOpExpr` (`Left`, `Right`), `*RollupExpr` (adds `Window` and `Offset`, refuses `At`, walks `Expr`), `*MetricExpr` (one selector per `LabelFilterss` entry; adds one `step` when no `RollupExpr` window is on its path). Durations use `DurationExpr.Duration(step.Milliseconds())`, so `i` units count; an instant query checks with `step` 5m, VictoriaMetrics' default [I].
 - The time-read hint names the span, its parts and the cap, durations as days plus the rest: `the query reads 7d5m (range 7d + lookbehind 5m); the cap is 7d`.
+- Before `metricsql.Parse`, the keyword `WITH` followed by `(`, case-insensitive and outside quoted strings, refuses the expression: "MetricsQL WITH templates are not accepted; write the expression out".
+- A `*RollupExpr` that is a subquery (`Step` set, or `InheritStep`) has a step of at least the span read ÷ 2,000, the span as Global Constraints defines it; `InheritStep` uses `step`. The hint names the minimum.
 - Check the metricsql names above at v0.87.5 after `go get`.
 
 - [ ] **Step 1: Write `TestCheckExpr`**, table of `(expr, span, want error substring or "")`:
@@ -120,6 +138,10 @@
 | `up offset 8d` | 0 | "the cap is 7d" |
 | `up @ 1700000000` | 0 | "@" |
 | `up @ start()` | 0 | "@" |
+| `WITH (f(x) = rate(x[5m])) f(mysql_global_status_questions)` | 1h | "WITH" |
+| `mysql_global_status_questions{service_name="with (db1)"}` | 1h | "" |
+| `max_over_time(rate(mysql_global_status_questions[5m])[6d:1s])` | 0 | "subquery step" |
+| `max_over_time(rate(mysql_global_status_questions[5m])[6d:5m])` | 0 | "" |
 | 11 selectors joined by `+` | 1h | "10 selectors" |
 | 6 selectors of two OR groups each, joined by `+` | 1h | "10 selectors" |
 | 5,000-byte expression | 1h | "4 KiB" |
@@ -159,10 +181,10 @@
 **Files:** Create `managed/services/mcp/tools_metrics.go`, `tools_metrics_test.go`; Modify `mcp.go` (`Service.metrics *limiter`, set in `New`; `registerTools` calls `registerMetricsTools`), `mcp_test.go` (`pmm_query_metrics` in the name list).
 
 **Interfaces:**
-- Produces: `func (s *Service) registerMetricsTools(server *mcp.Server)`, which registers this task's tool and those of Tasks 5 and 7. `type queryMetricsInput struct { Query string \`json:"query"\`; Time string \`json:"time,omitempty"\`; PeriodFrom string \`json:"period_from,omitempty"\`; PeriodTo string \`json:"period_to,omitempty"\`; Step string \`json:"step,omitempty"\`; Limit int \`json:"limit,omitempty"\` }`. `period_from` or `period_to` makes it a range query, with the window from `parseWindow` (`period_from` defaults to `now-1h`, so a `period_to` alone older than that is `invalid_input`); otherwise it is instant at `time` (default now). `time` with either period is `invalid_input`. `step` is a Go duration (`30s`, `5m`, `1h`), range queries only, in whole seconds; `1d`, `5i` and a `step` on an instant query are `invalid_input`. `limit` is 1 to 100, default 20. `const maxMetricCallsPerCaller = 4`, `maxMetricCallsPerReplica = 8`; `New` sets `s.metrics = newLimiter(maxMetricCallsPerCaller, maxMetricCallsPerReplica)`.
+- Produces: `func (s *Service) registerMetricsTools(server *mcp.Server)`, which registers this task's tool and those of Tasks 5 and 7. `const maxSeriesPerSelector = 2000`; `func selectorsOf(expr string) ([]string, error)`: each selector of the parsed expression, one per OR group, in MetricsQL form; `func (s *Service) checkSeriesCount(ctx context.Context, auth callerAuth, uid string, selectors []string, start, end time.Time) error`: one `Series` call per selector, with `limit` 2,001, over the span read; more than 2,000 is `invalid_input` with the hint "this selector matches more than 2000 series over the span; narrow it with a service_name or node_name matcher, and aggregate". `type queryMetricsInput struct { Query string \`json:"query"\`; Time string \`json:"time,omitempty"\`; PeriodFrom string \`json:"period_from,omitempty"\`; PeriodTo string \`json:"period_to,omitempty"\`; Step string \`json:"step,omitempty"\`; Limit int \`json:"limit,omitempty"\` }`. `period_from` or `period_to` makes it a range query, with the window from `parseWindow` (`period_from` defaults to `now-1h`, so a `period_to` alone older than that is `invalid_input`); otherwise it is instant at `time` (default now). `time` with either period is `invalid_input`. `step` is a Go duration (`30s`, `5m`, `1h`), range queries only, in whole seconds; `1d`, `5i` and a `step` on an instant query are `invalid_input`. `limit` is 1 to 100, default 20. `const maxMetricCallsPerCaller = 4`, `maxMetricCallsPerReplica = 8`; `New` sets `s.metrics = newLimiter(maxMetricCallsPerCaller, maxMetricCallsPerReplica)`.
 
-- [ ] **Step 1: Write `TestQueryMetricsTool`:** an instant and a range call against `body` fixtures (`/graph/api/datasources/name/Metrics`, `.../proxy/uid/<uid>/api/v1/query_range`); a refused expression records no request to the proxy; a 300-series response is cut to 20 with the hint; `limit: 101` is `invalid_input`; `time` with `period_from`, `step: 1d` and `step` without a period are `invalid_input`; `period_to` alone is a range query of the hour before it; with the caller's key at 4 on `s.metrics`, `rate_limited`; 8 other keys, `rate_limited`; the description says "MetricsQL", "aggregate first", and gives one `sum by (service_name)` example.
-- [ ] **Step 2: Run, see FAIL; implement (check → limiter → datasource uid → client → `shapeSeries`); run the package, see PASS.**
+- [ ] **Step 1: Write `TestQueryMetricsTool`:** an instant and a range call against `body` fixtures (`/graph/api/datasources/name/Metrics`, `.../proxy/uid/<uid>/api/v1/query_range`); a refused expression records no request to the proxy; a 300-series response is cut to 20 with the hint; `limit: 101` is `invalid_input`; `time` with `period_from`, `step: 1d` and `step` without a period are `invalid_input`; `period_to` alone is a range query of the hour before it; with the caller's key at 4 on `s.metrics`, `rate_limited`; 8 other keys, `rate_limited`; a selector whose `series` answer has 2,001 entries refuses the query with that hint and no `query_range` request, and 2,000 passes; the description says "MetricsQL", "aggregate first", and gives one `sum by (service_name)` example.
+- [ ] **Step 2: Run, see FAIL; implement (check → limiter → datasource uid → `checkSeriesCount` → client → `shapeSeries`); run the package, see PASS.**
 - [ ] **Step 3: Commit** `PMM-15790 Add pmm_query_metrics`.
 
 ### Task 5: `pmm_list_metrics`
@@ -285,7 +307,7 @@
   | mongodb | `replset_state` | `mongodb-instance-summary`: Current ReplSet State, A | none |
   | mongodb | `replication_lag` | `mongodb-replicaset-summary`: Replication Lag, A | s |
 
-- **One call.** A `service_id` not in the caller's service list is `not_found`. The call holds one slot on `s.metrics` and runs its signal queries at most 4 at a time, each a range query over the window, with `chooseStep` for the window's length. Each query passes `checkExpr` with the window's length as span; a window too long for that is `invalid_input` before any query.
+- **One call.** A `service_id` not in the caller's service list is `not_found`. The call holds one slot on `s.metrics` and runs its signal queries at most 4 at a time, each holding a slot of the VictoriaMetrics request limit (Task 1), so its fan-out counts per query; each a range query over the window, with `chooseStep` for the window's length. Each query passes `checkExpr` with the window's length as span; a window too long for that is `invalid_input` before any query.
 - Each signal reports min, avg, max and last over its finite points, through `nullable`, and `last_at`, the newest sample time; or `no_data` when the query returns no series. When a node signal is `no_data`, `note` says that an Access Role that filters on service labels hides node series, so `no_data` can mean "hidden" as well as "not sent".
 - A signal whose query fails has `error` (`partErrorOf`), and the result is `partial`. When every signal fails, the call fails with the first error (ADR-11).
 - **Deadline.** The signal queries share a deadline 10 s before the call's own (`PMM_MCP_ACTION_TIMEOUT` + 45 s, 60 s by default), so the result is built in time. A signal still running then gets `error.code: timeout`. Each query also carries `timeout=25s`.
@@ -297,7 +319,7 @@
   - a signal whose query answers 422 has `error.code: invalid_input`, the others still return, and the result is `partial`; when every signal fails, the call is an error result;
   - a NaN from a ratio gives `last: null` and the note, and the call succeeds;
   - called with a context 11 s from its deadline, a signal whose fixture never answers gets `error.code: timeout` after about 1 s, and the result is `partial`;
-  - the call holds one slot on `s.metrics`, whatever the number of signals;
+  - the call holds one slot on `s.metrics`, whatever the number of signals, and one VictoriaMetrics request slot per query in flight;
   - no field is a healthy or unhealthy verdict, and no field is `stale`;
   - `service_id` outside the caller's list is `not_found`;
   - the node signals' queries carry `node_name="<the service's node>"`, from the service list.
@@ -306,7 +328,27 @@
 - [ ] **Step 2: Run, see FAIL; implement; run, see PASS.**
 - [ ] **Step 3: Commit** `PMM-15790 Add pmm_service_health`.
 
-### Task 8: Instructions, docs, live checks and the load test
+### Task 8: QAN calls and per-caller rate limits
+
+**Files:** Modify `managed/services/mcp/limits.go` (`rateLimiter`, `startLive`), `errors.go` (`toolError`, `errorResult`), `tools_qan.go`, `tools_metrics.go`, `tools_health.go`, `mcp.go` (`New`); Test `limits_test.go`, `errors_test.go`, `tools_qan_test.go`, `tools_metrics_test.go`.
+
+**Interfaces:**
+- `pmm_top_queries` and `pmm_query_detail` take a slot on `s.metrics`, as metric calls do, with the same `rate_limited` messages.
+- `const maxQANWindow = 30 * day`: a longer window for `pmm_top_queries` or `pmm_query_detail` is `invalid_input` before any QAN call, and the message gives the cap.
+- `type rateLimiter struct` (a mutex, a rate per second, a burst, and a bucket per caller key) with `func newRateLimiter(perMinute, burst int) *rateLimiter` and `func (r *rateLimiter) take(key string, now time.Time) (time.Duration, bool)`: it takes one token, or returns the wait until the next one. A bucket that has refilled to its burst is deleted, so the map holds only recent callers.
+- `New` sets `s.liveRate = newRateLimiter(10, 4)` and `s.metricRate = newRateLimiter(60, 10)` (spec §8). `startLive` takes a token from `s.liveRate`, and `pmm_query_metrics`, `pmm_list_metrics` and `pmm_service_health` from `s.metricRate`, before their slot, by `callerKey`. QAN calls take no token.
+- `toolError` gains `retryAfter time.Duration`. An empty bucket answers `rate_limited` with "too many calls for these credentials; retry in <n> s", and `errorResult` adds `retry_after`, whole seconds rounded up, to `_meta.com.percona/error` when it is set (`tool-contract.md` §3.1).
+
+- [ ] **Step 1: Write the tests:**
+  - `TestRateLimiter`: the burst passes, the next call is refused with a wait of 1/rate, a token comes back after that wait, another key has its own bucket, and an idle bucket is deleted;
+  - `TestRateLimitedRetryAfter`: five live calls from one caller in quick succession, each finishing at once: the fifth answers `rate_limited` with `retry_after` ≥ 1 in `_meta` and the same number in the text; another caller's call passes; the same for eleven metric calls;
+  - `TestQANWindowCap`: `pmm_top_queries` and `pmm_query_detail` over 31 days answer `invalid_input` with no QAN call; 30 days pass;
+  - `TestQANCallsShareMetricSlots`: with the caller's key at 4 on `s.metrics`, `pmm_top_queries` and `pmm_query_detail` answer `rate_limited`;
+  - `TestRetryable` (plan 03) still passes: `retry_after` doesn't change `retryable`.
+- [ ] **Step 2: Run, see FAIL; implement; run the package, see PASS.**
+- [ ] **Step 3: Commit** `PMM-15790 Rate-limit MCP calls per caller`.
+
+### Task 9: Instructions, docs, live checks and the load test
 
 **Files:** Modify `mcp.go` (`Instructions`), `documentation/docs/api/mcp.md`; Test `mcp_test.go`, `api-tests/mcp/mcp_test.go`; Create `api-tests/mcp/load_test.go` (build tag `load`).
 
@@ -323,9 +365,12 @@
     - `rate(mysql_global_status_questions[6d])` as an instant query;
     - `{__name__=~"mysql_global_status_.*", service_name=~"db1|db2|db3|db4|db5|db6|db7|db8|db9|db10"}` as a range query over the last 6 days.
 
-    It records each call's latency and result code, `rate_limited` included: ten loops against the 8-per-replica cap.
+    Each caller also runs a third loop of `pmm_service_health` over `db1` to `db10` in turn, each over the last 6 hours. The driver records each call's latency and result code, `rate_limited` included: fifteen loops against the 8-per-replica cap.
   - **Dashboard latency:** during the run the driver also sends the MySQL queries of Task 7's signal table for `db1`, over the last 12 hours with `step=60s`, every 10 s, as Admin straight through `/graph/api/datasources/proxy/uid/<uid>/api/v1/query_range`, and reports their p95 latency. The same probe runs alone for 10 minutes first, as the baseline.
   - **VictoriaMetrics CPU and memory:** from PMM's own scrape of VictoriaMetrics (job `victoriametrics`, `managed/services/victoriametrics/victoriametrics.go:425`): `rate(process_cpu_seconds_total{job="victoriametrics"}[1m])` and `process_resident_memory_bytes{job="victoriametrics"}`, their maximum and p95 over each 10-minute run, read as Admin.
-  - **Record** both runs (CPU, memory, dashboard p95, MCP call count and p95, `rate_limited` count) on PMM-15790 for the security review. A cap it lowers is changed in spec §8 through a pmm-specs PR, then here.
-- [ ] **Step 5: Document the tools, budgets and errors in `mcp.md`; commit** `PMM-15790 Document and verify the metrics tools`.
+  - **Alert evaluation:** the increase over each run of the rule-evaluation failure counters of Grafana's alerting and of VMAlert, from PMM's scrape of both (jobs `grafana` and `vmalert`) [I: metric names checked on the Feature Build], read as Admin.
+  - **Pass:** the loaded run adds no rule-evaluation failure beyond the baseline's, and the dashboard probe's p95 under load is at most twice the baseline's. Otherwise lower the caps in spec §8 through a pmm-specs PR, then here, and run again.
+  - **Record** both runs (CPU, memory, dashboard p95, rule-evaluation failures, MCP call count and p95, `rate_limited` count) on PMM-15790 for the security review.
+  - **Fleet size:** state the number of monitored services the passing run had as the supported fleet size, in spec §8 through a pmm-specs PR and in `mcp.md`.
+- [ ] **Step 5: Document the tools, budgets and errors in `mcp.md`, with the rate limits and `retry_after`, the 30-day QAN window, the supported fleet size, and that label values are returned as stored (ADR-07); commit** `PMM-15790 Document and verify the metrics tools`.
 - [ ] **Step 6: Open the PR** ([00](00-roadmap.md#branch-and-pr-rules)): merge `origin/PMM-MCP-GA` (behind 0) into the branch, run a Feature Build, run the api-tests and the triage on it, and open `PMM-15790 Add the MCP metrics tools` into `PMM-MCP-GA` with the Feature Build link.

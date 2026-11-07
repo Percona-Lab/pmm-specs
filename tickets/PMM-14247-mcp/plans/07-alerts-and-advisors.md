@@ -1,68 +1,68 @@
-# Plan 07: Alerts and Advisors (task level)
+# Plan 07: Alerts (task level)
 
 > Execution: see [00](00-roadmap.md#how-to-execute-these-plans).
 
-**Goal:** `pmm_alerts` returns the caller's firing alerts from Grafana's alert API, and `pmm_advisors` the caller's failed Advisor checks from `GET /v1/advisors/checks/failed`. MCP narrows both to the caller's service list (plan 06).
+**Goal:** `pmm_alerts` returns the caller's firing alerts from Grafana's folder-scoped rules API, narrowed by MCP to the caller's service list (plan 06). `pmm_advisors` is out of the Tech Preview ([ADR-18](../adr/ADR-18-advisors.md)); this plan doesn't build it.
 
-**Architecture:** Both tools call existing APIs through nginx on loopback with the caller's credentials, like every other tool (ADR-03): Grafana's alert API, so Grafana's folder permissions apply [I] (Task 1 settles it), and the Advisors API, at the Editor Grafana role. MCP then keeps the items that belong to the caller's service list, filters, sorts and pages them, and returns plan 03's typed results. No new pmm-managed API, no `lbacPrefixes` change, no Grafana fork change.
+**Architecture:** The tool reads Grafana's rules API through nginx on loopback with the caller's credentials, like every other tool (ADR-03). That API is folder-scoped, so the tool shows a Viewer what PMM's own alert page shows; Grafana's alert list endpoints are not, and never supply the list. Silence state comes from the Alertmanager, joined by rule UID only. MCP then keeps the alerts that belong to the caller's service list, filters, sorts and pages them, and returns plan 03's typed results. No new pmm-managed API, no `lbacPrefixes` change, no Grafana fork change.
 
-**Tech Stack:** Go 1.27, go-sdk v1.8.0, Grafana's alerting HTTP API, the generated `advisor_service` client (`api/advisors/v1/json/client`).
+**Tech Stack:** Go 1.27, go-sdk v1.8.0, Grafana's alerting HTTP API (the Prometheus-style rules API and the Alertmanager API).
 
 **Spec:** [ADR-17](../adr/ADR-17-alerts.md), [ADR-18](../adr/ADR-18-advisors.md), [ADR-03](../adr/ADR-03-api-only-data-path.md), [ADR-11](../adr/ADR-11-output-contract.md), [spec §7.2, §7.3](../spec.md#72-alerts). Ticket PMM-15790.
 
 ## Global Constraints
 
-- Needs plan 06 (`listServices`), which needs plan 03, and the design review (00). Branch `PMM-15790-alerts-advisors`, cut from `PMM-MCP-GA`; one PR into it, opened after Task 5 (00).
-- **MCP's narrowing here is consistency, not a security boundary.** Grafana's alert API and the Advisors API don't apply Access Roles. The same caller reads them unfiltered with the same credentials, and in the PMM UI. Tests, docs and tool descriptions never call the narrowing a restriction. Applying Access Roles to these APIs is ADR-16's work, which is deferred.
-- **The caller's service list `L`** is plan 06's `listServices`: services of every `service_type` (ProxySQL, HAProxy and the rest included) and every node in it, hosts with only node_exporter included. For `pmm_alerts`, `L` is `listServicesOver(ctx, auth, alertListLookback)`, 7 days (ADR-17); `pmm_advisors` uses `listServices`, 1 hour.
+- Needs plan 06 (`listServices`), which needs plan 03, and the design review (00). Branch `PMM-15790-alerts`, cut from `PMM-MCP-GA`; one PR into it, opened after Task 5 (00).
+- **MCP's narrowing here is consistency, not a security boundary.** Grafana's alerting APIs don't apply Access Roles. The same caller reads them unfiltered by Access Roles with the same credentials, and in the PMM UI. Tests, docs and tool descriptions never call the narrowing a restriction. Applying Access Roles to them is ADR-16's work, which is deferred.
+- **The caller's service list `L`** is plan 06's list: services of every `service_type` (ProxySQL, HAProxy and the rest included) and every node in it, hosts with only node_exporter included. For `pmm_alerts`, `L` is `listServicesOver(ctx, auth, alertListLookback)`, 7 days (ADR-17). Its query takes a slot of plan 05's limit on requests to VictoriaMetrics, like every request MCP sends there.
 - **Alert narrowing** (ADR-17), against `L`:
-  - only five labels count: `pmm_provisioned`, and four that are each checked against one set of `L`: `service_id` against the service IDs, `service_name` against the service names, `node_id` against the node IDs, `node_name` against the node names;
-  - an alert labelled `pmm_provisioned="1"` is shown whatever it names: those are PMM's own HA and PMM Server component rules, whose `node_id`, `node_name` and `service_name` name PMM Server replicas and components, never in `L` (ADR-17);
+  - only four labels count, each checked against one set of `L`: `service_id` against the service IDs, `service_name` against the service names, `node_id` against the node IDs, `node_name` against the node names;
+  - an alert of PMM's own rules is shown whatever it names: those are PMM's HA and PMM Server component rules, whose `node_id`, `node_name` and `service_name` name PMM Server replicas and components, never in `L` (ADR-17). They are identified by rule UID or provenance, as Task 1 records, never by a label;
   - an alert that carries `service_id` or `service_name` is kept only if each service label it carries is in its set; its node labels are not checked, because PMM's `*_down` templates name the node the exporter's pmm-agent runs on (`pmm-server` for RDS and Azure services), not the service's node (ADR-17);
   - an alert that carries no service label but `node_id` or `node_name` is kept only if each node label it carries is in its set;
   - an alert that carries none of them is shown, as Grafana's UI shows it to the same caller;
-  - annotations and labels other than these five are never used for narrowing.
-- **Advisor narrowing** (ADR-18): a result is kept when its `service_id` is in `L`. Counts cover kept results only.
-- A failing service list fails the tool call; neither tool ever returns un-narrowed results.
-- `pmm_advisors` needs the Editor Grafana role (`/v1/advisors`, `auth_server.go:84-86`). With a Viewer token the API answers 403, and the tool `unauthorized`.
-- Firing alerts only, silenced or not, with the silence's end time; current state, no history. The tool description and every result, an empty one included, carry the note "Currently firing alerts only; resolved alerts are not shown." (ADR-17). Read only: no silencing, acknowledging, running checks or changing them (ADR-05).
-- Caps (spec §8): `pmm_alerts` 50/200 and `pmm_advisors` 50/200 (default/maximum), paged with `limit` and `offset`.
+  - annotations and labels other than these four, `pmm_provisioned` included, are never used for narrowing.
+- **Source of the list:** the rules API only. An Alertmanager alert adds silence state to an alert of a rule the rules API returned, joined by rule UID; it never adds an alert.
+- A failing service list fails the tool call; the tool never returns un-narrowed results.
+- Firing alerts only, silenced or not, with the silence's end time; current state, no history. The tool description and every result, an empty one included, carry the note "Currently firing alerts only; resolved alerts are not shown." (ADR-17). Read only: no silencing or acknowledging (ADR-05).
+- Caps (spec §8): `pmm_alerts` 50/200 (default/maximum), paged with `limit` and `offset`.
 - A `service_id`, `service_name` or `node_name` filter outside `L` answers `not_found` with plan 06's fixed text, "not in your service list (services that sent metrics in the last hour)", with "in the last 7 days" for `pmm_alerts`, which never echoes the value the caller sent.
-- Untrusted fields: an alert's name, severity, labels, summary and description; an Advisor result's service name, check name, summary, description and `read_more_url`.
+- Untrusted fields: an alert's name, severity, labels, summary and description.
 - Every map field in a result is `omitempty` or always non-nil (plan 03's contract rule).
-- Each new tool is added to `registerTools` (`mcp.go:194`) and to the expected name list in `TestInitializeAndListTools` (`mcp_test.go:51`). It regenerates `testdata/tools_list.golden.json` (`-update`), lists its Untrusted fields in `TestUntrustedFieldsMarked`, gets a case in `TestErrorsCarryNoStructuredContent`, and is added to the exemptions of `TestRedactionInBothRenderings` with the reason "returns no statement text" (plan 03 Task 8). Each new `pmmAPI` method regenerates the mock with `go tool mockery --config .mockery.yaml`; commit only `managed/services/mcp/mock_pmm_api_test.go`.
+- The new tool is added to `registerTools` (`mcp.go:194`) and to the expected name list in `TestInitializeAndListTools` (`mcp_test.go:51`). It regenerates `testdata/tools_list.golden.json` (`-update`), lists its Untrusted fields in `TestUntrustedFieldsMarked`, gets a case in `TestErrorsCarryNoStructuredContent`, and is added to the exemptions of `TestRedactionInBothRenderings` with the reason "returns no statement text" (plan 03 Task 8). Each new `pmmAPI` method regenerates the mock with `go tool mockery --config .mockery.yaml`; commit only `managed/services/mcp/mock_pmm_api_test.go`.
 
 ## Review Focus
 
 - **A server-level alert,** with no service or node label, is shown to a restricted caller, as Grafana shows it (Task 2).
 - **An alert from a rule that aggregates `service_name` away but keeps `node_name`** is kept when that node is in `L`: a node with a listed service on it, or a host whose node_exporter series the caller can read. Under a negative Access Role filter such as `{service_name!="b"}`, VictoriaMetrics returns every node_exporter series, so node-only alerts of `b`'s host are kept while `b`'s own alerts are dropped (Task 2).
 - **A service whose pmm-agent went silent** (push mode, pmm-agent or vmagent stopped) sends no `up` samples. A target that is scraped but down (`up=0`) still does. The silent service's alerts, the one saying it is down included, stay in `pmm_alerts` for 7 days, because alerts use the 7-day list; after that they are dropped while Grafana still shows them. Other tools drop the service after an hour (ADR-08). Task 2 pins this; `mcp.md` states it (Task 4).
-- **Grafana folder permissions** that hide a rule from a Viewer also hide its alerts, before MCP's narrowing [I] (Task 1 records which endpoint does this, if any; Task 5 tests it).
-- **Advisors disabled in settings:** `invalid_input` with a message that says so, never an empty list (Task 3).
+- **Grafana folder permissions** that hide a rule from a Viewer also hide its alerts, before MCP's narrowing, because the list comes from the rules API (Task 1 checks it; Task 5 tests it). A silenced alert of a hidden rule adds nothing (Task 2).
+- **A user's rule labelled `pmm_provisioned="1"`** is narrowed like any other rule: only PMM's own rules, by UID or provenance, are shown whatever they name (Task 2).
 - **Annotation text that names another service** is returned as written and never used for narrowing (Task 2).
 
 ---
 
-### Task 1: Settle the Grafana alert endpoint (gates ADR-17's acceptance)
+### Task 1: Check the rules API and the silence join (gates ADR-17's acceptance)
 
 **Files:**
 - Modify: pmm-specs `tickets/PMM-14247-mcp/adr/ADR-17-alerts.md`
 
-**Interfaces:** produces the endpoint and the field mapping Task 2 uses: name, severity, labels, summary, description, start time, silenced, silence end, rule UID.
+**Interfaces:** produces the field mapping Task 2 uses: name, severity, labels, summary, description, start time, silenced, silence end, rule UID, and the field that identifies PMM's own rules.
 
 **Steps:**
 - On the live-check environment (00), set up:
   - PMM alert rules from templates in two folders, one of them without Viewer access;
   - firing alerts for two services, one node-level alert, and one with no service or node label (a rule on `vector(1)`);
   - one silenced alert.
-- As a Viewer and as an Editor, call `GET /graph/api/alertmanager/grafana/api/v2/alerts` and `GET /graph/api/prometheus/grafana/api/v1/alerts` through nginx. For each, record:
+- As a Viewer and as an Editor, call `GET /graph/api/prometheus/grafana/api/v1/rules` through nginx, and record:
   - the status code;
-  - which alerts come back, including those of the folder without Viewer access;
-  - whether the labels `service_name`, `node_name`, `severity`, `alertname` and a rule UID are present;
-  - whether silenced alerts and their silence end time are available. The Alertmanager alert carries `silencedBy`; the end time is in `GET /graph/api/alertmanager/grafana/api/v2/silences`.
-- The PMM UI's alert page joins Grafana's rules API with the Alertmanager alerts and silences (`ui/apps/pmm/src/api/alerting.ts`). Record whether `pmm_alerts` needs the same join.
-- Choose the endpoint whose answer to a Viewer is narrowed by folder permissions. If both are, choose the Alertmanager API, since it carries the silence state. If neither is, record that, and correct ADR-17's "folder permissions apply" in the same PR.
-- Record the endpoint, the field mapping and the evidence in ADR-17 through a pmm-specs PR `PMM-15790 Settle the Grafana alert endpoint for MCP`. Task 2 starts after it is merged.
+  - which rules and firing alerts come back: none of the folder without Viewer access for the Viewer;
+  - whether each alert carries the labels `service_name`, `node_name`, `severity`, `alertname`, and its rule's UID;
+  - which field identifies PMM's own HA and PMM Server component rules: their fixed rule UIDs, or the rules' provenance.
+- As the same callers, call `GET /graph/api/alertmanager/grafana/api/v2/alerts` and `GET /graph/api/alertmanager/grafana/api/v2/silences`, and record how a silenced alert carries its rule UID (the `__alert_rule_uid__` label [I]) and `silencedBy`, and where the silence's end time is.
+- PMM's own alert page reads the same rules API (`ui/apps/pmm/src/api/alerting.ts`). `pmm_alerts` joins the silence state by rule UID only, and never takes an alert from the Alertmanager list.
+- If the rules API shows the Viewer a rule of the folder without Viewer access, stop: ADR-17 changes through a pmm-specs PR before Task 2.
+- Record the field mapping and the evidence in ADR-17 through a pmm-specs PR `PMM-15790 Record the Grafana rules API for MCP`. Task 2 starts after it is merged.
 
 ### Task 2: `pmm_alerts`
 
@@ -71,9 +71,9 @@
 - Modify: `client.go`, `deps.go` (`pmmAPI`), `mock_pmm_api_test.go`, `mcp.go` (`registerTools`), `mcp_test.go`, `contract_test.go` (`TestUntrustedFieldsMarked`), `testdata/tools_list.golden.json`
 
 **Interfaces:**
-- `pmmAPI` gains `Alerts(ctx context.Context, auth callerAuth) ([]grafanaAlert, error)`: a raw `getJSON` on Task 1's endpoint under `graph/api/`. If Task 1 needs the silences join, also `Silences(ctx context.Context, auth callerAuth) ([]grafanaSilence, error)`.
-- `type grafanaAlert struct { Labels, Annotations map[string]string; StartsAt time.Time; Silenced bool; SilencedUntil *time.Time }`, filled per Task 1's mapping.
-- `type serviceSet struct { serviceIDs, serviceNames, nodeIDs, nodeNames map[string]bool }`; `func newServiceSet(services []serviceInfo, nodes []nodeInfo) serviceSet`, from both results of `listServices`; `func (l serviceSet) keepLabels(labels map[string]string) bool` applies the alert narrowing rule. Task 3 uses `serviceIDs`.
+- `pmmAPI` gains `Alerts(ctx context.Context, auth callerAuth) ([]grafanaAlert, error)`: a raw `getJSON` on `graph/api/prometheus/grafana/api/v1/rules`, one `grafanaAlert` per firing alert of the rules returned; and `SilencedAlerts` and `Silences`, raw `getJSON`s on the Alertmanager API, for silence state only.
+- `type grafanaAlert struct { RuleUID string; PMMRule bool; Labels, Annotations map[string]string; StartsAt time.Time; Silenced bool; SilencedUntil *time.Time }`, filled per Task 1's mapping. `PMMRule` comes from the rule UID or provenance, never from a label. `Silenced` and `SilencedUntil` are joined by rule UID only; an Alertmanager alert whose rule UID isn't among the rules returned is ignored.
+- `type serviceSet struct { serviceIDs, serviceNames, nodeIDs, nodeNames map[string]bool }`; `func newServiceSet(services []serviceInfo, nodes []nodeInfo) serviceSet`, from both results of `listServices`; `func (l serviceSet) keepAlert(a grafanaAlert) bool` applies the alert narrowing rule.
 - `type alertsInput struct { ServiceID, ServiceName, NodeName, Severity string; Limit, Offset int }`, every field `omitempty`.
 - `type alertRow struct { Name, Severity string (both Untrusted); Labels map[string]string (Untrusted); Summary, Description string (both Untrusted); StartsAt time.Time; Silenced bool; SilencedUntil *time.Time; PMMURL string }`, snake_case JSON. `Labels` is `json:"labels,omitempty"` and leaves out labels that start with `__`. `PMMURL` is `<base>graph/alerting/grafana/<rule uid>/view`, the pattern PMM's UI uses (`AlertStatusTable.utils.ts:85`), or `<base>graph/alerting/list` when there is no rule UID.
 - `type alertsResult struct { Alerts []alertRow; Page page; Note string }` with `render()`: the note, then one line per alert (severity, name, service, node, start time, silence end, link) with its summary below, then the paging marker. `Note` is always "Currently firing alerts only; resolved alerts are not shown."
@@ -81,18 +81,20 @@
 - Order: severity `critical`, `error`, `warning`, then other values alphabetically; then `starts_at`, newest first; then name.
 
 **Steps:**
-- Write `TestKeepLabels`, a table:
+- Write `TestKeepAlert`, a table:
   - a service in `L`: kept;
   - a node in `L`: kept;
   - a service outside `L`: dropped;
   - a service in `L` with a node outside `L`: kept, because a service alert's node labels are not checked (an RDS service's down alert with `node_name="pmm-server"`);
   - a service in `L` with a second service label outside `L` (`service_id` listed, `service_name` not): dropped;
-  - for a restricted caller, `pmm_provisioned="1"` with `node_id` = `PMM_HA_NODE_ID` (`pmm_ha_node_unreachable` on HA), with `service_name="clickhouse"` (`pmm_clickhouse_down` on HA), and with `node_name="pmm-server"` (`pmm_grafana_down` on a standalone server): all kept;
+  - for a restricted caller, PMM's own rules with `node_id` = `PMM_HA_NODE_ID` (`pmm_ha_node_unreachable` on HA), with `service_name="clickhouse"` (`pmm_clickhouse_down` on HA), and with `node_name="pmm-server"` (`pmm_grafana_down` on a standalone server): all kept;
+  - a user's rule labelled `pmm_provisioned="1"` that names a service outside `L`: dropped;
   - no service or node label: shown;
   - an annotation that names a hidden service: no effect;
   - each of the four labels checked against its own set: an alert with only a `node_name` equal to a listed service's name is still dropped.
 - Write `TestAlertsTool` against a fixture with alerts for allowed service A, hidden service B, A's node, a node of B only, a server-level alert and a silenced alert:
   - the result holds A's alert, the node alert of A's node, the server-level alert and the silenced alert with `silenced_until`;
+  - an Alertmanager alert whose rule UID isn't in the rules API's answer adds no alert, and its silence marks nothing; an alert's silence state comes from the Alertmanager alert with its rule UID, not from matching labels;
   - the `service_name`, `node_name` and `severity` filters;
   - a `service_id` filter for B is `not_found` with the fixed text, and the message contains neither B's ID nor any other service's name or ID;
   - the order above; 120 alerts with `limit` 50 set `page.truncated`;
@@ -107,32 +109,9 @@
 - Register the tool; add it to the name list, `TestErrorsCarryNoStructuredContent`, `TestEmptyAndDegradedResults` and the redaction exemptions; regenerate the golden file and the mock; list the Untrusted fields. Run `go test ./managed/services/mcp/...`, see PASS.
 - Commit `PMM-15790 Add pmm_alerts`.
 
-### Task 3: `pmm_advisors`
+### Task 3: `pmm_advisors` (removed)
 
-**Files:**
-- Create: `managed/services/mcp/tools_advisors.go`, `tools_advisors_test.go`, `testdata/failed_checks*.json`
-- Modify: `client.go` (the advisors client in `newClient`), `deps.go`, `mock_pmm_api_test.go`, `mcp.go`, `mcp_test.go`, `contract_test.go`, `testdata/tools_list.golden.json`
-
-**Interfaces:**
-- `pmmAPI` gains `FailedChecks(ctx context.Context, auth callerAuth) (*advisor_service.GetFailedChecksOKBody, error)`: `GET /v1/advisors/checks/failed` with no `service_id` and no paging parameters.
-  - One such call returns every result, each with its `service_id` and `service_name` (`managed/services/management/checks.go:117`, `managed/services/checks/registry.go:103`). That is enough: `GET /v1/advisors/failedServices` isn't called, and per-severity counts are computed from the kept results.
-  - The API returns results in map order, so MCP sorts them before paging.
-- `type advisorsInput struct { ServiceID, ServiceName, Severity string; Limit, Offset int }`, every field `omitempty`.
-- `type advisorRow struct { ServiceID string; ServiceName, CheckName string (both Untrusted); Severity string; Summary, Description, ReadMoreURL string (all Untrusted); PMMURL string }`, snake_case JSON. `Severity` is the enum name in lower case without `SEVERITY_` (`emergency` to `debug`), and the `severity` filter matches it exactly. `PMMURL` is `<base>graph/advisors/insights`.
-- `type advisorsResult struct { Results []advisorRow; BySeverity map[string]int; Page page }` with `render()`. `BySeverity` is always non-nil (`{}` when nothing is left). It counts, per severity, the results that survive narrowing and the request's filters, across all pages, not only the returned page.
-- Order: severity rank (`emergency` first), then service name, then check name.
-- **Advisors disabled:** the API answers FailedPrecondition (`managed/services/management/checks.go:121`), which grpc-gateway sends as HTTP 400. The request carries no parameters, and that is the handler's only 400, so a 400 from it means Advisors are disabled. The tool answers `invalid_input` (the code HTTP 400 maps to, `errors.go:87`) with the message "Advisors are disabled in PMM's settings".
-
-**Steps:**
-- Write `TestAdvisorsTool` with an Editor fixture holding results for A (allowed) and B (hidden):
-  - only A's results, and `by_severity` counts only them;
-  - a `service_id` filter for B is `not_found` with the fixed text, without B's ID;
-  - the `severity` filter, the order and paging;
-  - a 403 (Viewer) is `unauthorized`;
-  - a 400 gives `invalid_input` with "Advisors are disabled in PMM's settings";
-  - no result left after narrowing: an empty list with `by_severity` `{}`, not a protocol error.
-- Run, see FAIL; implement; register; add it to the name list, `TestErrorsCarryNoStructuredContent`, `TestEmptyAndDegradedResults` and the redaction exemptions; regenerate the golden file and the mock; list the Untrusted fields; run the package, see PASS.
-- Commit `PMM-15790 Add pmm_advisors`.
+`pmm_advisors` is out of the Tech Preview ([ADR-18](../adr/ADR-18-advisors.md)); nothing to build. ADR-18 keeps its design for a later ticket. The task's number is kept so references to Tasks 4 and 5 stay valid.
 
 ### Task 4: `Instructions` and docs
 
@@ -143,30 +122,28 @@
 **Interfaces:** none.
 
 **Steps:**
-- `TestInitializeAndListTools`: the instructions contain `pmm_alerts` and `pmm_advisors`. Run, see FAIL.
-- Add one line to `Instructions`: "For what is wrong now, call pmm_alerts (firing alerts) and pmm_advisors (failed Advisor checks; needs an Editor token)." Plan 03's line on untrusted fields covers their texts. Run, see PASS.
+- `TestInitializeAndListTools`: the instructions contain `pmm_alerts`, and their list of untrusted text names alert summaries and descriptions. Run, see FAIL.
+- Add one line to `Instructions`: "For what is wrong now, call pmm_alerts (firing alerts)." Extend the list of untrusted text in `Instructions` (plan 04) with alert names, labels, summaries and descriptions, and the links in them: output-schema marks don't reach every model (`tool-contract.md` §7). Run, see PASS.
 - `mcp.md`:
-  - both tools, their filters and caps;
-  - `pmm_advisors` needs an Editor token and returns `unauthorized` to a Viewer; use a separate Editor token only where Advisor results are needed (ADR-18);
-  - both lists are narrowed to the caller's services to match its other results; Grafana's alert list and the Advisors page show the same user everything;
+  - the tool, its filters and caps; alert summaries and descriptions are returned as written (ADR-07);
+  - Advisor results are not in MCP (ADR-18);
+  - the list is narrowed to the caller's services to match its other results;
   - a service with no `up` sample for an hour leaves the list of the other tools, but its alerts stay in `pmm_alerts` for 7 days; after 7 days without samples they leave it too;
   - `pmm_alerts` shows currently firing alerts only; resolved alerts are not shown.
-- Commit `PMM-15790 Document pmm_alerts and pmm_advisors`.
+- Commit `PMM-15790 Document pmm_alerts`.
 
 ### Task 5: api-tests and the PR
 
 **Files:**
-- Create: `api-tests/mcp/alerts_advisors_test.go`, using plan 06 Task 4's helpers
+- Create: `api-tests/mcp/alerts_test.go`, using plan 06 Task 4's helpers
 
 **Interfaces:** none.
 
 **Steps:**
-- On the live-check environment (00), with Task 1's alert set, Advisors enabled, and at least one Advisor check failing on two services A and B:
+- On the live-check environment (00), with Task 1's alert set, for two services A and B:
   - a Viewer whose Access Role allows A gets A's alert, the node alert of A's node and the server-level alert from `pmm_alerts`, and nothing of B;
-  - an Editor with the same Access Role gets only A's results from `pmm_advisors`;
-  - a Viewer gets `unauthorized` from `pmm_advisors`;
   - an alert of the folder without Viewer access doesn't reach a Viewer;
   - a Viewer whose Access Role is `{service_name!="B"}` doesn't get B's alerts, and gets the node-only alerts of every host;
-  - with Advisors disabled, `pmm_advisors` answers `invalid_input` with "Advisors are disabled in PMM's settings".
+- Run plan 05's load test again (plan 05 Task 9 Step 4) with a fourth loop per caller that calls `pmm_alerts`, which reads the 7-day list. The same pass threshold applies.
 - Record the results on PMM-15790.
-- The last step of the plan (00): merge `origin/PMM-MCP-GA` into the branch, with `PMM-MCP-GA` behind 0; run a Feature Build from the branch, verify live, and open the PR `PMM-15790 Add pmm_alerts and pmm_advisors` into `PMM-MCP-GA`.
+- The last step of the plan (00): merge `origin/PMM-MCP-GA` into the branch, with `PMM-MCP-GA` behind 0; run a Feature Build from the branch, verify live, and open the PR `PMM-15790 Add pmm_alerts` into `PMM-MCP-GA`.

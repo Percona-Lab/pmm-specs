@@ -21,10 +21,12 @@
   - no address and no port.
 - Any `up` value counts. A target scraped with `up=0` stays listed with a current `last_seen`, because the service exists. A service leaves the list only when no `up` sample at all arrived in the last hour, for example when its pmm-agent or vmagent stopped.
 - The list is built per tool call with the caller's own credentials, never cached or shared between callers (ADR-03). A failing list query fails the tool call; it never falls back to an unfiltered source.
+- The list query goes through `QueryInstant`, so it takes a slot of plan 05's limit on requests to VictoriaMetrics, and its response is read within plan 05's size cap. If this plan lands first, plan 05 Task 1 covers it when it wraps `QueryInstant`.
 - After Task 1, no MCP tool calls `/v1/inventory/`. After Task 2, `GET /v1/inventory/services` and `/nodes` are Admin-only again.
 - A `service_id` or service name outside the list answers `not_found` with the fixed text "not in your service list (services that sent metrics in the last hour)", plus the tool's existing hint. A `not_found` message never echoes the ID or name the caller sent, and no error text, hint or candidate list names a service outside the list.
 - Tools that need an engine (`pmm_get_explain`, `pmm_get_schema`, `pmm_get_config`) still accept only MySQL, PostgreSQL and MongoDB, with their existing `invalid_input` for another `service_type`.
 - pmm-managed's APIs, nginx, the gRPC gateway and `lbacPrefixes` are unchanged.
+- **Credentials on backing calls** (ADR-10). Before the service list moves to the Grafana-served datasource proxy, MCP forwards the caller's credentials in one canonical form: when the caller sent a token, `Authorization: Bearer <token>` and no `Cookie`; otherwise Basic `Authorization` and `Cookie` unchanged. Task 1 does this first, in its own commit.
 
 ## Review Focus
 
@@ -39,11 +41,12 @@
 ### Task 1: The caller's service list from series (ADR-08)
 
 **Files:**
-- Modify: `managed/services/mcp/tools_inventory.go` (`serviceInfo`, `listServices` `:146`, `inventory`; delete `nodeNames`), `tools_qan.go` (`serviceEngine` `:605`, `engineOf` `:678`), `tools_config.go` (`service_name` lookup), `links.go` (`serviceURL`), `deps.go` and `client.go` (drop `ListServices`, `ListNodes`), `mock_pmm_api_test.go`, `helpers_test.go` (routes by query text), `testdata/tools_list.golden.json`, `documentation/docs/api/mcp.md`
+- Modify: `managed/services/mcp/tools_inventory.go` (`serviceInfo`, `listServices` `:146`, `inventory`; delete `nodeNames`), `tools_qan.go` (`serviceEngine` `:605`, `engineOf` `:678`), `tools_config.go` (`service_name` lookup), `links.go` (`serviceURL`), `deps.go` (`callerAuthFromHeader`) and `client.go` (drop `ListServices`, `ListNodes` from both), `mock_pmm_api_test.go`, `helpers_test.go` (routes by query text), `testdata/tools_list.golden.json`, `documentation/docs/api/mcp.md`
 - Test data: new `testdata/vm_up_services.json`; remove `services.json`, `services_with_mongo.json`, `nodes.json`
 - Test: `tools_inventory_test.go`, `hardening_test.go` (config tests live there, next to `TestConfigAcceptsServiceID`), `tools_qan_test.go`, plan 04's `resolve_test.go`, `api-tests/mcp/mcp_test.go` (`TestInventory`)
 
 **Interfaces:**
+- `callerAuthFromHeader` builds `callerAuth` in the canonical form: when `auth.GetTokenFromHeaders` finds a token in the caller's headers, `authorization` is `Bearer <token>` and `cookie` is empty; otherwise both are kept as received. `AuthenticateRequest` and `apply` set them on every backing call as today, and `callerKey` (plan 02) still keys by the token.
 - `type serviceInfo struct { ServiceID, ServiceName, Engine, Version, NodeID, NodeName, Environment, Cluster string; LastSeen time.Time }`; `type nodeInfo struct { NodeID, NodeName string }`.
 - `const serviceListQuery`, sent as an instant query:
   `max by (service_id, service_name, service_type, node_id, node_name, environment, cluster) (tlast_over_time(up[1h]))`.
@@ -59,6 +62,11 @@
 - `fakePMM`: a route key may end in ` ?<text>`. It matches a request with that method and path whose `query` parameter contains `<text>`, and wins over the plain key; the longest matching text wins. Plan 05 Task 1 routes its fixtures the same way; whichever plan lands first adds it.
 
 **Steps:**
+- First, the credentials (Global Constraints):
+  - `TestBackingCallCredentials`: for a token in each form `auth.GetTokenFromHeaders` accepts, sent with a session cookie, every backing call the fake PMM records, through the generated clients and the raw requests, carries `Authorization: Bearer <token>` and no `Cookie`; Basic credentials with a cookie, and a cookie alone, arrive unchanged; `callerKey` is the same for every form of one token;
+  - run, see FAIL; implement; run the package, see PASS;
+  - `mcp.md`: send a token as `Authorization: Bearer <token>`;
+  - commit `PMM-15531 Forward canonical credentials`.
 - Write the tests first:
   - `TestServiceList`, against one fixture:
     - the query sent, verbatim, to `/graph/api/datasources/proxy/uid/<uid>/api/v1/query` with the caller's `Authorization`;
@@ -96,7 +104,7 @@
 
 ### Task 3: Service-account tokens under Access Roles (ADR-12)
 
-PMM-15534 lands on `main` through its own ticket and PR, not through this plan. That PR also carries the access-control docs for assigning Access Roles to a service account (`POST /v1/accesscontrol/roles:assign`) and its release-note line that tokens start on the default Access Role. `mcp.md` exists only on `PMM-MCP-GA`, so this task points it to those docs.
+PMM-15534 lands on `main` through its own ticket and PR, not through this plan. It carries ADR-12's rules: a principal whose identity lookup yields no positive user ID is refused with 401, and Access Role filters are skipped only for the anonymous identity. That PR also carries the access-control docs for assigning Access Roles to a service account (`POST /v1/accesscontrol/roles:assign`) and its release-note line that tokens start on the default Access Role. `mcp.md` exists only on `PMM-MCP-GA`, so this task points it to those docs.
 
 **Files:**
 - Modify: `documentation/docs/api/mcp.md`

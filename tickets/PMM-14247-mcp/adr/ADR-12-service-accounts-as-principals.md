@@ -1,7 +1,7 @@
 # ADR-12: Service-account tokens are principals
 
 - Status: Accepted (2026-11-05), after the review in pmm-specs#4
-- Date: 2026-10-22, revised 2026-10-24, 2026-10-30 and 2026-11-02
+- Date: 2026-10-22, revised 2026-10-24, 2026-10-30, 2026-11-02 and 2026-11-06
 - Tickets: PMM-14247, PMM-15531, PMM-15534
 - Implemented: not yet; lands on `main` through PMM-15534, then merges into `PMM-MCP-GA`
 
@@ -18,6 +18,8 @@ The MCP documentation tells users to connect with a service-account token. PMM A
 ## Decision
 
 Option 1. pmm-managed already calls `GET /api/auth/serviceaccount` for every service token. Percona's Grafana fork answers with `ServiceAccountProfileDTO`, whose `id` is the account's user ID. The auth path uses that ID for Access Roles exactly as it uses an interactive user's ID. A principal seen for the first time gets the default role, as interactive users do. Roles are assigned to an account with the existing `POST /v1/accesscontrol/roles:assign`.
+
+A principal whose identity lookup yields no positive user ID, a service account or an interactive user, is refused with 401. Access Role filters are skipped only for the anonymous identity.
 
 Out of scope: a role picker on Grafana's service-account page; a machine principal for unattended runs; propagating caller identity to upstreams with a header (MCP authorizes nothing itself, ADR-03).
 
