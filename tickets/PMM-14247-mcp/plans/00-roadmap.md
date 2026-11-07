@@ -22,7 +22,7 @@
 - **Grafana role** (Viewer, Editor, Admin) and **Access Role** (a PMM role with a label filter): always say which one.
 - **AI client** (Claude Code, Cursor, …) and **pmm-agent**: never just "agent".
 - **Behind 0:** `git rev-list --count origin/PMM-MCP-GA..origin/main` prints `0`, so `PMM-MCP-GA` holds every commit of `main`.
-- **Full-depth plan:** every task has its files, interfaces and checkbox steps. **Task-level plan:** tasks only, expanded into a full-depth plan before it starts. Plans 01 to 05 are full-depth, plans 06 to 08 task-level.
+- **Full-depth plan:** every task has its files, interfaces and checkbox steps. **Task-level plan:** tasks only, expanded into a full-depth plan before it starts. Plans 01 to 06 are full-depth, plans 07 and 08 task-level.
 - **Feature Build:** Jenkins builds PMM Server and Client images from the branches, through a draft PR in Percona-Lab/pmm-submodules. An outside contributor who can't run one verifies on a local setup and describes that setup in the PR instead.
 - **Design review:** the security design review of this folder and `tool-contract.md`; it gates plans 04 to 07. **Implementation review:** the security review of the code, plan 08 Task 1, run after plan 08's Tasks 5 and 6.
 - **The caller's service list:** the services the caller can see. From plan 06 on, they are the services in the `up` series of the last hour, read with the caller's credentials and filtered by vmproxy (ADR-08). Until plan 06, the list comes from the inventory API.
@@ -38,16 +38,16 @@
 | [03 Output contract](03-output-contract.md) | PMM-15530 | plan 02; `tool-contract.md` reviewed (its Task 1) | Full-depth |
 | [04 Resolve first](04-resolve-first.md) | PMM-15529 | plans 02, 03; design review | Full-depth |
 | [05 Metrics tools](05-metrics.md) | PMM-15790 | plans 02, 03; design review | Full-depth |
-| [06 Service list and Access Roles](06-access-roles.md) | PMM-15531 | plans 03 and 04, design review; plan 05 before its Task 4 | Task-level |
+| [06 Service list and Access Roles](06-access-roles.md) | PMM-15531 | plans 03, 04 and 05 (its branch is cut from plan 05's), design review; PMM-15534 for its Task 3 | Full-depth |
 | [07 Alerts](07-alerts-and-advisors.md) | PMM-15790 | plan 06, design review | Task-level |
 | [08 Release](08-release.md) | PMM-15532 | plans 01 to 07; the release gate of [spec §10](../spec.md#10-phase-5-release), PMM-15534 on `main` and merged into `PMM-MCP-GA` included | Task-level |
 
-- **Plan 06** builds the caller's service list from the metric series of the last hour, which vmproxy filters by the caller's Access Roles (ADR-08), uses it for every service lookup, and checks Access Roles end to end. It removes the Viewer rules for `GET /v1/inventory/services` and `/nodes` from #5942.
+- **Plan 06** builds the caller's service list from the metric series of the last hour, which vmproxy filters by the caller's Access Roles (ADR-08), uses it for every service lookup, and checks Access Roles end to end. It removes the Viewer rules for `GET /v1/inventory/services` and `/nodes` from #5942. Its branch is cut from plan 05's, and it lands in two PRs: the service list now, and the service-account token checks once PMM-15534 is merged in.
 - **Plan 07** reads alerts from Grafana's folder-scoped rules API and narrows them to the caller's service list (ADR-03, ADR-17). No plan changes `lbacPrefixes` or adds a pmm-managed API for them. `pmm_advisors` is out of the Tech Preview (ADR-18), so no plan builds it.
 - **PMM-15534** (ADR-12) is not a plan here. It lands on `main` through its own ticket and PR, and reaches `PMM-MCP-GA` with the next merge of `main`. Plan 08 waits for it.
 - ADR-16 is deferred to its own ticket on `main`. ADR-13 (`mcp:use`) ships on PMM-15791 after the MCP release. Neither has a plan here.
 
-Order: plan 01, plan 02, plan 03. The security design review starts once plan 03 Task 1 (`tool-contract.md`) is reviewed, and runs while the rest of plan 03 is built. After plan 03 and the review: plans 04 and 05 in parallel, plan 06 after plan 04 (its Task 4 also waits for plan 05), then plan 07 and plan 08. Plan 06's Access Role matrix covers the query tools, so it needs plan 04.
+Order: plan 01, plan 02, plan 03. The security design review starts once plan 03 Task 1 (`tool-contract.md`) is reviewed, and runs while the rest of plan 03 is built. After plan 03 and the review: plans 04 and 05 in parallel, plan 06 after both, then plan 07 and plan 08. Plan 06's Access Role matrix covers the query and metrics tools, so it needs plans 04 and 05, and its code builds on plan 05's.
 
 **Why the contract comes before plans 04 and 05.** Plan 03 puts the contract's plumbing first (typed results, errors, paging, `pmm_catalog`), so the new tools in plans 04 and 05 are written once, in their final shape, instead of text-only and then reworked. The contract document still comes first (plan 03, Task 1).
 
@@ -62,7 +62,7 @@ Default for every plan: one plan = one branch = one PR into `PMM-MCP-GA`, opened
 The last step of every plan: merge `origin/PMM-MCP-GA` into the branch (with `PMM-MCP-GA` behind 0), run `make gen` and `make format`, commit whatever they changed, push, run a Feature Build from it, run the checks of [Verification, before each PR](#verification-before-each-pr), and open the PR with the Feature Build link (or, for an outside contributor, the description of the local setup). CI's "Checks" job (`.github/workflows/main.yml`) runs `make gen`, `make release`, `make format` and `go mod tidy`, then fails on any diff, so a branch that skips this step goes red.
 
 From PMM-15527:
-- Ticket branches are cut from `PMM-MCP-GA`, never from `main`, named `PMM-XXXXX-<2 to 4 words>`, and PR back into `PMM-MCP-GA`.
+- Ticket branches are cut from `PMM-MCP-GA`, never from `main`, named `PMM-XXXXX-<2 to 4 words>`, and PR back into `PMM-MCP-GA`. One exception: plan 06's branch, `PMM-15531-service-list`, is cut from plan 05's, `PMM-15790-metrics-tools`, because it builds on plan 05's code before that PR merges. Once it merges, plan 06's branch merges `origin/PMM-MCP-GA` and its PR targets `PMM-MCP-GA` (plan 06, Global Constraints).
 - Merge `main` into `PMM-MCP-GA` weekly and before every PR, so `PMM-MCP-GA` is behind 0.
 - Never hand-merge a file that `make gen` writes: take either side, run `make gen`, commit the result.
 - Generated files (`*.pb.go`, `*.pb.gw.go`, swagger) are regenerated, never hand-edited. `make prepare-pr` also reformats them: commit only what `make gen` writes for the branch's own `.proto` changes, and revert the reformatting of generated files the branch doesn't change.
