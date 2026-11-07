@@ -222,7 +222,7 @@ Expected: PASS.
 Run: `go test ./managed/services/mcp/ -run 'TestActionDeadlineIsPerCall|TestLiveInspectionRateLimited|TestSchemaManyTables' -v`
 Expected: FAIL (no cancel recorded).
 
-- [ ] **Step 3: Implement `CancelAction` and the cancel in `runAction`; set `PropagateRequestCancellation`; regenerate the mock** with `go tool mockery --config .mockery.yaml` from the repository root, and commit only `managed/services/mcp/mock_pmm_api_test.go`.
+- [ ] **Step 3: Implement `CancelAction` and the cancel in `runAction`; set `PropagateRequestCancellation`; regenerate the mock** with `go tool mockery --config .mockery.yaml` from the repository root and `make format`, and commit only `managed/services/mcp/mock_pmm_api_test.go`.
 
 - [ ] **Step 4: Run the package tests**
 
