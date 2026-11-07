@@ -1,9 +1,9 @@
 # ADR-15: Metrics tools
 
 - Status: Accepted (2026-11-05), after the review in pmm-specs#4
-- Date: 2026-10-24, revised 2026-10-26, 2026-10-30, 2026-11-02 and 2026-11-06
+- Date: 2026-10-24, revised 2026-10-26, 2026-10-30, 2026-11-02, 2026-11-06 and 2026-11-07 (the mechanism as built in plan 05; the decision is unchanged)
 - Tickets: PMM-14247, PMM-15790
-- Implemented: not yet (plan 05)
+- Implemented: plan 05, [percona/pmm#6291](https://github.com/percona/pmm/pull/6291) (draft until the load test)
 
 ## Context
 
