@@ -39,7 +39,7 @@
 - Concurrency: 4 metric calls per caller, 8 per replica. A call of `pmm_query_metrics`, `pmm_list_metrics` or `pmm_service_health` counts once, however many queries it runs. `pmm_top_queries` and `pmm_query_detail` take a slot of the same caps, and their window is at most 30 days (Task 8).
 - **VictoriaMetrics requests.** Every request MCP sends to VictoriaMetrics, from any tool, takes a slot of one per-replica limit: metric calls, each `pmm_service_health` query, the version lookup, and the service list (plan 06) and alert list (plan 07), which build on `QueryInstant`. A request waits for a slot until its call's deadline. The limit is half of VictoriaMetrics' limit on concurrent queries, at least 1 (Task 1): `VM_search_maxConcurrentRequests` when set, otherwise VictoriaMetrics' own default, `min(2 × CPUs, 16)`. PMM doesn't set `-search.maxConcurrentRequests`. Dashboards and alert evaluation keep the other half.
 - **Rate per caller.** A token bucket per caller key for live calls and one for metric calls (spec §8); an empty bucket answers `rate_limited` with `retry_after`, in seconds, in `_meta` (Task 8).
-- **Supported fleet size:** Task 9 states it, from the load test, in spec §8 and `mcp.md`.
+- **Fleet size:** MCP states none of its own (ADR-19). `mcp.md` names the setup the load test passed on, as tested.
 - Every map field in a result is `omitempty` or always non-nil: go-sdk checks an `object` schema and refuses `null`. The new tools join plan 03's `TestEmptyAndDegradedResults`.
 - `pmm_service_health` derives no state of its own: no `stale`, no verdict. Each signal has its summary, `last_at` and source, or `no_data`, or an error.
 
@@ -357,7 +357,7 @@
   - `TestListMetricsSearch`: `search: mongodb` returns only names containing `mongodb`; `search: ".*"` returns none; with no `search`, `page.total` is at most 1,001, so VictoriaMetrics honours `limit` [I: a server with every engine registered has more than 1,001 metric names].
 - [ ] **Step 3: Verify Access Roles live** on the Feature Build: a Viewer user (basic auth) with an Access Role allowing one service gets only that service's series from `pmm_query_metrics`, its names and label values from `pmm_list_metrics`, and `no_data` with the note for the node signals of `pmm_service_health`. Service-account tokens wait for plan 06.
 - [ ] **Step 4: Run the load test** ([spec §7.4](../spec.md#74-acceptance)) on the server Task 1 Step 1 started:
-  - **Server:** the one from Task 1 Step 1, upgraded to this branch's Feature Build; it has collected for at least 6 days, so the 6-day queries read 6 days of data.
+  - **Server:** the one from Task 1 Step 1, upgraded to this branch's Feature Build; it has collected for at least 2 days, and the 6-day queries read what it has. A run after 6 days of data confirms the result and doesn't hold the PR; if it fails, a follow-up lowers the caps.
   - **Driver:** `go test -tags load ./api-tests/mcp/ -run TestMetricsLoad -timeout 30m`, with `PMM_MCP_LOAD_TOKENS` set to a file of five Viewer service-account tokens, one per caller (an environment variable, because `api-tests/init.go` parses the flags before the test registers any). Each caller runs two loops for 10 minutes; each loop calls `pmm_query_metrics` with, in turn:
     - `rate(mysql_global_status_questions[5m])` as a range query over the last 6 days;
     - `rate(mysql_global_status_questions[6d])` as an instant query;
@@ -367,10 +367,11 @@
   - **Dashboard latency:** during the run the driver also sends the MySQL queries of Task 7's signal table for `db1`, over the last 12 hours with `step=60s`, every 10 s, as Admin straight through `/graph/api/datasources/proxy/uid/<uid>/api/v1/query_range`, and reports their p95 latency. The same probe runs alone for 10 minutes first, as the baseline.
   - **VictoriaMetrics CPU and memory:** from PMM's own scrape of VictoriaMetrics (job `victoriametrics`, `managed/services/victoriametrics/victoriametrics.go:425`): `rate(process_cpu_seconds_total{job="victoriametrics"}[1m])` and `process_resident_memory_bytes{job="victoriametrics"}`, their maximum and p95 over each 10-minute run, read as Admin.
   - **Alert evaluation:** the increase over each run of the rule-evaluation failure counters of Grafana's alerting and of VMAlert, from PMM's scrape of both (jobs `grafana` and `vmalert`) [I: metric names checked on the Feature Build], read as Admin.
-  - **Pass:** the loaded run adds no rule-evaluation failure beyond the baseline's, and the dashboard probe's p95 under load is at most twice the baseline's. Otherwise lower the caps in spec §8 through a pmm-specs PR, then here, and run again.
+  - **Restarts:** whether `process_start_time_seconds` of jobs `victoriametrics`, `vmalert`, `grafana`, `pmm-managed` and `qan-api2` changes during each run, from PMM's scrape, read as Admin; a job without the series fails the run. ClickHouse exports none, and the load calls no QAN tool.
+  - **Pass** (ADR-19): the loaded run adds no rule-evaluation failure beyond the baseline's, and no component restarts during either run. Otherwise lower the caps in spec §8 through a pmm-specs PR, then here, and run again. The dashboard p95, CPU and memory are recorded, not judged.
   - **Record** both runs (CPU, memory, dashboard p95, rule-evaluation failures, MCP call count and p95, `rate_limited` count) on PMM-15790 for the security review.
-  - **Fleet size:** state the number of monitored services the passing run had as the supported fleet size, in spec §8 through a pmm-specs PR and in `mcp.md`.
-- [ ] **Step 5: Document the tools, budgets and errors in `mcp.md`, with the rate limits and `retry_after`, the 30-day QAN window, the supported fleet size, and that label values are returned as stored (ADR-07); commit** `PMM-15790 Document and verify the metrics tools`.
+  - **Setup:** name the server size, the number of monitored services and the days of data of the passing run in `mcp.md`, as the setup tested, not as a limit (ADR-19).
+- [ ] **Step 5: Document the tools, budgets and errors in `mcp.md`, with the rate limits and `retry_after`, the 30-day QAN window, the setup the load test passed on, and that label values are returned as stored (ADR-07); commit** `PMM-15790 Document and verify the metrics tools`.
 - [ ] **Step 6: Open the PR** ([00](00-roadmap.md#branch-and-pr-rules)): merge `origin/PMM-MCP-GA` (behind 0) into the branch, run a Feature Build, run the api-tests and the triage on it, and open `PMM-15790 Add the MCP metrics tools` into `PMM-MCP-GA` with the Feature Build link.
 
 ## As built
@@ -393,4 +394,4 @@ Deviations from the text above, in `percona/pmm` `PMM-15790-metrics-tools`, with
   - an instant query whose root is a range selector or a subquery, with or without `offset`;
   - a rollup over an expression, limited to 4,000 points per series, with the step raised when the caller gave none.
 - **A note when every signal is `no_data`.** `pmm_service_health` says the service and its node sent nothing in the window, or an Access Role hides their series; before, the note covered node signals only.
-- **Supported fleet size:** pending. The load test on 13 Nov sets it (Task 9 Step 4).
+- **Load test rule** (ADR-19): it passes on rule-evaluation failures and component restarts; the dashboard p95 is recorded, not judged, and no fleet size is stated. The run of record follows (Task 9 Step 4).
