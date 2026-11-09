@@ -14,10 +14,11 @@
 **Architecture:**
 - pmm-agent discovers log paths. It is connected to the database and can `stat` the files.
 - pmm-managed asks for them with a new `LogDiscoveryRequest` on the agent channel:
-  - inside the add-service transaction;
-  - for `--discover`;
-  - again on every pmm-agent reconnect, for sources that were discovered.
-- pmm-agent keeps the paths it discovered in memory, and lets exactly those paths bypass its allow-list (plan 02, Task 6's `DiscoveredPaths`).
+  - right after the add-service transaction commits, which stores the requested collection first;
+  - for `--discover` (Phase 1b);
+  - again on every pmm-agent reconnect, on a service change, and every 10 minutes while a request is pending or failed (Task 3's reconciler).
+- pmm-agent keeps the paths it discovered in memory, and lets exactly those paths bypass its allow-list (plan 02, Task 6's `DiscoveredPaths`), but only regular files inside the database's own directories, after resolving symlinks (Task 2's `AcceptDiscoveredPath`).
+- **Supported setups:** native installs, and pmm-agent sharing the database's filesystem (a bind mount at the same path, or a sidecar with the directories mounted). Before accepting a path, pmm-agent checks that it sees the same database instance (Task 2's `SameInstance`); otherwise the request is `not_local`.
 
 **Tech Stack:** Go (pmm-admin with Kong, pmm-agent, pmm-managed), protobuf, MySQL, PostgreSQL and MongoDB drivers already in `go.mod`, the stanza preset harness from plan 02, Task 2.
 
@@ -29,7 +30,7 @@
 
 **Depends on:** plan 02 (the `log_sources` API, the presets harness, `Render` with `DiscoveredPaths`).
 
-**Release criterion for Tasks 2–5** (D29): Add a MySQL, PostgreSQL or MongoDB service with `pmm-admin add` on the same host as its database; within a few minutes its log shows in the explorer, filtered to that service, with no log source configured by hand. Each task's Feature Build check builds toward it, and QA (PMM-15578) runs it for all three databases.
+**Release criterion for Tasks 2–5** (D29): Add a MySQL, PostgreSQL or MongoDB service with `pmm-admin add` on the same host as its database; within a few minutes its log shows in the explorer, filtered to that service, with no log source configured by hand. It also holds when the database is down at add time: once it is back, its log appears within one reconciler interval (10 minutes). Each task's Feature Build check builds toward it, and QA (PMM-15578) runs it for all three databases.
 
 ## Global Constraints
 
@@ -78,7 +79,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
 1. **`log_error` set to `./host.err` under a `datadir` that is a symlink** (common with LVM and bind mounts). Expected: the resolved path follows the symlink, and is reported as discovered under that resolved path. Test in Task 2 (`TestResolveMySQLLogPath`).
 2. **Two MySQL instances on one host whose error logs sit in one directory.** Expected: one source each, with the rows told apart by `pmm.service_id`. Test in Task 3 (`TestAddTwoLocalMySQLGetSeparateSources`, sqlmock with two services).
 3. **A new pmm-admin talking to an older server** (`DiscardUnknown`, F5). Expected: pmm-admin doesn't send `collect_logs`, and prints "log collection needs PMM Server <version> or newer", with the version from `version.CollectLogsSupportVersion`. Test in Task 4 (`TestAddMySQLSkipsCollectLogsOnOldServer`).
-4. **The service is added with `--skip-connection-check`, or the database is down at add time.** Expected: the service is added, the command prints why logs were not set up, and the user can run `pmm-admin add logs --service-name=… --discover` later. Test in Task 3 (`TestAddServiceDiscoveryFailureDoesNotFailAdd`).
+4. **The service is added with `--skip-connection-check`, or the database is down at add time.** Expected: the service is added, the command prints why logs aren't collected yet, and the request stays `pending` or `failed`. The reconciler retries it, and the log appears once the database is reachable, with no user action. Test in Task 3 (`TestAddServiceDiscoveryFailureDoesNotFailAdd`, `TestReconcilerCollectsAfterDatabaseReturns`).
 5. **A PostgreSQL `log_filename` with escapes other than `%Y%m%d%H%M%S`** (for example `%a` or `%j`), or none at all. Expected: every escape becomes `*`, and a name without escapes is used as is. Test in Task 2 (`TestPostgresLogGlob`).
 6. **A Valkey instance whose `CONFIG` command is renamed or not permitted.** Expected: the service is added, and the message says to add the log with `pmm-admin add logs --service-name=… --path=…`. Test in Task 6 (`TestDiscoverValkeyConfigDenied`).
 7. **A format no built-in matches** (a custom application log). Expected: `auto` still extracts an ISO-8601 or syslog timestamp and a level word when present, and keeps the line otherwise. Suggest returns no candidate rather than a wrong one. Test in Task 7 (`TestAutoPresetFallsBackToRaw`, `TestSuggestNoCandidate`).
@@ -168,7 +169,9 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
     - `func ResolveMySQLLogPath(value, datadir string) (path string, journald bool)`
     - `func PostgresLogGlob(logDirectory, dataDirectory, logFilename string) string`
     - `func PostgresPreset(logDestination string) (preset string, journald bool, reason string)`: `stderr` → `postgres`, `csvlog` → `postgres_csv`, `jsonlog` → `postgres_json`, and `syslog` → no source, reason "PostgreSQL logs to syslog; add the OS log instead". When `log_destination` lists several, prefer `jsonlog`, then `csvlog`, then `stderr`.
-    - `func IsLocalAddress(host string, socket string) bool`: true for a socket, a loopback address, or an address of one of the host's interfaces.
+    - `func IsLocalAddress(host string, socket string) bool`: true for a socket, a loopback address, or an address of one of the host's interfaces. This is necessary but not enough: a loopback address can be a port that Docker publishes from a container.
+    - `func SameInstance(ctx context.Context, db queryer, serviceType inventoryv1.ServiceType, socket string) (bool, string)`: a Unix-socket connection counts as the same instance. Over TCP, pmm-agent compares a marker file on its own filesystem with the running database: MySQL `<@@datadir>/auto.cnf` holds `@@server_uuid`; PostgreSQL `<data_directory>/postmaster.pid` line 3 equals `extract(epoch from pg_postmaster_start_time())::bigint`; MongoDB `<dbPath>/mongod.lock` holds `serverStatus().pid`. A mismatch, or a marker it can't read, gives `false` and a reason that suggests connecting through the socket or adding the log by hand. These markers are inferred [I]; the tests confirm each one on every supported version.
+    - `func AcceptDiscoveredPath(path string, dirs []string) (string, error)`: resolves symlinks, requires a regular file, and requires it to lie inside one of the database's own directories (`dirs`: the data directory and the log directory the database reports). Only paths it accepts go into `DiscoveredPaths` and bypass the allow-list.
     - `func FirstLoadedUnit(ctx context.Context, candidates []string) string`: the `Id` of the first candidate that `systemctl show -p Id -p LoadState` reports as `LoadState=loaded`, which also resolves aliases; `""` when none is loaded or `systemctl` is missing. `-p Id` alone is not enough: it echoes the name back for a unit that doesn't exist.
   - **Discovery:**
     - `func Discover(ctx context.Context, req *agentv1.LogDiscoveryRequest, readable func(string) error) *agentv1.LogDiscoveryResponse`
@@ -201,6 +204,8 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
 
   func TestPostgresPreset(t *testing.T) { /* stderr, csvlog, jsonlog, "stderr,jsonlog", syslog */ }
   func TestIsLocalAddress(t *testing.T) { /* 127.0.0.1, ::1, localhost, socket → true; 10.255.255.1 → false */ }
+  func TestSameInstance(t *testing.T) { /* socket → true; TCP with a marker that matches → true; TCP with a marker that differs, or none → false with a reason */ }
+  func TestAcceptDiscoveredPath(t *testing.T) { /* a file in the data dir → accepted; a symlink from the data dir to /etc/shadow → rejected; a directory → rejected; a path outside dirs → rejected */ }
   func TestFirstLoadedUnit(t *testing.T) { /* systemctl output faked: a loaded unit, an alias resolved to its Id, LoadState=not-found for every candidate, systemctl missing */ }
   func TestCacheReplacesPerService(t *testing.T) { /* … */ }
   ```
@@ -224,9 +229,13 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - `api/management/v1/mysql.proto`: `string collect_logs` at the next free number in `AddMySQLServiceParams`. Its values are a comma list of `error`, `slow` and `general`, or `none`. Add `repeated otel.v1.LogSource log_sources` and `repeated string log_collection_messages` at the next free numbers in `MySQLServiceResult` (:104-111).
   - `api/management/v1/postgresql.proto` and `api/management/v1/mongodb.proto`: `bool collect_logs` and the same two result fields.
   - `api/otel/v1/otel.proto`: `DiscoverLogSources(DiscoverLogSourcesRequest{service_id, kinds}) → {log_sources, messages}`
-  - `managed/services/management/mysql.go` (:37-208), `postgresql.go` and `mongodb.go`: after `GetInfoFromService` (`mysql.go:122`, `mongodb.go:107`), when `collect_logs` is set, call `logDiscovery.Discover`. Upsert the collectable entries through `models.UpsertLogSource` with `Discovery = "mysql_" + kind` (MySQL), `"postgresql"` or `"mongodb"`. Put the reasons in `log_collection_messages`. **A discovery error never fails the add.**
+  - `managed/services/management/mysql.go` (:37-208), `postgresql.go` and `mongodb.go`: after `GetInfoFromService` (`mysql.go:122`, `mongodb.go:107`), when `collect_logs` is set, store a `log_collection_requests` row with state `pending` in the add transaction, and commit. Only then call `logDiscovery.Discover`, outside the transaction, with the same 5 s timeout, so no PostgreSQL transaction stays open across the agent round trip. Upsert the collectable entries through `models.UpsertLogSource` with `Discovery = "mysql_" + kind` (MySQL), `"postgresql"` or `"mongodb"`. Put the reasons in `log_collection_messages`. **A discovery error never fails the add.**
+  - `managed/models/database.go`: a migration with the next free number at merge time (129 on `main` at the pinned commit, after plan 02's), creating `log_collection_requests (service_id VARCHAR PRIMARY KEY REFERENCES services ON DELETE CASCADE, kinds VARCHAR[] NOT NULL, state VARCHAR NOT NULL, reason TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TIMESTAMP, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)`. `state` is `pending`, `collecting`, `failed` or `not_local`.
+  - `managed/models/log_collection_request_model.go` and `_helpers.go` (reform), and `managed/services/agents/log_reconciler.go` with its test.
   - the add-service handlers: when OTEL is off, the sources are still created (Task 4 of plan 02 withholds them), and `log_collection_messages` says "OTEL is turned off; this log is collected once an Admin turns it on". Test: `TestAddMySQLWithOtelOffCreatesSourceAndSaysSo`.
-  - `managed/services/agents/registry.go` (`authenticate`): after the agent is registered, rediscover each service that has sources with `discovery != ""` on this pmm-agent, and update a source's path when it changed. Then `RequestStateUpdate`.
+  - `managed/services/agents/registry.go` (`authenticate`): after the agent is registered, reconcile every `log_collection_requests` row of a service on this pmm-agent's node, whatever its state, and update a source's path when it changed. Then `RequestStateUpdate`.
+  - `managed/services/inventory/services.go` (`ChangeService`, :376): reconcile the changed service's request after the change commits.
+  - `managed/cmd/pmm-managed/main.go`: the reconciler as a leader service (`haService.AddLeaderService`), every 10 minutes for requests in `pending` or `failed` whose `next_attempt_at` has passed.
   - `managed/services/otel/log_sources_grpc.go`: the `DiscoverLogSources` handler.
 
 **Interfaces:**
@@ -235,6 +244,8 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - `type LogDiscoverer struct{ r *Registry; db *reform.DB }`
   - `func (d *LogDiscoverer) Discover(ctx context.Context, q *reform.Querier, service *models.Service, agent *models.Agent, kinds []string) ([]*agentv1.LogDiscoveryEntry, error)`. It builds the DSN from the service's exporter agent, the way `ServiceInfoBroker` does (`managed/services/agents/service_info_broker.go:148`), with a 5 s timeout. It is version-gated: an older agent gets the message "log discovery needs pmm-agent <version> or newer", with the version from `version.CollectLogsSupportVersion`.
   - `func (d *LogDiscoverer) RediscoverOnConnect(ctx context.Context, pmmAgentID string) error`
+  - `func (d *LogDiscoverer) Reconcile(ctx context.Context, serviceID string) error`: runs discovery for one request and sets `state` and `reason`: `collecting` when every requested kind has a source, `not_local` when the service isn't on the agent's host (Task 2), `failed` with the agent's reason otherwise. A failure sets `next_attempt_at` 10 minutes ahead.
+  - `ListLogSourcesResponse` gains `repeated LogCollectionRequest collection_requests` (`service_id`, `kinds`, `state`, `reason`, `updated_at`), so the API and the UI show requests that have no source yet.
 
 - [ ] **Step 1: Write the failing tests** (sqlmock, with a fake channel for the agent request):
   - `TestAddMySQLCollectLogsCreatesSource`: discovery returns an error-log entry; assert one `log_sources` insert with `discovery='mysql_error'`, the `mysql_error` preset and the service id.
@@ -242,6 +253,9 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - `TestAddServiceDiscoveryFailureDoesNotFailAdd`: discovery returns a timeout; the add succeeds, and `log_collection_messages` contains "timed out".
   - `TestAddRemoteServiceNoSource`: the entry is not collectable, with the reason "service is not on this host"; no insert, and the message is passed through.
   - `TestRediscoverOnConnectUpdatesMovedPath`.
+  - `TestAddStoresRequestBeforeDiscovery`: the request row is committed before the agent round trip starts, and no transaction is open during it.
+  - `TestReconcilerCollectsAfterDatabaseReturns`: discovery fails at add (state `failed`); the next reconciler pass succeeds and the state becomes `collecting` with one source.
+  - `TestReconnectRetriesServiceWithoutSources`: a `failed` request with no sources is retried on reconnect.
 - [ ] **Step 2: Run them.** `make gen && cd managed && go test ./services/agents/ ./services/management/ -run 'CollectLogs|Discovery|Rediscover|RemoteService'`. Expected: FAIL.
 - [ ] **Step 3: Implement** everything listed above.
 - [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS. Write api-tests in `api-tests/management/mysql_test.go` and the PostgreSQL and MongoDB equivalents. Using the server's own `pmm-server-postgresql` service with `DiscoverLogSources`, assert a source with the path `/srv/logs/postgresql.log`, or the message explaining why not (`logging_collector=off` → stdout, analysis F21).
@@ -310,7 +324,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
 - [ ] **Step 1: Write the failing tests.** Add the testdata, including a multi-line slow-log entry, a multi-line general-log statement, a CSV field with an embedded newline, a CEST timestamp and a MySQL `+02:00` timestamp. Extend `TestBuiltInsLoad`.
 - [ ] **Step 2: Run them.** `cd build/otelcol/presettest && go test ./...` and `cd managed && go test ./services/otel/presets/`. Expected: FAIL.
 - [ ] **Step 3: Implement** the five preset files.
-- [ ] **Step 4: Run them again.** Same commands. Expected: PASS. Check that `pmm-admin add logs --help` on a Feature Build lists the new presets.
+- [ ] **Step 4: Run them again.** Same commands. Expected: PASS. Check that `GET /v1/otel/log-parser-presets` on a Feature Build lists the new presets (`pmm-admin add logs` is Task 1, Phase 1b).
 - [ ] **Step 5: Commit.**
   ```bash
   git add managed/services/otel/presets

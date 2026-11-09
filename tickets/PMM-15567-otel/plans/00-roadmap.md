@@ -24,7 +24,7 @@
 
 **Release gating** (D25 and D29, decided on 2026-11-05 and 2026-11-09):
 - Phase 0, plans 01, 02, 03 and 08 (Tasks 1–6), and plan 04 Tasks 2–5 make up the **3.12.0** Technical Preview (3.12.0 is due on 14 January 2027). Plan 08 is required: the native explorer is the only log UI (D26, ADR-23).
-- **Release criterion** (D29): Add a MySQL, PostgreSQL or MongoDB service with `pmm-admin add` on the same host as its database; within a few minutes its log shows in the explorer, filtered to that service, with no log source configured by hand. QA (PMM-15578) checks it on a Feature Build for each of the three databases.
+- **Release criterion** (D29): Add a MySQL, PostgreSQL or MongoDB service with `pmm-admin add` on the same host as its database; within a few minutes its log shows in the explorer, filtered to that service, with no log source configured by hand. It must also hold when the database is down at add time: once it is back, its log appears within one discovery-retry interval (plan 04, Task 3). QA (PMM-15578) checks it on a Feature Build for each of the three databases.
 - **Default** (ADR-25): upgraded installs stay off until an Admin turns OTEL on. New installs are on only if the capacity test (PMM-15592) has passed by 3.12.0 code freeze; the build-time constant `OtelOnForNewInstalls` records the result.
 - Plan 04 Tasks 1, 6 and 7 are Phase 1b. Plan 08 Task 7 (the Patterns view) follows in the next release (D27).
 - Plan 05 is Phase 2.
@@ -43,6 +43,8 @@ The QA automation ticket (PMM-15578) adds its tests in percona/pmm-qa against ea
 - the default: off after upgrade, on for new installs if the capacity test passed (ADR-25), and how to turn it on;
 - `pmm-admin add` collects the database's own log by default, and what it prints when OTEL is off;
 - the sizing guide;
+- log collection across collector restarts is best-effort: what survives a rotation while the collector is down, and what doesn't (plan 02, Task 6);
+- where database log discovery works: native installs, and pmm-agent sharing the database's filesystem; what `not_local` means (plan 04, Task 2);
 - the non-root read requirements: `adm` and `systemd-journal` groups, and ACLs on RHEL;
 - the `docker run` mounts for journald and database logs;
 - a correction of the 3.8.0/3.8.1 statement that PMM accepts no inbound OTel traffic;

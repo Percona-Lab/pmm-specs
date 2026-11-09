@@ -195,6 +195,7 @@ The roadmap's **Shared contract** and **Global constraints** apply, together wit
   Submit calls `addLogSource({ nodeId, … })`.
 
 - [ ] **Step 1: Write the failing tests.**
+  - `shows pending discovery`: a `collection_requests` entry in state `failed` with reason "database unreachable" shows as a row for its service, with the state and the reason, although it has no source.
   - `renders source state reason`: a row with state `NOT_ALLOWED` and the reason "path /opt/x is not under an allowed path" shows both.
   - `service list filtered by node`.
   - `submits node-bound app source`: assert the payload `{ nodeId: 'n1', kind: 'file', path: '/var/log/app.log', presetName: 'json', appName: 'billing' }`.

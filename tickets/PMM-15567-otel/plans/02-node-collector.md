@@ -45,9 +45,9 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 
 1. **A symlink under an allowed prefix that points outside it** (`/var/log/x -> /etc/shadow`). Expected: `NOT_ALLOWED`, because the allow-list checks the resolved path. Test in Task 6 (`TestRenderRejectsSymlinkEscape`).
 2. **Globs and `..`** (`/var/log/../etc/*`, `/var/log/mysql/*.log`). Expected: a path containing `..` is rejected. A glob is checked on its static directory prefix. Test in Task 6 (`TestAllowListGlobsAndDotDot`).
-3. **Log lines of 64 KiB or more, or binary content.** Expected: each line is truncated at `max_log_size` (64 KiB), and every OTLP request stays under nginx's 10 MB limit. Test in Task 6 (`TestRenderedConfigBoundsRequestSize`), and checked live in plan 01's contract test by adding a 1 MiB line.
+3. **Log lines of 64 KiB or more, or binary content.** Expected: each line is truncated at `max_log_size` (64 KiB), and every OTLP request stays under nginx's 10 MB limit, whatever the compression ratio. Test in Task 6 (`TestNodeCollectorRequestsStayUnder10MB`, with the real collector).
 4. **Two collectors created concurrently for one pmm-agent** (two `pmm-admin add logs` at once). Expected: exactly one collector. The second request reuses it. Test in Task 3b (`TestAddLogSourceConcurrentCreatesOneCollector`, using the partial unique index).
-5. **A log file rotated while the collector is down.** Expected: lines written to the old file before rotation are read from its checkpoint, and the new file is read from its start. This is documented as the guarantee. Test in Task 6 (`TestRenderedFilelogUsesStorageAndStartAtEnd`), which asserts `storage: file_storage`, `start_at: end` and `include_file_path: true`; the live check is in PMM-15578.
+5. **A log file rotated while the collector is down.** Expected, and documented as best-effort: with rename-and-create rotation, the rest of the renamed file is read from its checkpoint; lines written to the new file while the collector was down are skipped, because a file with no checkpoint starts at its end. With copy-and-truncate, lines written between the copy and the truncate can be lost. Test in Task 6 (`TestFilelogRotationWhileStopped`, with the real collector).
 
 ---
 
@@ -400,11 +400,11 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   - `func CheckAllowed(path string, allowed []string) error`. It cleans the path, rejects a path that is not absolute or contains `..`, resolves symlinks with `filepath.EvalSymlinks` when the path exists, checks the static prefix of a glob, and requires a resolved prefix to be under one of the `allowed` entries.
 - Rendering rules (D11):
   - **One pipeline per accepted source,** `logs/<id>`: receivers `[filelog/<id>]` or `[journald/<id>]`, processors `[memory_limiter, resource/pmm, resource/<id>, batch]`, exporters `[otlphttp]`.
-  - **`filelog/<id>`:** `include: [path]`, `include_file_path: true`, `start_at: end`, `storage: file_storage`, `max_log_size: 65536`, `operators` = the parsed `OperatorsYaml`.
+  - **`filelog/<id>`:** `include: [path, path + "*"]`, `exclude: [path + "*.gz", path + "*.xz", path + "*.bz2", path + "*.zst"]` (a renamed file keeps being read from its checkpoint; compressed rotations are skipped), `include_file_path: true`, `start_at: end`, `storage: file_storage`, `max_log_size: 65536`, `operators` = the parsed `OperatorsYaml`.
   - **`journald/<id>`:** `units`, `start_at: end`, `storage: file_storage`, `operators`.
   - **`resource/pmm` and `resource/<id>`:** `actions` with `upsert` for each attribute.
   - **`memory_limiter`:** `check_interval: 1s`, `limit_mib: 128`.
-  - **`batch`:** `timeout: 5s`, `send_batch_size: 2000`, `send_batch_max_size: 2000`.
+  - **Request size:** batches are bounded by bytes, not only by count. If the pinned collector's exporter supports a byte limit on its batches (the exporterhelper `sizer: bytes`), set it to 8 MiB; check this against the pinned release and record the choice. Otherwise use the `batch` processor with `timeout: 5s`, `send_batch_size: 128`, `send_batch_max_size: 128`: 128 × 64 KiB is 8 MiB of bodies, under nginx's 10 MB limit before compression.
   - **`otlphttp`:**
     - `endpoint`: `http://127.0.0.1:4318` when `SendToLocalReceiver`, otherwise `<ServerURL>/otlp`;
     - `headers.Authorization`: `Basic base64(user:pass)`, and only when not local;
@@ -444,8 +444,11 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
       assert.NotContains(t, string(y), "server_password")
   }
 
-  func TestRenderedConfigBoundsRequestSize(t *testing.T) { /* assert max_log_size 65536, batch max 2000, compression gzip */ }
-  func TestRenderedFilelogUsesStorageAndStartAtEnd(t *testing.T) { /* assert storage, start_at, include_file_path */ }
+  // Real collector: skipped unless PMM_OTEL_CONTRACT_BINARY is set, as in plan 01, Task 8.
+  func TestNodeCollectorRequestsStayUnder10MB(t *testing.T) { /* render a config for one file source, point otlphttp at an httptest server that records each request's body size and answers 413 above 10,000,000 bytes; write 2,000 lines of 64 KiB random (incompressible) bytes; assert every request < 10,000,000 bytes, no 413, and all 2,000 lines received */ }
+  func TestRenderedFilelogUsesStorageAndStartAtEnd(t *testing.T) { /* assert storage, start_at, include_file_path, the path* glob and the compressed excludes */ }
+  // Real collector, skipped unless PMM_OTEL_CONTRACT_BINARY is set.
+  func TestFilelogRotationWhileStopped(t *testing.T) { /* subtests rename-create and copy-truncate: write lines A, stop the collector, write lines B, rotate, write lines C, start it; assert A and B arrive once each for rename-create, C is skipped, nothing arrives twice; for copy-truncate assert no duplicates and record what is lost */ }
   func TestRenderLocalReceiverHasNoAuth(t *testing.T) { /* SendToLocalReceiver: endpoint 127.0.0.1:4318, no Authorization header */ }
   func TestRenderHasNoOTLPReceiver(t *testing.T) { /* receivers has no key "otlp" */ }
   ```

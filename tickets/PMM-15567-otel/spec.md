@@ -191,11 +191,11 @@ Other agent types keep their current behaviour. The collector reaches the networ
 
 ### 6.3 Default log collection on `pmm-admin add`
 
-- **Discovery runs on the client.** pmm-agent connects to the database and can `stat` the file.
+- **Discovery runs on the client.** pmm-agent connects to the database and can `stat` the file. It accepts a path only when it can show it sees the same database instance (a Unix socket, or a marker file such as MySQL's `auto.cnf`), and only for regular files in the database's own directories; a database reached through a port Docker publishes from another container is `not_local`.
 - **Transport:** a new server→agent request, `LogDiscoveryRequest{service_type, dsn, kinds}` → `LogDiscoveryResponse{entries[]{kind, path, units, readable, reason}}`.
   - It is version-gated.
-  - It is called inside the add transaction, after `ServiceInfoBroker`, with a 5 s timeout.
-  - It is called again on every pmm-agent reconnect for sources whose `discovery` is set, so a moved file is followed (PMM-15584).
+  - The add transaction stores the requested collection (`log_collection_requests`, state `pending`). After the commit, discovery runs with a 5 s timeout, outside any transaction.
+  - A leader-only reconciler retries `pending` and `failed` requests every 10 minutes, and on every pmm-agent reconnect and service change, so a database that was down at add time gets its log later. It also re-reads paths for sources whose `discovery` is set, so a moved file is followed (PMM-15584).
   - Reuse `slowlog.go:226-282` (relative path resolution against `@@datadir`) and `mongolog.go:241-267` (`getCmdLineOpts`).
 - **Default:** the CLI default is `--collect-logs=error` for MySQL. For PostgreSQL, MongoDB and Valkey it is `--collect-logs` on (one log each). Valkey's path comes from `CONFIG GET logfile`; a relative path is joined with `CONFIG GET dir`, which Valkey reports as its working directory, so no `/proc` access is needed. An empty `logfile` means stdout (journald) with `daemonize no`, and no log at all with `daemonize yes`. Syslog is written in addition to the file (PMM-15724). A remote service gets no source, and the command prints why. `--collect-logs=none` (MySQL) or `--no-collect-logs` (the others) opts out.
 - **Why not guess default paths:**
@@ -213,7 +213,7 @@ Other agent types keep their current behaviour. The collector reaches the networ
 
 ### 6.5 Retention, size cap and watermark
 
-- Retention is enforced by **dropping daily partitions**, as QAN does, in a job that pmm-managed runs on the leader every 10 minutes (ADR-05). The same job enforces `max_disk_gb` and the watermark by dropping the oldest `otel` partitions first. One mechanism covers all three limits, and a retention change applies to stored data on the next pass, with no `MODIFY TTL` and no part rewrites (D1).
+- Retention is enforced by **dropping daily partitions**, as QAN does, in a job that pmm-managed runs on the leader every 2 minutes (ADR-05), reading every replica on a cluster. The same job enforces `max_disk_gb` and the watermark by dropping the oldest `otel` partitions first. One mechanism covers all three limits, and a retention change applies to stored data on the next pass, with no `MODIFY TTL` and no part rewrites (D1).
 - **A single day bigger than the cap.** If only today's partition is left and the cap is still exceeded, pmm-managed stops `otel-collector` and raises a health warning. The node queues buffer on disk until the next pass, or until an admin raises the cap (D6).
 
 ### 6.6 Who renders the node collector's config
@@ -346,7 +346,7 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 
 | # | Decision | Recommendation | Blocks |
 |---|---|---|---|
-| D1 | Retention mechanism (ADR-05) | Daily partitions dropped by a pmm-managed job on the leader, every 10 minutes. The same job enforces the cap and the watermark. | Plan 01 |
+| D1 | Retention mechanism (ADR-05) | Daily partitions dropped by a pmm-managed job on the leader, every 2 minutes, reading every replica on a cluster. The same job enforces the cap and the watermark. | Plan 01 |
 | D2 | `--collect-logs` default | On for local services (MySQL: `error`; PostgreSQL and MongoDB: their one log), with `none` to opt out. Slow and general logs stay opt-in. This changes the epic, so the epic owner must agree. | Plan 04 |
 | D3 | Collector uid when pmm-agent is root | pmm-agent drops to user `pmm-agent` for this process type only ([§6.1](#61-running-the-collector-as-pmm-agent)). | Plan 02 |
 | D4 | Columns and sort key (ADR-04; it can't change after release) | Keep `ServiceName` = `service.name`. Add `PmmNodeId` and `PmmServiceId` as materialized columns. `ORDER BY (PmmNodeId, PmmServiceId, ServiceName, TimestampTime)`. Database sources set `service.name` to the program (`mysqld`, `postgres`, `mongod`). | Plan 01 |
@@ -397,7 +397,7 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 
 ## 9. Risks
 
-- **Log volume shares ClickHouse and its disk with QAN on the 8 GB profile.** The cap, the watermark and the separate ClickHouse users with resource limits are release blockers (PMM-15571, PMM-15592). The capacity test includes the `PatternHash` insert cost.
+- **Log volume shares ClickHouse and its disk with QAN on the 8 GB profile.** The cap, the watermark and the separate ClickHouse users with resource limits are release blockers (PMM-15571, PMM-15592). The capacity test includes the `PatternHash` insert cost, and measures QAN, not only the logs pipeline: QAN query latency and ingest under a log burst, under disk pressure up to the watermark, with one ClickHouse replica down (HA), and after a long collector outage drains its queues.
 - **On for new installs** (ADR-25) means a fresh install starts a new process, creates a schema and collects the server's own logs from the start. Upgrades stay off. The capacity test (PMM-15592) decides whether new installs are on.
 - **Discovery doesn't work in Kubernetes sidecars:** the uid is 1002, there is no `journalctl`, and database log directories are not mounted. The operators must mount them (PMM-15577). Until they do, document that `--collect-logs` reports "file not visible" there.
 - **Non-root reads:** on RHEL, MySQL, PostgreSQL and MongoDB logs are not readable by `adm` [I, distro defaults]. Users must add an ACL or group. The `state_reason` and the docs must say how.

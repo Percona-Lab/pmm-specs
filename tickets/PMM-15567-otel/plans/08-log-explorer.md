@@ -68,7 +68,7 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
 2. **Many lines sharing the same nanosecond timestamp across a page boundary.** Expected: no duplicates and no gaps when loading older pages. Test in Task 1 (`TestSearchCursorSameTimestamp`, on a real ClickHouse, with inserts and merges between pages).
 3. **A search text with `%`, `_`, `'` or `\`.** Expected: a literal substring match, case-insensitive. Test in Task 1 (`TestSearchTextIsLiteral`).
 4. **OTEL disabled, or no data yet.** Expected: the page shows the "turned off" illustration linking to Settings → OTEL, or the "nothing found" illustration, never an error. Test in Task 3 (`shows disabled state`, `shows empty state`).
-5. **Live tail left running for hours.** Expected: it polls only for rows newer than the newest one shown, keeps at most 1000 rows in memory (the oldest drop off), and pauses while the tab is hidden. Test in Task 5 (`live tail appends and caps`, `pauses when hidden`).
+5. **Live tail left running for hours, or a burst faster than it polls.** Expected: it polls only for rows after the newest one shown, keeps at most 1000 rows in memory (the oldest drop off), pauses while the tab is hidden, and never drops lines silently: when it can't catch up it says how many it skipped. Test in Task 5 (`live tail appends and caps`, `pauses when hidden`, `live tail reports skipped lines`).
 
 ---
 
@@ -94,7 +94,7 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
   - `message Filters { google.protobuf.Timestamp start = 1; google.protobuf.Timestamp end = 2; repeated string node_ids = 3; repeated string service_ids = 4; repeated string apps = 5; repeated string sources = 6; repeated Severity severities = 7; string text = 8; }`
   - `message LogRecord { google.protobuf.Timestamp timestamp = 1; Severity severity = 2; string severity_text = 3; string body = 4; string app = 5; string node_id = 6; string node_name = 7; string service_id = 8; string service_name = 9; string source = 10; string trace_id = 11; string span_id = 12; map<string,string> attributes = 13; map<string,string> resource_attributes = 14; string event_id = 15; }`
   - `rpc Search(SearchRequest{Filters filters = 1; uint32 limit = 2; string cursor = 3;}) returns (SearchResponse{repeated LogRecord records = 1; string next_cursor = 2;})` at `POST /v1/logs:search`. Rows come newest first.
-  - `rpc Context(ContextRequest{string node_id = 1; string source = 2; string app = 3; google.protobuf.Timestamp timestamp = 4; uint32 before = 5; uint32 after = 6;}) returns (ContextResponse{repeated LogRecord records = 1;})` at `POST /v1/logs:context`. `before` and `after` default to 50 and are capped at 200. It returns lines from the same node and source (or app) around the timestamp.
+  - `rpc Context(ContextRequest{string event_id = 1; google.protobuf.Timestamp timestamp = 2; uint32 before = 3; uint32 after = 4;}) returns (ContextResponse{repeated LogRecord records = 1;})` at `POST /v1/logs:context`. `before` and `after` default to 50 and are capped at 200. The server looks up the clicked line by `event_id` (`timestamp` narrows the partition), takes its node, service, source and app from the row, and returns the lines around it from the same source, ordered by `(Timestamp, EventId)`, inside the caller's access filter. An unknown `event_id` is `NotFound`.
 - **Go:**
   - `func BuildSearchQuery(f *logsv1.Filters, limit uint32, c Cursor) (string, []any, error)` lives in `query.go`.
     - It filters on `TimestampTime`, `PmmNodeId IN ?`, `PmmServiceId IN ?`, `ServiceName IN ?` and `coalesce(LogAttributes['log.file.path'], LogAttributes['_SYSTEMD_UNIT']) IN ?`.
@@ -119,7 +119,8 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
   // Integration test on a real ClickHouse (the qan-api2 test container with the otel schema); skipped unless PMM_OTEL_CONTRACT_CLICKHOUSE is set, as in plan 01, Task 8.
   func TestSearchCursorSameTimestamp(t *testing.T) { /* 500 rows over 3 timestamps, limit 37: walk every page; insert 50 more rows at those timestamps and run OPTIMIZE TABLE otel.logs FINAL between pages; the walk returns each original row exactly once */ }
   func TestSearchResolvesNames(t *testing.T) { /* node_id/service_id → names from inventory mock */ }
-  func TestContextSameSourceAround(t *testing.T) { /* … */ }
+  func TestContextSameSourceAround(t *testing.T) { /* 5 lines with the same timestamp in one source and 5 in another: context for the 3rd returns its 2 neighbours on each side from its own source only, in (Timestamp, EventId) order */ }
+  func TestContextUnknownEventIsNotFound(t *testing.T) { /* … */ }
   ```
 - [ ] **Step 2: Run them.** `make gen && cd managed && go test ./services/logs/`. Expected: FAIL.
 - [ ] **Step 3: Implement** the proto, the query builder, the cursor, the service, the pool and the registration.
@@ -268,7 +269,8 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
 
 **Interfaces:**
 - **Live tail:** `useLiveTail(filters, intervalMs)`.
-  - On each tick it calls `Search` with `start = newest shown timestamp`, then prepends the new rows, de-duplicated by `eventId`.
+  - On each tick it calls `Search` with `after` set to the newest shown `(timestamp, eventId)` and ascending order, and keeps fetching pages until it has caught up, at most 5 pages per tick. `SearchRequest` gains `string after_cursor = 4` and `bool ascending = 5` for this (Task 1's keyset, in the other direction).
+  - If it is still behind after 5 pages, it jumps to the newest rows and shows "N lines skipped" with a link that opens that time range in the table, instead of leaving lines out silently.
   - It keeps at most 1000 rows.
   - It stops while `document.visibilityState === 'hidden'`.
   - It turns off as soon as the user picks an absolute range.
@@ -276,6 +278,7 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
 
 - [ ] **Step 1: Write the failing tests.**
   - `live tail appends and caps`.
+  - `live tail reports skipped lines`: the mocked API returns 6 full ascending pages in one tick; the tail fetches 5, shows the skipped-lines notice with the count, and continues from the newest row.
   - `pauses when hidden`.
   - `absolute range disables live tail`.
   - `csv escapes quotes and newlines`.
