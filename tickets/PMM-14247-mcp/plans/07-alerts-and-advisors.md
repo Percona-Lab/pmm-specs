@@ -14,7 +14,7 @@
 
 - Needs plan 06 (`listServices`), which needs plan 03, and the design review (00). Branch `PMM-15790-alerts`, cut from `PMM-MCP-GA`; one PR into it, opened after Task 5 (00).
 - **MCP's narrowing here is consistency, not a security boundary.** Grafana's alerting APIs don't apply Access Roles. The same caller reads them unfiltered by Access Roles with the same credentials, and in the PMM UI. Tests, docs and tool descriptions never call the narrowing a restriction. Applying Access Roles to them is ADR-16's work, which is deferred.
-- **The caller's service list `L`** is plan 06's list: services of every `service_type` (ProxySQL, HAProxy and the rest included) and every node in it, hosts with only node_exporter included. For `pmm_alerts`, `L` is `listServicesOver(ctx, auth, alertListLookback)`, 7 days (ADR-17). Its query takes a slot of plan 05's limit on requests to VictoriaMetrics, like every request MCP sends there.
+- **The caller's service list `L`** is plan 06's list: services of every `service_type` (ProxySQL, HAProxy and the rest included) and every node in it, hosts with only node_exporter included. Plan 06 builds the services only, over a window (its Global Constraints); Task 2 adds the nodes. For `pmm_alerts`, `L` covers the last 7 days: `listServicesAndNodes(ctx, auth, window{now - alertListLookback, now})` (ADR-17). Its query takes a slot of plan 05's limit on requests to VictoriaMetrics, like every request MCP sends there.
 - **Alert narrowing** (ADR-17), against `L`:
   - only four labels count, each checked against one set of `L`: `service_id` against the service IDs, `service_name` against the service names, `node_id` against the node IDs, `node_name` against the node names;
   - an alert of PMM's own rules is shown whatever it names: those are PMM's HA and PMM Server component rules, whose `node_id`, `node_name` and `service_name` name PMM Server replicas and components, never in `L` (ADR-17). They are identified by rule UID or provenance, as Task 1 records, never by a label;
@@ -26,7 +26,7 @@
 - A failing service list fails the tool call; the tool never returns un-narrowed results.
 - Firing alerts only, silenced or not, with the silence's end time; current state, no history. The tool description and every result, an empty one included, carry the note "Currently firing alerts only; resolved alerts are not shown." (ADR-17). Read only: no silencing or acknowledging (ADR-05).
 - Caps (spec §8): `pmm_alerts` 50/200 (default/maximum), paged with `limit` and `offset`.
-- A `service_id`, `service_name` or `node_name` filter outside `L` answers `not_found` with plan 06's fixed text, "not in your service list (services that sent metrics in the last hour)", with "in the last 7 days" for `pmm_alerts`, which never echoes the value the caller sent.
+- A `service_id`, `service_name` or `node_name` filter outside `L` answers plan 06's `not_found` (`errNotInList`), which names the 7 days searched and never echoes the value the caller sent.
 - Untrusted fields: an alert's name, severity, labels, summary and description.
 - Every map field in a result is `omitempty` or always non-nil (plan 03's contract rule).
 - The new tool is added to `registerTools` (`mcp.go:194`) and to the expected name list in `TestInitializeAndListTools` (`mcp_test.go:51`). It regenerates `testdata/tools_list.golden.json` (`-update`), lists its Untrusted fields in `TestUntrustedFieldsMarked`, gets a case in `TestErrorsCarryNoStructuredContent`, and is added to the exemptions of `TestRedactionInBothRenderings` with the reason "returns no statement text" (plan 03 Task 8). Each new `pmmAPI` method regenerates the mock with `go tool mockery --config .mockery.yaml` and `make format`; commit only `managed/services/mcp/mock_pmm_api_test.go`.
@@ -35,7 +35,7 @@
 
 - **A server-level alert,** with no service or node label, is shown to a restricted caller, as Grafana shows it (Task 2).
 - **An alert from a rule that aggregates `service_name` away but keeps `node_name`** is kept when that node is in `L`: a node with a listed service on it, or a host whose node_exporter series the caller can read. Under a negative Access Role filter such as `{service_name!="b"}`, VictoriaMetrics returns every node_exporter series, so node-only alerts of `b`'s host are kept while `b`'s own alerts are dropped (Task 2).
-- **A service whose pmm-agent went silent** (push mode, pmm-agent or vmagent stopped) sends no `up` samples. A target that is scraped but down (`up=0`) still does. The silent service's alerts, the one saying it is down included, stay in `pmm_alerts` for 7 days, because alerts use the 7-day list; after that they are dropped while Grafana still shows them. Other tools drop the service after an hour (ADR-08). Task 2 pins this; `mcp.md` states it (Task 4).
+- **A service whose pmm-agent went silent** (push mode, pmm-agent or vmagent stopped) sends no `up` samples. A target that is scraped but down (`up=0`) still does. The silent service's alerts, the one saying it is down included, stay in `pmm_alerts` for 7 days, because alerts use the 7-day list; after that they are dropped while Grafana still shows them. `pmm_inventory` drops the service after an hour, and the other tools once their window, at most 7 days, no longer covers its samples (plan 06). Task 2 pins this; `mcp.md` states it (Task 4).
 - **Grafana folder permissions** that hide a rule from a Viewer also hide its alerts, before MCP's narrowing, because the list comes from the rules API (Task 1 checks it; Task 5 tests it). A silenced alert of a hidden rule adds nothing (Task 2).
 - **A user's rule labelled `pmm_provisioned="1"`** is narrowed like any other rule: only PMM's own rules, by UID or provenance, are shown whatever they name (Task 2).
 - **Annotation text that names another service** is returned as written and never used for narrowing (Task 2).
@@ -73,7 +73,8 @@
 **Interfaces:**
 - `pmmAPI` gains `Alerts(ctx context.Context, auth callerAuth) ([]grafanaAlert, error)`: a raw `getJSON` on `graph/api/prometheus/grafana/api/v1/rules`, one `grafanaAlert` per firing alert of the rules returned; and `SilencedAlerts` and `Silences`, raw `getJSON`s on the Alertmanager API, for silence state only.
 - `type grafanaAlert struct { RuleUID string; PMMRule bool; Labels, Annotations map[string]string; StartsAt time.Time; Silenced bool; SilencedUntil *time.Time }`, filled per Task 1's mapping. `PMMRule` comes from the rule UID or provenance, never from a label. `Silenced` and `SilencedUntil` are joined by rule UID only; an Alertmanager alert whose rule UID isn't among the rules returned is ignored.
-- `type serviceSet struct { serviceIDs, serviceNames, nodeIDs, nodeNames map[string]bool }`; `func newServiceSet(services []serviceInfo, nodes []nodeInfo) serviceSet`, from both results of `listServices`; `func (l serviceSet) keepAlert(a grafanaAlert) bool` applies the alert narrowing rule.
+- Plan 06's `listServices(ctx, auth, w window) ([]serviceInfo, error)` becomes a call of `func (s *Service) listServicesAndNodes(ctx context.Context, auth callerAuth, w window) ([]serviceInfo, []nodeInfo, error)`, which drops the nodes. `type nodeInfo struct { NodeID, NodeName string }`: one per distinct `node_id`, named as in its newest row, or per `node_name` when a row has no `node_id`, across every row of the query, with a service or not (ADR-08). `const alertListLookback = 7 * day`.
+- `type serviceSet struct { serviceIDs, serviceNames, nodeIDs, nodeNames map[string]bool }`; `func newServiceSet(services []serviceInfo, nodes []nodeInfo) serviceSet`, from both results of `listServicesAndNodes`; `func (l serviceSet) keepAlert(a grafanaAlert) bool` applies the alert narrowing rule.
 - `type alertsInput struct { ServiceID, ServiceName, NodeName, Severity string; Limit, Offset int }`, every field `omitempty`.
 - `type alertRow struct { Name, Severity string (both Untrusted); Labels map[string]string (Untrusted); Summary, Description string (both Untrusted); StartsAt time.Time; Silenced bool; SilencedUntil *time.Time; PMMURL string }`, snake_case JSON. `Labels` is `json:"labels,omitempty"` and leaves out labels that start with `__`. `PMMURL` is `<base>graph/alerting/grafana/<rule uid>/view`, the pattern PMM's UI uses (`AlertStatusTable.utils.ts:85`), or `<base>graph/alerting/list` when there is no rule UID.
 - `type alertsResult struct { Alerts []alertRow; Page page; Note string }` with `render()`: the note, then one line per alert (severity, name, service, node, start time, silence end, link) with its summary below, then the paging marker. `Note` is always "Currently firing alerts only; resolved alerts are not shown."
@@ -105,7 +106,7 @@
   - a negative Access Role filter: with `L` as VictoriaMetrics returns it for `{service_name!="B"}` (every node_exporter series, every service but B), B's alerts are dropped and the node-only alert of B's host is kept;
   - the `mysql_down` template's labels (`service_id`, `service_name`, `node_name`, no `environment`) for a service in `L` whose pmm-agent runs on another node, so `node_name` is not in `L`, with `L` built under the role `{environment="prod"}`: kept;
   - Access Control off: with `L` holding a ProxySQL service and a node-only host, the ProxySQL alert and the node-only alert are kept.
-- Run, see FAIL. Implement: `listServices` (plan 06), then `Alerts`, narrowing, filters, order, `paginate`, render.
+- Run, see FAIL. Implement: `listServicesAndNodes`, then `Alerts`, narrowing, filters, order, `paginate`, render. Add a `TestServiceList` case: the nodes of plan 06's `vm_up_list.json` are `node-1` (`demo-node`, not the older `old-node`) and `node-2` (`bare-host`), the second from a row without a service.
 - Register the tool; add it to the name list, `TestErrorsCarryNoStructuredContent`, `TestEmptyAndDegradedResults` and the redaction exemptions; regenerate the golden file and the mock; list the Untrusted fields. Run `go test ./managed/services/mcp/...`, see PASS.
 - Commit `PMM-15790 Add pmm_alerts`.
 
@@ -128,7 +129,7 @@
   - the tool, its filters and caps; alert summaries and descriptions are returned as written (ADR-07);
   - Advisor results are not in MCP (ADR-18);
   - the list is narrowed to the caller's services to match its other results;
-  - a service with no `up` sample for an hour leaves the list of the other tools, but its alerts stay in `pmm_alerts` for 7 days; after 7 days without samples they leave it too;
+  - a service with no `up` sample for an hour leaves `pmm_inventory`, but its alerts stay in `pmm_alerts` for 7 days; after 7 days without samples they leave it too;
   - `pmm_alerts` shows currently firing alerts only; resolved alerts are not shown.
 - Commit `PMM-15790 Document pmm_alerts`.
 
@@ -136,6 +137,7 @@
 
 **Files:**
 - Create: `api-tests/mcp/alerts_test.go`, using plan 06 Task 4's helpers
+- Modify: `api-tests/mcp/access_roles_test.go`: plan 06's `TestAccessRoleMatrix` requires a row for every tool in `tools/list`
 
 **Interfaces:** none.
 
@@ -144,6 +146,7 @@
   - a Viewer whose Access Role allows A gets A's alert, the node alert of A's node and the server-level alert from `pmm_alerts`, and nothing of B;
   - an alert of the folder without Viewer access doesn't reach a Viewer;
   - a Viewer whose Access Role is `{service_name!="B"}` doesn't get B's alerts, and gets the node-only alerts of every host;
+- Add `pmm_alerts` to `TestAccessRoleMatrix`: under every setup, no alert names a service in `H`, and with `service_name` of a service in `H ∩ {mysql-b, pg-b}` the call is `not_found` with the 7-day fixed text.
 - Run plan 05's load test again (plan 05 Task 9 Step 4) with a fourth loop per caller that calls `pmm_alerts`, which reads the 7-day list. The same pass threshold applies.
 - Record the results on PMM-15790.
 - The last step of the plan (00): merge `origin/PMM-MCP-GA` into the branch, with `PMM-MCP-GA` behind 0; run a Feature Build from the branch, verify live, and open the PR `PMM-15790 Add pmm_alerts` into `PMM-MCP-GA`.
