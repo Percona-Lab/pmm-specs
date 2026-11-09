@@ -1,6 +1,8 @@
 # OTel 04: Database, OS and Application Logs from pmm-admin Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Release split (D29):** Tasks 2, 3, 4 and 5 ship in 3.12.0. Tasks 1, 6 and 7 are Phase 1b. Task 3's `DiscoverLogSources` RPC ships in 3.12.0; the `--discover` flag that calls it comes with Task 1.
 
 **Goal:**
 - `pmm-admin add logs` / `remove logs` manage log sources on a node.
@@ -26,6 +28,8 @@
 - the [roadmap](00-roadmap.md) for the shared names.
 
 **Depends on:** plan 02 (the `log_sources` API, the presets harness, `Render` with `DiscoveredPaths`).
+
+**Release criterion for Tasks 2–5** (D29): Add a MySQL, PostgreSQL or MongoDB service with `pmm-admin add` on the same host as its database; within a few minutes its log shows in the explorer, filtered to that service, with no log source configured by hand. Each task's Feature Build check builds toward it, and QA (PMM-15578) runs it for all three databases.
 
 ## Global Constraints
 
@@ -221,6 +225,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - `api/management/v1/postgresql.proto` and `api/management/v1/mongodb.proto`: `bool collect_logs` and the same two result fields.
   - `api/otel/v1/otel.proto`: `DiscoverLogSources(DiscoverLogSourcesRequest{service_id, kinds}) → {log_sources, messages}`
   - `managed/services/management/mysql.go` (:37-208), `postgresql.go` and `mongodb.go`: after `GetInfoFromService` (`mysql.go:122`, `mongodb.go:107`), when `collect_logs` is set, call `logDiscovery.Discover`. Upsert the collectable entries through `models.UpsertLogSource` with `Discovery = "mysql_" + kind` (MySQL), `"postgresql"` or `"mongodb"`. Put the reasons in `log_collection_messages`. **A discovery error never fails the add.**
+  - the add-service handlers: when OTEL is off, the sources are still created (Task 4 of plan 02 withholds them), and `log_collection_messages` says "OTEL is turned off; this log is collected once an Admin turns it on". Test: `TestAddMySQLWithOtelOffCreatesSourceAndSaysSo`.
   - `managed/services/agents/registry.go` (`authenticate`): after the agent is registered, rediscover each service that has sources with `discovery != ""` on this pmm-agent, and update a source's path when it changed. Then `RequestStateUpdate`.
   - `managed/services/otel/log_sources_grpc.go`: the `DiscoverLogSources` handler.
 
@@ -261,7 +266,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
 
 **Interfaces:**
 - Consumes the `collect_logs` body fields (Task 3) and `agentlocal.GetStatus().ServerVersion`.
-- Produces `func collectLogsSupported(serverVersion string) bool`, true for `version.CollectLogsSupportVersion` and later. That is a new `FeatureVersion` in `version/features.go`, set to the first release that ships this plan's server side. Plan 04 is Phase 1b, after the 3.12.0 Technical Preview (D25), so it is not 3.12.0; set it when plan 04 is scheduled. When it is false, pmm-admin leaves `collect_logs` unset. If the user passed the flag explicitly, it prints "log collection needs PMM Server <version> or newer"; on the default, it prints nothing.
+- Produces `func collectLogsSupported(serverVersion string) bool`, true for `version.CollectLogsSupportVersion` and later. That is a new `FeatureVersion` in `version/features.go`, `3.12.0-0`: Tasks 2–5 ship in 3.12.0 (D29). When it is false, pmm-admin leaves `collect_logs` unset. If the user passed the flag explicitly, it prints "log collection needs PMM Server <version> or newer"; on the default, it prints nothing.
 
 - [ ] **Step 1: Write the failing tests.**
   - `TestAddMySQLDefaultCollectsErrorLog`: the built request body has `CollectLogs == "error"`.

@@ -34,7 +34,7 @@ The roadmap's **Shared contract** and **Global constraints** apply to every task
 
 These inputs and conditions are implied by the spec but no task naturally tests them. Each line names the task that adds the test.
 
-1. **Upgrade from a release whose stored settings have no `otel` key.** Expected: OTEL is on, with the defaults, and needs no manual step. Test in Task 4 (`TestSettings/otel_defaults_on_upgrade`).
+1. **Upgrade from a release whose stored settings have no `otel` key.** Expected: OTEL is off (ADR-25), with the other defaults, until an Admin turns it on. Test in Task 4 (`TestSettings/otel_defaults_on_upgrade`).
 2. **A ClickHouse password or address containing `$`, `'`, `"` or `#`.** Expected: the collector receives it verbatim, with no confmap expansion and no YAML breakage. Test in Task 5 (`TestServerCollectorConfigEscapesSecrets`).
 3. **External ClickHouse (`PMM_DISABLE_BUILTIN_CLICKHOUSE`) without the `otel_*` users.** Expected: `GET /v1/otel/status` says `otel_writer` can't authenticate, instead of the collector failing silently. Test in Task 9 (`TestGetStatusReportsWriterAuthFailure`).
 4. **Clients pushing while the collector is disabled or paused.** Expected: `/otlp/` answers 502, the clients keep the data queued, and nothing reaches ClickHouse. Test in Task 7 (api-test `TestOTLPWhenCollectorDisabled`).
@@ -146,6 +146,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
     - the upstream exporter's columns: `Timestamp DateTime64(9)`, `TimestampTime DateTime DEFAULT toDateTime(Timestamp)`, `TraceId`, `SpanId`, `TraceFlags`, `SeverityText`, `SeverityNumber`, `ServiceName`, `Body`, `ResourceSchemaUrl`, `ResourceAttributes Map(LowCardinality(String), String)`, `ScopeSchemaUrl`, `ScopeName`, `ScopeVersion`, `ScopeAttributes`, `LogAttributes`, with the upstream codecs and indexes (copy them from the pinned exporter's `internal/sqltemplates`);
     - plus `PmmNodeId LowCardinality(String) MATERIALIZED ResourceAttributes['pmm.node_id']` and `PmmServiceId LowCardinality(String) MATERIALIZED ResourceAttributes['pmm.service_id']`;
     - plus `PatternHash UInt64 MATERIALIZED <logpatterns.HashExpr("Body")> CODEC(ZSTD(1))`, written out literally in `01_logs.up.sql` and not in the sort key (D27, ADR-04);
+    - plus `EventId UUID DEFAULT generateUUIDv4()`, not in the sort key, for stable paging in the explorer (ADR-04);
     - `ENGINE = {{ .engine }} PARTITION BY toDate(TimestampTime) ORDER BY (PmmNodeId, PmmServiceId, ServiceName, TimestampTime) SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1`;
     - no TTL (D1).
   - `package logpatterns` (`utils/logpatterns`):
@@ -177,6 +178,8 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   ```
   Add `TestPatternHashMatchesRules`: read `otel/sql/*.up.sql` in file order, take the last `PatternHash UInt64 MATERIALIZED ` expression up to ` CODEC(`, and assert it equals `logpatterns.HashExpr("Body")`. On failure, print the expected expression and "add a new migration with ALTER TABLE otel.logs MODIFY COLUMN; never MATERIALIZE COLUMN (ADR-04)". In `logpatterns_test.go`, pure Go because `make test-common` runs `utils/` without ClickHouse: `TestExprWrapsEveryRule` (`Expr("Body")` starts with `substringUTF8(` and contains one `replaceRegexpAll(` per rule) and `TestExprQuotesColons` (no literal `:` inside a quoted rule). In `otel_test.go`, on the test ClickHouse, `TestPatternExprMasksVariableParts`: `SELECT ` + `logpatterns.Expr("'2026-10-11T10:00:00Z took 15ms id=3f2a9c1e7b user=''bob'''")` returns `? took ? id=? user='?'`.
 
+  Extend `TestRunOtelCreatesLogs`: the inserted row's `EventId` is not the zero UUID, and two rows inserted in one statement get different `EventId`s.
+
   Add `TestRunOtelOnExistingQANDatabase`: run `Run` (QAN) first, then `RunOtel`, and assert that both `schema_migrations` and `otel_schema_migrations` exist, each in its own database.
 - [ ] **Step 2: Run it.** `cd qan-api2 && go test -run 'TestRunOtel|TestPatternHash' ./migrations/` and `go test ./utils/logpatterns/` from the repo root. Expected: FAIL, `undefined: RunOtel` and `undefined: logpatterns`.
 - [ ] **Step 3: Implement `RunOtel`.** Call `createDB` first, because the otel DSN's database may not exist yet. Then wire it into `NewDB`: derive the otel DSN by replacing the database path of the QAN DSN with the constant `otel`, and run the chain after the QAN chain. Add `-chain=otel` to `render-migrations` so CI can pipe the SQL into a container.
@@ -193,6 +196,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 - Modify:
   - `api/server/v1/server.proto` (`OtelSettings` as `Settings.otel = 23`; `ChangeOtelSettings` as `ChangeSettingsRequest.otel = 17`. Field 22 is `om_enabled` and 16 is `enable_om` (PMM-15299); 15 is reserved)
   - `managed/models/settings.go` (defaults consts ~:26-37, struct ~:63-126, `IsOtelCollectorEnabled`, `fillDefaults` ~:219-251)
+  - `managed/models/database.go` (`SetupDB`, ~:1600-1660): when the database started at schema version 0, store `otel.collector_enabled = OtelOnForNewInstalls` (ADR-25)
   - `managed/models/settings_helpers.go` (`ChangeSettingsParams` ~:54-108, `UpdateSettings`, `ValidateSettings`)
   - `managed/utils/envvars/parser.go` (a `case "PMM_ENABLE_OTEL":` like `PMM_ENABLE_ALERTING` at :201-207)
   - `managed/utils/env/env.go`
@@ -222,7 +226,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       require.NoError(t, err)
       s, err := models.GetSettings(sqlDB)
       require.NoError(t, err)
-      assert.True(t, s.IsOtelCollectorEnabled())
+      assert.False(t, s.IsOtelCollectorEnabled())
       assert.Equal(t, models.OtelSettings{CollectorEnabled: s.Otel.CollectorEnabled, LogsRetentionDays: 7,
           TracesRetentionDays: 7, MaxDiskGB: 10, DiskWatermarkPercent: 80}, s.Otel)
   })
@@ -241,13 +245,15 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   ```
   `new(value)` is the `new(expr)` form from Go 1.26. The repo is on Go 1.27, and `registry.go:530` already uses it (`new(models.NomadAgentType)`). Use the error helper that the surrounding subtests use.
 
+  Also add `TestSetupDBNewInstallStoresOtelDefault` (`testdb`, in `managed/models/database_test.go`): `SetupDB` on an empty database stores `otel.collector_enabled` equal to `OtelOnForNewInstalls`, for both values of the constant; on a database that already has migrations, it stores nothing.
+
   Also add:
   - `TestParseEnvVars` cases: `PMM_ENABLE_OTEL=false` gives `envSettings.Otel.CollectorEnabled=false`; an invalid value gives an error naming the variable.
   - In `server_test.go`, `TestValidateChangeSettingsRequest`: with env `PMM_ENABLE_OTEL=false`, a request with `otel.collector_enabled=true` gets `FailedPrecondition`.
 - [ ] **Step 2: Run them.** `cd managed && go test ./models/ ./utils/envvars/ ./services/server/ -run 'Otel|TestSettings|ParseEnvVars|ValidateChangeSettings'`. Expected: FAIL to compile, `undefined: models.OtelSettings`.
 - [ ] **Step 3: Implement.** Add the proto messages and run `make gen`. Add the model, the defaults, validation, the env case and the env lock. Then add the response conversion: `IngestPaused` is not exported in `Settings`.
 - [ ] **Step 4: Run them again.** Same command. Expected: PASS. Then write the api-test (`api-tests/server/settings/otel_settings_test.go`):
-  - `GET /v1/server/settings` has `otel.collector_enabled=true` and `logs_retention_days=7`;
+  - on a fresh Feature Build, `GET /v1/server/settings` has `otel.collector_enabled` equal to `OtelOnForNewInstalls`, and `logs_retention_days=7`;
   - a `PUT` with only `{"otel":{"logs_retention_days":3}}` keeps `collector_enabled`;
   - `logs_retention_days: 0` gets 400.
 
@@ -279,7 +285,11 @@ These inputs and conditions are implied by the spec but no task naturally tests 
     - `replace_pattern(body, "glsa_[A-Za-z0-9_]+", "[REDACTED]")`
     - `replace_pattern(body, "(?i)(authorization\"?\\s*[:=]\\s*\"?)[^\\s\",]+(\\s+[^\\s\",]+)?", "$$1[REDACTED]")`
     - `replace_pattern(body, "(?i)(password\\s*=\\s*)[^\\s&;,]+", "$$1[REDACTED]")`
-    - the same four as `replace_all_patterns(attributes, "value", …)` and `replace_all_patterns(resource.attributes, "value", …)`.
+    - `replace_pattern(body, "(?i)(\"?(?:password|passwd|pwd|secret|token|api_key)\"?\\s*[:=]\\s*\"?)[^\\s\",&;]+", "$$1[REDACTED]")`, for key/value secrets, JSON included;
+    - `replace_pattern(body, "(://[^:/@\\s]+:)[^@/\\s]+@", "$$1[REDACTED]@")`, for credentials in URLs and connection strings;
+    - `replace_pattern(body, "(?i)(identified\\s+(?:with\\s+\\S+\\s+)?by\\s+')[^']*", "$$1[REDACTED]")`, for MySQL `IDENTIFIED BY '…'`;
+    - the same seven as `replace_all_patterns(attributes, "value", …)` and `replace_all_patterns(resource.attributes, "value", …)`.
+    - The regexes above are a starting point; Task 8's corpus decides them.
   - `exporters.clickhouse`: `endpoint: tcp://<addr>?dial_timeout=10s`, `database: otel`, `username`, `password`, `logs_table_name: logs`, `create_schema: false`, `timeout: 10s`, `retry_on_failure` (5s/30s/300s), `sending_queue: {enabled: true, queue_size: 1000}`.
   - `service.telemetry.metrics`: a pull reader on `TelemetryEndpoint` (`127.0.0.1:4319`), level `normal`.
   - `service.pipelines.logs: [otlp] → [memory_limiter, transform/redact, batch] → [clickhouse]`.
@@ -456,7 +466,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 ### Task 8: Contract test against the pinned collector and the migrated schema
 
 **Files:**
-- Create: `managed/services/otel/contract_test.go`
+- Create: `managed/services/otel/contract_test.go` and `managed/services/otel/testdata/redaction-corpus.txt`
 - Modify: `.github/workflows/otelcol.yml` (Task 1). It starts the qan-api2 test ClickHouse with the `users.d` mount, runs `go run ./qan-api2/cmd/render-migrations -chain=otel | clickhouse client -d otel`, and then runs the test with the env vars set.
 
 **Interfaces:**
@@ -480,10 +490,16 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       assert.Equal(t, "n1", node)
       // also SELECT PatternHash for the same row
       assert.NotZero(t, patternHash)
+      // and EventId: the pinned exporter inserts named columns, so the DEFAULT applies
+      assert.NotEqual(t, uuid.Nil, eventID)
       _, err := net.DialTimeout("tcp", "127.0.0.1:4317", time.Second)
       require.Error(t, err)
   }
   ```
+  Also send every line of `testdata/redaction-corpus.txt`. It has two sections:
+  - `# must-mask`: JSON `"password": "…"`, MySQL, PostgreSQL and MongoDB connection strings with credentials, `https://user:pass@host`, `PGPASSWORD=…`, `--password=…`, `IDENTIFIED BY '…'`, bearer and `glsa_` tokens. Each line names its secret; the test fails if any secret is stored.
+  - `# known-gaps`: personal data and free-text secrets that the patterns don't cover. The test asserts they pass through unmasked, so the docs can list exactly what redaction misses.
+
 - [ ] **Step 2: Run it locally against a collector without the redaction processor**: temporarily drop `transform/redact` from the pipeline in a scratch copy of the config. Expected: FAIL on `NotContains`. This proves the test can catch a missing redaction.
 - [ ] **Step 3: Restore the generator's config.** No production code changes, unless the test exposes a regex or `$$` problem; fix that in `server_config.go`.
 - [ ] **Step 4: Run it.** `PMM_OTEL_CONTRACT_BINARY=… PMM_OTEL_CONTRACT_CLICKHOUSE=127.0.0.1:19000 go test ./managed/services/otel/ -run TestCollectorContract`, then check that the CI workflow is green. Expected: PASS.
@@ -536,7 +552,9 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `managed/services/otel/cleanup_plan.go`
   - `managed/services/otel/cleanup_plan_test.go`
   - `managed/services/otel/cleaner_test.go`
-- Modify: `managed/cmd/pmm-managed/main.go`: `haService.AddLeaderService(ha.NewContextService("otel-cleaner", cleaner.Run))`, next to `"cleaner"` (~:1366).
+- Modify:
+  - `managed/cmd/pmm-managed/main.go`: `haService.AddLeaderService(ha.NewContextService("otel-cleaner", cleaner.Run))`, next to `"cleaner"` (~:1366).
+  - `managed/models/settings_helpers.go`: `UpdateSettings` reads the row with `SELECT settings FROM settings FOR UPDATE`, so it and `SetOtelIngestPaused` take turns and a settings change can't undo a pause. Every caller already runs in a transaction (`managed/services/server/server.go:155`, `:679`; `managed/services/checks/checks.go:413`, `:431`).
 
 **Interfaces:**
 - Produces:
@@ -598,6 +616,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       }
   }
   ```
+  Add `TestUpdateSettingsKeepsConcurrentPause` (`testdb`, in `settings_helpers_test.go`): one transaction calls `SetOtelIngestPaused(true)` and holds the lock; another calls `UpdateSettings` with a retention change; after both commit, the pause and the retention change are both stored.
   Add `TestSetOtelIngestPausedKeepsOtherSettings` (`testdb`, in `settings_helpers_test.go`): change retention, set the pause flag, and assert that the retention change is kept. Add `TestCleanerNeverTouchesQAN` (`cleaner_test.go`, sqlmock): after one pass, every executed statement starts with `ALTER TABLE otel.logs`, and none mentions `otel_schema_migrations`.
 - [ ] **Step 2: Run them.** `cd managed && go test ./services/otel/ -run 'PlanCleanup|Cleaner'`. Expected: FAIL.
 - [ ] **Step 3: Implement** `PlanCleanup` and the `Cleaner` (queries, drops, the settings write, metrics), and register the leader service.
@@ -612,7 +631,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 
 **Files** (in percona/percona-helm-charts, on branch `PMM-15594-otel-ha`):
 - Modify:
-  - `charts/pmm-ha/values.yaml` (`otel.enabled: true` and `clickhouse.otelUsers`)
+  - `charts/pmm-ha/values.yaml` (`otel.enabled` with no default, and `clickhouse.otelUsers`). With no value set, the chart renders no `PMM_ENABLE_OTEL`, so a chart upgrade can't turn OTEL on (ADR-25)
   - `charts/pmm-ha/templates/clickhouse-cluster.yaml`: a `users.d/otel-users.xml` drop-in, copying the datasource-user drop-in at ~:96-139, with grants `INSERT ON otel.*` and `SELECT ON otel.*`
   - `charts/pmm-ha/templates/_helpers.tpl`: secrets generated the way `pmm.clickhouse.datasourcePassword` does at ~:821-845: lookup first, else `randAlphaNum 32` memoised on `.Values`, so every caller gets the same value
   - `charts/pmm-ha/templates/statefulset.yaml`: `PMM_ENABLE_OTEL` and `PMM_CLICKHOUSE_OTEL_*` env entries from values and secrets
@@ -622,9 +641,9 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 **Interfaces:**
 - Consumes the env names from the roadmap's Shared contract.
 
-- [ ] **Step 1: Write the check.** Run `helm template t charts/pmm-ha | grep -E 'PMM_ENABLE_OTEL|PMM_CLICKHOUSE_OTEL_WRITER_PASSWORD|GRANT INSERT ON otel'`. Expected: no output (FAIL).
+- [ ] **Step 1: Write the check.** Run `helm template t charts/pmm-ha --set otel.enabled=true | grep -E 'PMM_ENABLE_OTEL|PMM_CLICKHOUSE_OTEL_WRITER_PASSWORD|GRANT INSERT ON otel'`. Expected: no output (FAIL).
 - [ ] **Step 2: Implement** the values, the drop-in, the secrets, the env entries and the README.
-- [ ] **Step 3: Run the check again, then `helm lint charts/pmm-ha`.** Expected: all three patterns are present and the lint is clean. Then run `helm template … --set otel.enabled=false` and check that it renders `PMM_ENABLE_OTEL: "false"`.
+- [ ] **Step 3: Run the check again, then `helm lint charts/pmm-ha`.** Expected: all three patterns are present and the lint is clean. Then check that `helm template …` with no `otel.enabled` renders no `PMM_ENABLE_OTEL`, and that `--set otel.enabled=false` renders `PMM_ENABLE_OTEL: "false"`.
 - [ ] **Step 4: Commit.**
   ```bash
   git add charts/pmm-ha

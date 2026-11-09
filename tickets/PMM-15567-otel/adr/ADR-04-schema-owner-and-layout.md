@@ -31,6 +31,7 @@
   - `PmmServiceId LowCardinality(String) MATERIALIZED ResourceAttributes['pmm.service_id']`
 - **Layout:** `PARTITION BY toDate(TimestampTime)`, `ORDER BY (PmmNodeId, PmmServiceId, ServiceName, TimestampTime)`. There is no table TTL (ADR-05).
 - **`service.name` for database sources:** the server program (`mysqld`, `postgres`, `mongod`).
+- **Stable paging** (decided on 2026-11-09): `otel.logs` gets `EventId UUID DEFAULT generateUUIDv4()`, outside the sort key. ClickHouse doesn't order rows with equal timestamps the same way from one query to the next, so the explorer pages on `(Timestamp, EventId)`.
 - **Patterns** (D27, decided on 2026-11-05):
   - `otel.logs` gets `PatternHash UInt64 MATERIALIZED cityHash64(<masked Body>) CODEC(ZSTD(1))`. It is not in the sort key.
   - The masking rules live in one Go package, `utils/logpatterns`. The otel migration writes the expression out literally, and a qan-api2 test fails when the newest migration's expression differs from the package's. pmm-managed uses the same package to mask the sample line it shows for each pattern.
@@ -43,4 +44,5 @@
 - A query for "everything in the last five minutes, across all nodes" reads more granules than with a time-first key. This is acceptable for a per-node and per-service product.
 - A CI contract test runs the pinned collector against the migrated schema, so a collector upgrade can't break inserts unnoticed.
 - `PatternHash` costs about a dozen regex replacements per inserted row. The capacity test (PMM-15592) measures it.
+- `EventId` costs 16 bytes per row.
 - After a change of the masking rules, one pattern can appear twice, under its old and new hash, until retention drops the old rows.

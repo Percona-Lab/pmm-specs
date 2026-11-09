@@ -6,7 +6,7 @@
 
 ## Context
 
-- OTEL is on by default on every ClickHouse profile, including the 8 GB one (ADR-12), and logs share ClickHouse's disk with QAN.
+- OTEL can be on for every ClickHouse profile, including the 8 GB one (ADR-12; in 3.12.0 for new installs only, ADR-25), and logs share ClickHouse's disk with QAN.
 - A changed retention must apply to data already stored.
 - A size cap and a disk watermark must stop logs from starving QAN.
 - QAN drops daily partitions in qan-api2, on every replica. That is harmless only because a time-based drop is idempotent; a cap or watermark drop is not.

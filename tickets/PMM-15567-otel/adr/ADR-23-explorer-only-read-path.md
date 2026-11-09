@@ -26,7 +26,7 @@ Option 2.
 **Kept from ADR-07:**
 - Reading logs is Admin-only until ADR-18 is implemented, and after that whenever access control is disabled. The rule is `"/v1/logs": admin`.
 - The ClickHouse user `otel_reader` has `SELECT` on `otel.*` only. `LogsService` in pmm-managed reads as that user.
-- The server collector redacts bearer and `glsa_` tokens, `Authorization` headers and `password=` values before storage.
+- The server collector redacts bearer and `glsa_` tokens, `Authorization` headers and `password=` values before storage, and also key/value secrets, credentials in URLs and MySQL `IDENTIFIED BY` clauses (plan 01, Task 5). Redaction is best-effort: a test corpus records what it doesn't mask (plan 01, Task 8).
 
 **Removed:**
 - the `pmm-otel` Grafana datasource;

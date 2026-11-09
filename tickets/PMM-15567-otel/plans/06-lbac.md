@@ -82,12 +82,14 @@ Plan 08 builds `LogsService` (`Search`, `Context`, `Histogram`, `Facets`) for Ad
   - `pmm.conf`: a `/v1/logs` location that sets `X-Proxy-Filter`, like `/v1/qan` (:339-344)
 - **Produces:**
   - `func AllowedIDs(q *reform.Querier, s lbac.Selectors) (pairs []ServiceNode, nodes []string, err error)`, cached on the inventory TTL;
+  - for restricted users, `ResourceAttributes['pmm.identity_verified'] = 'true'` as well, so records stored before ingest verification (Task 2) stay Admin-only;
   - the predicate `(PmmServiceId, PmmNodeId) IN {pairs} OR (PmmServiceId = '' AND PmmNodeId IN {nodes})`, added by `BuildSearchQuery` and by the histogram, facets, context and patterns queries, all through bound parameters. Patterns returns a sample line per group, so it must be filtered too.
 - **Tests:**
   - `TestLBACPrefixesCoverOtelReadPaths` (auth_server unit test: `/v1/logs:search` and `/v1/traces:search` get the header), `TestSearchDeniesBadSelector`;
   - `TestOtelReadPathsAdminOnlyWithoutAccessControl` (auth_server unit test): with access control disabled, a Viewer gets 403 on `/v1/logs:search` and an Admin gets 200; with it enabled, a Viewer with the full-access role gets 200;
   - api-test `TestRestrictedUserGetsFilterHeader`: a user with a filtered role gets only the allowed services from `/v1/logs:search`, and a user with the full-access role gets everything;
   - `TestSearchHidesSpoofedServiceRow`, `TestSearchNodeLogsNeedNodeLabel`;
+  - `TestSearchHidesUnverifiedRecordsFromRestrictedUsers`: a record without `pmm.identity_verified=true` is returned to an Admin and to no restricted user;
   - `TestFacetsRespectLBAC`: a restricted user doesn't see facet values for hidden services;
   - `TestPatternsRespectLBAC`: a restricted user sees no pattern, and no sample line, from a hidden service;
   - an api-test with two roles and two users.
