@@ -29,7 +29,7 @@
 - A `service_id`, `service_name` or `node_name` filter outside `L` answers `not_found` with plan 06's fixed text, "not in your service list (services that sent metrics in the last hour)", with "in the last 7 days" for `pmm_alerts`, which never echoes the value the caller sent.
 - Untrusted fields: an alert's name, severity, labels, summary and description.
 - Every map field in a result is `omitempty` or always non-nil (plan 03's contract rule).
-- The new tool is added to `registerTools` (`mcp.go:194`) and to the expected name list in `TestInitializeAndListTools` (`mcp_test.go:51`). It regenerates `testdata/tools_list.golden.json` (`-update`), lists its Untrusted fields in `TestUntrustedFieldsMarked`, gets a case in `TestErrorsCarryNoStructuredContent`, and is added to the exemptions of `TestRedactionInBothRenderings` with the reason "returns no statement text" (plan 03 Task 8). Each new `pmmAPI` method regenerates the mock with `go tool mockery --config .mockery.yaml`; commit only `managed/services/mcp/mock_pmm_api_test.go`.
+- The new tool is added to `registerTools` (`mcp.go:194`) and to the expected name list in `TestInitializeAndListTools` (`mcp_test.go:51`). It regenerates `testdata/tools_list.golden.json` (`-update`), lists its Untrusted fields in `TestUntrustedFieldsMarked`, gets a case in `TestErrorsCarryNoStructuredContent`, and is added to the exemptions of `TestRedactionInBothRenderings` with the reason "returns no statement text" (plan 03 Task 8). Each new `pmmAPI` method regenerates the mock with `go tool mockery --config .mockery.yaml` and `make format`; commit only `managed/services/mcp/mock_pmm_api_test.go`.
 
 ## Review Focus
 

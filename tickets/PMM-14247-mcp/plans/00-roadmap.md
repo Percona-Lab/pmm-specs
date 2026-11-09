@@ -59,7 +59,7 @@ It took place on 2026-11-06, against pmm-specs `main` at `80c9b8b` and percona/p
 
 Default for every plan: one plan = one branch = one PR into `PMM-MCP-GA`, opened after the plan's last task. A plan that spans two tickets opens one PR per ticket. Plan 01 is the exception: it lands the three open phase 2 PRs and one new PR.
 
-The last step of every plan: merge `origin/PMM-MCP-GA` into the branch (with `PMM-MCP-GA` behind 0), push it, run a Feature Build from it, run the checks of [Verification, before each PR](#verification-before-each-pr), and open the PR with the Feature Build link (or, for an outside contributor, the description of the local setup).
+The last step of every plan: merge `origin/PMM-MCP-GA` into the branch (with `PMM-MCP-GA` behind 0), run `make gen` and `make format`, commit whatever they changed, push, run a Feature Build from it, run the checks of [Verification, before each PR](#verification-before-each-pr), and open the PR with the Feature Build link (or, for an outside contributor, the description of the local setup). CI's "Checks" job (`.github/workflows/main.yml`) runs `make gen`, `make release`, `make format` and `go mod tidy`, then fails on any diff, so a branch that skips this step goes red.
 
 From PMM-15527:
 - Ticket branches are cut from `PMM-MCP-GA`, never from `main`, named `PMM-XXXXX-<2 to 4 words>`, and PR back into `PMM-MCP-GA`.
@@ -79,7 +79,7 @@ Every new MCP tool, from plan 03 on:
 - gets an entry in the tool lists of plan 03's contract tests: `TestUntrustedFieldsMarked`, `TestErrorsCarryNoStructuredContent`, `TestEmptyAndDegradedResults` and `TestRedactionInBothRenderings` (or its exemptions);
 - regenerates the golden file with `-update`.
 
-A new `pmmAPI` method regenerates the mock with one command, `go tool mockery --config .mockery.yaml`, run from the repository root; commit only `managed/services/mcp/mock_pmm_api_test.go`. Not `make gen-mocks`, which deletes and regenerates every mock in the repository.
+A new `pmmAPI` method regenerates the mock with `go tool mockery --config .mockery.yaml`, run from the repository root, then `make format`, because CI's `make format` step fails on any file it would change. `.mockery.yaml` lists every package, so the command regenerates every mock; the working tree should change only in `managed/services/mcp/mock_pmm_api_test.go`, and that is the file to commit. Not `make gen-mocks`, which deletes and regenerates every mock in the repository. `make gen` runs the same steps, with the protobuf and reform generators, and `make format` last.
 
 ## Verification, every task
 
@@ -88,7 +88,7 @@ A new `pmmAPI` method regenerates the mock with one command, `go tool mockery --
 
 ## Verification, before each PR
 
-- **Lint and generated files:** `make prepare-pr` (see [Branch and PR rules](#branch-and-pr-rules) for the generated files it reformats).
+- **Lint and generated files:** `make prepare-pr` (see [Branch and PR rules](#branch-and-pr-rules) for the generated files it reformats), then the CI "Checks" job's own sequence: `make gen`, `make release`, `make format`, `go mod tidy`, and `git diff --exit-code` shows nothing.
 - **api-tests**, on the live-check environment, from the repository root:
 
   ```bash
@@ -108,7 +108,7 @@ These numbers live in [spec §8](../spec.md#8-phase-3-output-contract) and are c
 | Live-inspection calls in flight on one service: 1 per replica | spec §8; plan 04 |
 | Metric and QAN calls in flight: 4 per caller, 8 per replica; QAN window 30 days | spec §8; plan 05 |
 | Calls started per caller: live 10 per minute, burst 4; metric 60 per minute, burst 10 | spec §8; plan 05 |
-| Requests to VictoriaMetrics in flight: half of the explicit `-search.maxConcurrentRequests` | spec §8; plan 05 |
+| Requests to VictoriaMetrics in flight: half of VictoriaMetrics' concurrent-query limit (`VM_search_maxConcurrentRequests`, else its default `min(2 × CPUs, 16)`), at least 1 | spec §8; plan 05 |
 | Inventory 50/200, config variables 200/1000, plan 64 KiB, DDL 32 KiB | spec §8; plan 03 |
 | Metrics: 20/100 series, 2,000 points, 16 KiB, 25 s VictoriaMetrics timeout, 7 days read, 4 KiB and 10 selectors, 2,000 series per selector, 4 MiB read per response | spec §8; plan 05 |
 | `pmm_list_metrics` 100/1000, `pmm_alerts` 50/200 | spec §8; plans 05, 07 |
