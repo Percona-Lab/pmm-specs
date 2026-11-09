@@ -4,13 +4,13 @@
 
 **Goal:** Every service lookup in MCP uses the caller's service list, built from the `up` series the caller can read, so MCP's results follow the caller's Access Roles (ADR-08, ADR-03). The Viewer inventory rules from #5942 are removed. Once PMM-15534 is merged in from `main`, service-account tokens are governed by Access Roles too (ADR-12), and an api-test matrix proves it for every MCP tool.
 
-**Architecture:** MCP first forwards the caller's credentials in ADR-10's canonical form. `listServices` then stops calling the inventory API: it runs one instant query through the Grafana datasource proxy (ADR-09), which vmproxy filters by the caller's Access Roles, and builds one row per `service_id` from the `up` series of the last hour. `pmm_inventory`, `engineOf`, `serviceEngine`, `pinnedServiceID`, the resolve-first candidates, the `pmm_query_detail` narrowing, `pmm_get_config` and `pmm_service_health` all read that list. pmm-managed's APIs, nginx, the gRPC gateway and `lbacPrefixes` don't change: ADR-16 is deferred.
+**Architecture:** MCP first forwards the caller's credentials in ADR-10's canonical form. `listServices` then stops calling the inventory API: it runs one instant query through the Grafana datasource proxy (ADR-09), which vmproxy filters by the caller's Access Roles, and builds one row per `service_id` from the `up` series of the call's window, at most its last 7 days, or of the last hour for a call without a window. `pmm_inventory`, `engineOf`, `serviceEngine`, `pinnedServiceID`, the resolve-first candidates, the `pmm_query_detail` narrowing, `pmm_get_config` and `pmm_service_health` all read that list. pmm-managed's APIs, nginx, the gRPC gateway and `lbacPrefixes` don't change: ADR-16 is deferred.
 
 **Tech Stack:** Go 1.27, go-sdk v1.8.0, MetricsQL `tlast_over_time` through the datasource proxy (VictoriaMetrics v1.154.0 behind vmproxy; metricsql v0.87.5 lists the function in `rollup.go:87` [V]), api-tests.
 
 **Spec:** [ADR-08](../adr/ADR-08-inventory-under-access-roles.md), [ADR-12](../adr/ADR-12-service-accounts-as-principals.md), [ADR-03](../adr/ADR-03-api-only-data-path.md), [ADR-09](../adr/ADR-09-metrics-via-datasource-proxy.md), [ADR-10](../adr/ADR-10-nginx-only.md), [spec §9](../spec.md#9-phase-4-identity-and-access-roles), [tool-contract §3.2, §7, §8](../tool-contract.md#8-tools). Ticket PMM-15531. PMM-15534 is its own ticket on `main`.
 
-**Code base:** percona/pmm `PMM-15790-metrics-tools` at `747e1f968`: plan 05 complete, [percona/pmm#6291](https://github.com/percona/pmm/pull/6291), not yet merged into `PMM-MCP-GA`. Line numbers refer to that commit; paths are under `managed/services/mcp/` unless they say otherwise. [V] marks what was read there, [I] what was not checked.
+**Code base:** percona/pmm `PMM-15790-metrics-tools` at `ac98fee31`: plan 05 complete, [percona/pmm#6291](https://github.com/percona/pmm/pull/6291), not yet merged into `PMM-MCP-GA`. Line numbers refer to that commit, and are those of `747e1f968` outside `api-tests/mcp/load_test.go`; paths are under `managed/services/mcp/` unless they say otherwise. [V] marks what was read there, [I] what was not checked.
 
 ## Global Constraints
 
@@ -42,34 +42,44 @@ CI's "Checks" job runs `make gen` and `make format` and fails on any diff (00), 
 - MySQL 8.0, PostgreSQL 17 with pg_stat_monitor and MongoDB 7, plus the services Task 4 adds.
 
 **The caller's service list** (ADR-08, spec §9.2)
-- Built from every `up` series of the last hour, of any `service_type`, read through the datasource proxy with the caller's credentials, by one instant query:
+- **Look-back** (user decision, 2026-11-09; spec §8). A call with a window reads the `up` series of that window, ending at the window's end, and at most its last 7 days; a call without a window reads the last hour.
+  - With a window: `pmm_service_health` (`period_from`, `period_to`); `pmm_query_detail` (its period); `pmm_get_explain` and `pmm_get_schema` in a query form (the window of the `query_ref` or of the flat period, the last hour by default); and `pmm_top_queries`' two lookups, `pinnedServiceID` and `serviceEngine`, over the report's window.
+  - `pmm_get_config` reads one instant, `at`: its list covers the hour before `at`, the hour its QAN link covers (`tools_config.go:187`) [V]. With the default `at`, that is the last hour.
+  - Without a window: `pmm_inventory`, and `pmm_get_schema` with named tables (`engineOf`).
+  - A longer window, up to the QAN tools' 30 days (`maxQANWindow`, `tools_qan.go:192`) [V] or longer for `pmm_get_explain` and `pmm_get_schema`, reads its last 7 days, and a `not_found` says so.
+- Built from every `up` series of the look-back, of any `service_type`, read through the datasource proxy with the caller's credentials, by one instant query at the look-back's end (`time`), with the look-back in whole seconds, as `parseWindow` truncates windows to the second (`time.go:82-99`) [V]:
 
   ```text
-  max by (service_id, service_name, service_type, node_id, node_name, environment, cluster) (tlast_over_time(up[1h]))
+  max by (service_id, service_name, service_type, node_id, node_name, environment, cluster) (tlast_over_time(up[<seconds>s]))
   ```
 
   The value is the newest sample time in Unix seconds; `tlast_over_time` counts every sample, whatever its value.
 - Every row with a non-empty `service_id` is a service: one per `service_id`, from its row with the newest `last_seen`, with `service_name`, engine (its `service_type`), `node_id`, `node_name`, `environment`, `cluster` and `last_seen`. Rows without `service_id` (node_exporter's, PMM Server's own jobs) give no service.
 - Only `service_id` is required. PMM removes empty labels before they reach a scrape target (`prepareLabels`, `managed/models/models.go:107-127`; `UnifiedLabels`, `managed/models/service_model.go:115-137`) [V], so a missing label is an empty field.
 - No address and no port.
-- Any `up` value counts. A target scraped with `up=0` stays listed with a current `last_seen`. A service leaves the list only when no `up` sample at all arrived in the last hour, for example when its pmm-agent or vmagent stopped.
-- Sorted by engine, then service name, then `service_id`. Two services can share a name for up to an hour, after one is removed and another added under its name, of the same engine or not; every lookup by name takes the one with the newest `last_seen` (`serviceNamed`, Task 1).
+- Any `up` value counts. A target scraped with `up=0` stays listed with a current `last_seen`. A service leaves the list only when no `up` sample at all arrived in the look-back, for example when its pmm-agent or vmagent stopped.
+- Sorted by engine, then service name, then `service_id`. Two services can share a name within the look-back, after one is removed and another added under its name, of the same engine or not; every lookup by name takes the one with the newest `last_seen` (`serviceNamed`, Task 1).
 - Built per tool call with the caller's own credentials, never cached or shared between callers (ADR-03). A failing list query fails the tool call; it never falls back to an unfiltered source.
 - The query goes through `queryMetrics` and `QueryInstant`, so it takes a slot of plan 05's limit on requests to VictoriaMetrics and is read within its 4 MiB cap; a longer answer is `pmm_unavailable` (`mapError`, `errors.go:119-121`) [V].
+- **Cost of the list query.**
+  - Time read: at most 7 days, plan 05's cap on a metrics query (`maxSpan`, `metrics_check.go:35`) [V]; `TestServiceListQueryInBudget` (Task 1) pins it. The list query is MCP's own, so it skips `checkExpr` and the series cap.
+  - Samples: at PMM's default resolutions, 5 s, 10 s and 60 s (`managed/models/settings.go:275-281`) [V], a standard exporter's three `up` series (hr, mr, lr jobs; node_exporter's at `scrape_configs.go:267-310`) [V] hold 120,960 + 60,480 + 10,080 = 191,520 samples over 7 days [V]. Task 4's environment, 8 services and 2 nodes or about 11 exporters [I: the exporter count], reads about 2.1 million samples for a 7-day list and 1/168 of that for an hour. VictoriaMetrics' `-search.maxSamplesPerQuery` is 1,500,000,000 (`managed/services/supervisord/supervisord.go:53`) [V].
+  - Response: one row per label set seen in the look-back, about 300 bytes with PMM's UUID IDs (`managed/models/service_helpers.go:298`) [V; the label lengths are I], so about 3.3 KB for Task 4's 11 rows [I]. The 4 MiB cap holds about 14,000 rows. A service renamed or registered again within the look-back adds a row, so a fleet that churns fills it faster over 7 days than over an hour.
+  - Latency: Task 1 Step 16 measures it for 1 hour, 24 hours and 7 days.
 - After Task 1, no MCP tool calls `/v1/inventory/`. After Task 2, `GET /v1/inventory/services` and `/nodes` are Admin-only again.
 
 **Lookups and errors**
-- A `service_id` or service name outside the list answers `not_found` with the fixed text `notInServiceList`, "not in your service list (services that sent metrics in the last hour)" (`resolve.go:33`) [V], plus the tool's existing hint, "; use pmm_inventory to list service ids" where the tool has it today (`tools_qan.go:931`, `tools_health.go:309`) [V]. A `not_found` message never echoes the ID or name the caller sent, and no error text, hint or candidate list names a service outside the list (tool-contract §3.2).
+- A `service_id` or service name outside the list answers `not_found` (`errNotInList`, Task 1): the fixed text `notInServiceList` (`resolve.go:33`) [V], from Task 1 "not in your service list (services that sent metrics in the window searched)"; then "; searched <from> – <to>", the look-back as `windowText` prints it (`resolve.go:243-245`) [V], with ", the last 7 days of the call's window" when a longer window was cut; then the tool's existing hint, "; use pmm_inventory to list service ids" where the tool has it today (`tools_qan.go:931`, `tools_health.go:309`) [V]. A `not_found` message never echoes the ID or name the caller sent, and no error text, hint or candidate list names a service outside the list (tool-contract §3.2).
 - `pmm_get_explain`, `pmm_get_schema` and `pmm_get_config` keep their engines and their existing `invalid_input` for another `service_type` (`tools_actions.go:293`, `:514-519`; `tools_config.go:145-150`) [V]. `pmm_service_health` answers `invalid_input` for a service that is neither MySQL, PostgreSQL nor MongoDB, before any signal query (Task 1): tool-contract §8 gives it those engines, and with node signals alone the result would read as a service that sent nothing.
 - pmm-managed's APIs, nginx, the gRPC gateway and `lbacPrefixes` are unchanged.
 - **Credentials on backing calls** (ADR-10). Before the list moves to the Grafana-served datasource proxy, MCP forwards the caller's credentials in one canonical form: when `auth.GetTokenFromHeaders` (`managed/utils/auth/token.go:33-52`) [V] finds a token, `Authorization: Bearer <token>` and no `Cookie`; otherwise Basic `Authorization` and `Cookie` unchanged. Task 1 does this first, in its own commit.
 - Every contract change regenerates `testdata/tools_list.golden.json` (`go test ./managed/services/mcp/ -run TestToolsListGolden -update`), and removing `pmmAPI` methods regenerates the mock as 00 says.
 
-**Deviation from the task-level plan.** This plan builds the services of the list only. The list's nodes (every distinct `node_id` and `node_name` in any row, node_exporter's included) and a look-back parameter (`listServicesOver`) have no caller before plan 07's `pmm_alerts`. `unparam`, enabled with `check-exported: true` (`.golangci.yml:101-102`) [V], fails on a result no caller reads and on a parameter that always gets the same value, and `AGENTS.md` asks for no speculative options. Plan 07 Task 2 adds both on the same query, which already groups by the node labels.
+**Deviation from the task-level plan.** This plan builds the services of the list only. The list's nodes (every distinct `node_id` and `node_name` in any row, node_exporter's included) have no caller before plan 07's `pmm_alerts`. `unparam`, enabled with `check-exported: true` (`.golangci.yml:101-102`) [V], fails on a result no caller reads, and `AGENTS.md` asks for no speculative options. Plan 07 Task 2 adds them on the same query, which already groups by the node labels. The look-back is a parameter here, as the task-level plan had it (`listServicesOver`), now as the call's window: its callers pass different windows, so `unparam` has nothing to report.
 
 ## Review Focus
 
-- **A service with no `up` sample at all,** for example in push mode with its pmm-agent stopped, stays listed with its old `last_seen` for one hour, then disappears (ADR-08). A target that is scraped but down (`up=0`) stays listed with a current `last_seen`. Task 1 pins the query (no comparison on `up`); Task 5 checks both live.
+- **A service with no `up` sample in the last hour,** for example in push mode with its pmm-agent stopped, leaves `pmm_inventory`. A call whose window covers a time it sent samples still finds it, up to 7 days back: health over the last 6 hours of a service stopped 3 hours ago answers. A window over 7 days searches its last 7 days, and a `not_found` says so. A target that is scraped but down (`up=0`) stays listed with a current `last_seen`. Task 1 tests the window, the cut and the query (no comparison on `up`); Task 5 checks it live.
 - **A service or node renamed within the hour** gives one row, with the newest labels; **a service removed and re-added under its name** gives two rows, and every lookup by name takes the newer, whatever their engines (Task 1, `TestServiceList`, `TestConfigByServiceName`).
 - **A service without `environment` or `cluster`,** the default, is listed like any other (Task 1).
 - **A restricted Admin:** vmproxy filters an Admin's metrics by Access Role like anyone else's: PMM adds filters for every user ID above 0 (`maybeAddLBACFilters`, `managed/services/grafana/auth_server.go:428-433`) [V]. So an Admin with a restricted Access Role gets a filtered list too (Task 4).
@@ -88,8 +98,8 @@ CI's "Checks" job runs `make gen` and `make format` and fails on any diff (00), 
   - `client.go` (`AuthenticateRequest` comment `:205-206`; delete `ListServices` `:312-319`, `ListNodes` `:321-328` and the `inventory` client field `:134`, `:198`);
   - `doc.go` ("verbatim" `:23-24`);
   - `tools_inventory.go` (`serviceInfo` `:52-60`, `serviceRow` `:72-81`, `render` `:89-122`, description `:136-137`, `inventory` `:171-222`, `listServices` `:224-263`; delete `nodeNames` `:265-290`);
-  - `tools_qan.go` (`pinnedServiceID` `:263-281`, `serviceEngine` `:836-850`, `engineOf` `:923-934`);
-  - `resolve.go` (`callerServices` `:166-187`);
+  - `tools_qan.go` (`pinnedServiceID` `:263-281` and its call `:242`, `serviceEngine` `:836-850` and its call `:782`, `queryDetail`'s `callerServices` call `:553`, `engineOf` `:923-934`);
+  - `resolve.go` (`notInServiceList` `:33`, `resolveQuery`'s `callerServices` call `:101`, `callerServices` `:166-187`);
   - `tools_config.go` (`config` `:104-196`);
   - `tools_health.go` (`allNoDataNote` `:38`, `serviceHealth` `:303-311`);
   - `links.go` (`serviceURL` `:69-80`);
@@ -100,21 +110,31 @@ CI's "Checks" job runs `make gen` and `make format` and fails on any diff (00), 
 - Test: `client_test.go`, `tools_inventory_test.go`, `tools_actions_test.go`, `hardening_test.go`, `tools_health_test.go`, `tools_qan_test.go`, `resolve_test.go`, `contract_test.go`, `mcp_test.go`, `api-tests/mcp/mcp_test.go` (`TestInventory` `:326-362`).
 
 **Interfaces:**
-- Consumes: `queryMetrics(ctx, auth, promql string, at time.Time) ([]metricSample, error)` (`tools_inventory.go:336`), `metricSample{Labels map[string]string; Value float64}` (`deps.go:58-61`), `notInServiceList`, `mapError`, `paginate`, `enrichVersions` [V].
+- Consumes: `queryMetrics(ctx, auth, promql string, at time.Time) ([]metricSample, error)` (`tools_inventory.go:336`), `metricSample{Labels map[string]string; Value float64}` (`deps.go:58-61`), `type window struct { From, To time.Time }` (`results.go:74-77`), `windowText` (`resolve.go:243`), `day` (`time.go:27`), `hourWindow` (`mcp.go:73`), `checkExpr(expr string, span, step time.Duration) (time.Duration, error)` (`metrics_check.go:78`), `notInServiceList`, `mapError`, `paginate`, `enrichVersions` [V].
 - Produces:
   - `callerAuthFromHeader(h http.Header) callerAuth`: with a token, `authorization` is `"Bearer " + token` and `cookie` is empty; otherwise both as received. `AuthenticateRequest` and `apply` (`client.go:207-231`) set them on every backing call as today; `callerKey` (`limits.go:169-199`) still keys by the token.
-  - In `tools_inventory.go`: `const serviceListQuery` (the query in Global Constraints, verbatim); `const engineProxySQL = "proxysql"`, `engineHAProxy = "haproxy"`, `engineValkey = "valkey"`, `engineExternal = "external"`; `var serviceTypes = []string{engineMySQL, enginePostgreSQL, engineMongoDB, engineProxySQL, engineHAProxy, engineValkey, engineExternal}`, PMM's service types (`managed/models/service_model.go:42-48`) [V].
+  - In `tools_inventory.go`: `const serviceListQuery`, the query in Global Constraints verbatim with `%d` for the seconds (`...tlast_over_time(up[%ds]))`); `const maxListLookback = 7 * day`; `const engineProxySQL = "proxysql"`, `engineHAProxy = "haproxy"`, `engineValkey = "valkey"`, `engineExternal = "external"`; `var serviceTypes = []string{engineMySQL, enginePostgreSQL, engineMongoDB, engineProxySQL, engineHAProxy, engineValkey, engineExternal}`, PMM's service types (`managed/models/service_model.go:42-48`) [V].
   - `type serviceInfo struct { ServiceID, ServiceName, Engine, Version, NodeID, NodeName, Environment, Cluster string; LastSeen time.Time }`. `Address` and `Port` go.
-  - `func (s *Service) listServices(ctx context.Context, auth callerAuth) ([]serviceInfo, error)`: runs `serviceListQuery` with `queryMetrics` at `time.Time{}` and applies Global Constraints' rules. `LastSeen` is the value as Unix seconds, truncated to the second, in UTC. `Version` stays empty. The `withNodeNames` argument goes; its six callers drop it (`tools_inventory.go:181`, `resolve.go:167`, `tools_health.go:303`, `tools_qan.go:271`, `:840`, `:925`).
+  - `func listSpan(w window) (window, bool)`: the look-back for a call window `w`: `To` is `w.To`, `From` is the later of `w.From` and `w.To - maxListLookback`, and the bool says whether it cut `w`.
+  - `func (s *Service) lastHour() window`: `window{From: s.now().Add(-hourWindow), To: s.now()}`, the look-back of a call without a window.
+  - `func (s *Service) listServices(ctx context.Context, auth callerAuth, w window) ([]serviceInfo, error)`: runs `fmt.Sprintf(serviceListQuery, <seconds of listSpan(w)>)` with `queryMetrics` at `listSpan(w).To`, and applies Global Constraints' rules. `LastSeen` is the value as Unix seconds, truncated to the second, in UTC. `Version` stays empty. The `withNodeNames` argument goes. Its callers pass, per Global Constraints:
+    - `inventory` (`tools_inventory.go:181`): `s.lastHour()`;
+    - `serviceHealth` (`tools_health.go:303`): `window{start, end}`;
+    - `config`: `window{at.Add(-hourWindow), at}`;
+    - `engineOf` (`tools_qan.go:925`): `s.lastHour()`; its signature stays, and after Task 1 its one caller is `pmm_get_schema` with named tables (`tools_actions.go:384`);
+    - `callerServices(ctx context.Context, auth callerAuth, serviceID string, w window) ([]serviceInfo, []string, error)` (`resolve.go:166-167`), called by `resolveQuery` with `window{ref.PeriodFrom, ref.PeriodTo}` (`resolve.go:101`) and by `queryDetail` with `window{from, to}` (`tools_qan.go:553`);
+    - `pinnedServiceID(ctx context.Context, auth callerAuth, labels map[string][]string, w window) string` (`tools_qan.go:263`, `:271`), called by `topQueries` with `window{from, to}` (`:242`);
+    - `serviceEngine(ctx context.Context, auth callerAuth, name, id string, w window) string` (`tools_qan.go:836`, `:840`), called by `reportEngine` with `window{from, to}` (`:782`).
+  - `const notInServiceList = "not in your service list (services that sent metrics in the window searched)"`; `func errNotInList(w window, hint string) *toolError`: `not_found` with `notInServiceList + "; searched " + windowText(span)`, then `", the last 7 days of the call's window"` when `listSpan(w)` cut `w`, then `hint`. Every `not_found` for a service outside the list goes through it: `engineOf` and `serviceHealth` with the hint `"; use pmm_inventory to list service ids"`, `pmm_get_config` likewise, `callerServices` (`resolve.go:179`, `:184`) with none. It names the window, never a service.
   - `func serviceNamed(services []serviceInfo, name string) (serviceInfo, bool)`: among the services with that name, the one with the newest `LastSeen`. Every lookup by name goes through it: `pinnedServiceID` (`tools_qan.go:276`), `serviceEngine` (`:845`), `queryCandidates` (`resolve.go:213`) and `pmm_get_config`.
   - `type serviceRow struct`, JSON in this order: `service_id`; `service_name` (Untrusted); `engine`, described "PMM service type: mysql, postgresql, mongodb, proxysql, haproxy, valkey or external."; `version` (Untrusted, `omitempty`); `node_id` (`omitempty`); `node_name` (Untrusted, `omitempty`); `environment` (Untrusted, `omitempty`); `cluster` (Untrusted, `omitempty`); `last_seen` (`time.Time`), described "Time of the service's newest up sample, whatever its value."; `pmm_url` (`omitempty`). `address` and `port` go.
   - `inventoryResult.render()`: each row is `- <service_name> | <engine> <version or unknown> | id=<service_id> | node=<node_name> | environment=<environment> | cluster=<cluster> | last_seen=<RFC 3339, UTC> | [View in PMM ↗](<pmm_url>)`, with the `node`, `environment`, `cluster` and link parts left out when empty. With no service: "No services found in your service list (services that sent metrics in the last hour)."
   - `pmm_inventory`'s description: "List the monitored services in your service list: those whose up series you can read and that sent metrics in the last hour, with service type, version, node, environment, cluster and last_seen. Use this to discover a service_id / service_name and the exact engine version before analysing a query."
   - `inventoryInput.Engine` is described "Filter by service type: mysql, postgresql, mongodb, proxysql, haproxy, valkey or external". Another value is `invalid_input`, "engine must be one of mysql, postgresql, mongodb, proxysql, haproxy, valkey, external; got '<engine>'", before any call. The filter applies after the query: `engine` matches the service type exactly; `node` matches `node_name` exactly, as today.
   - `enrichVersions` keeps its three engines (`versionMetrics`, `tools_inventory.go:45-49`); another service type reports `unknown` in text, and no `version` in structured content, as today [V].
-  - `engineOf` keeps its signature and its `not_found` text and hint (`tools_qan.go:924-934`) [V].
-  - `pmm_get_config` makes one `listServices` call: by `service_id` when given (it wins over `service_name`, as today), else by `service_name`. Not found answers as `engineOf` does. The engine comes from the list unless the caller gives one; an explicit engine wins, as today (`tools_config.go:136-139`) [V].
-  - `pmm_service_health`: a service outside the list keeps today's `not_found` text and hint (`tools_health.go:309`). One of another type answers `invalid_input`, "pmm_service_health covers MySQL, PostgreSQL and MongoDB services; service '<name>' is <type>; use pmm_query_metrics for its metrics", before any signal query. `allNoDataNote` becomes: "no_data on every signal means that the service sent none of these metrics in the window although it is in your service list, for example because its exporter is down or the window is from before it was monitored; an Access Role that filters on service labels can also hide its node's series."
+  - `engineOf` keeps its signature and its hint (`tools_qan.go:924-934`) [V]; its `not_found` goes through `errNotInList` for the last hour.
+  - `pmm_get_config` makes one `listServices` call: by `service_id` when given (it wins over `service_name`, as today), else by `service_name`. Not found answers `errNotInList` for the hour before `at`, with `engineOf`'s hint. The engine comes from the list unless the caller gives one; an explicit engine wins, as today (`tools_config.go:136-139`) [V].
+  - `pmm_service_health`: a service outside the list answers `errNotInList(window{start, end}, "; use pmm_inventory to list service ids")`, in place of today's text (`tools_health.go:309`). One of another type answers `invalid_input`, "pmm_service_health covers MySQL, PostgreSQL and MongoDB services; service '<name>' is <type>; use pmm_query_metrics for its metrics", before any signal query. `allNoDataNote` becomes: "no_data on every signal means that the service sent none of these metrics in the window although its up series is there, for example because its exporter could not be scraped or could not reach the database; an Access Role that filters on service labels can also hide its node's series." The list covers the window, so the service sent `up` samples in it.
   - `serviceURL(base, svc)`: MySQL, PostgreSQL, MongoDB as today. HAProxy: `graph/d/haproxy-instance-summary?var-service_name=<service_name>`. ProxySQL: `graph/d/proxysql-instance-summary?var-proxysql=<node_name>`, because that dashboard selects by node (`proxysql` variable = `label_values(proxysql_mysql_status_active_transactions, node_name)`; its targets filter `node_name="$proxysql"`, `dashboards/dashboards/MySQL/ProxySQL_Instance_Summary.json`) [V], omitted when the node name is empty. Another type: no link.
   - `Instructions` item 2 becomes, on two lines: "2. pmm_inventory - list the services that sent metrics in the last hour" / "(service_id, service_name, engine, last_seen); pick one to investigate." `TestInitializeAndListTools` keeps its cap of `< 34` newlines (`mcp_test.go:49`; 33 today) [V].
   - In `helpers_test.go`: `const serviceListKey = vmQuery + " ?tlast_over_time(up["`; `func listQueries(f *fakePMM) int`, the recorded requests to `vmAPI + "query"` whose `query` contains `tlast_over_time(up[`; and `fakePMM.serve` calls `f.t.Errorf` for any request whose path starts with `/v1/inventory/`, so no test can pass while a tool still calls the inventory.
@@ -146,12 +166,14 @@ CI's "Checks" job runs `make gen` and `make format` and fails on any diff (00), 
   - `vm_up_many.json`: `svc-bulk-00` to `svc-bulk-24`, `bulk-mysql-00` to `bulk-mysql-24`, `mysql`, `node-1` `demo-node`, as `services_many.json`.
   - `vm_up_quoted_ids.json`: `svc-o'1`, `shop-mysql`, as `services_quoted_ids.json`.
   - `vm_mongodb_version.json`: `mongodb_version_info{service_name="shop-mongo", mongodb="7.0.14"}`.
+  - `vm_up_window.json`: `vm_up_services.json`'s rows plus `svc-gone`, `shop-gone`, `mysql`, `node-1`, `demo-node`, last seen `1789376400` (`testNow` − 3 h), which no 1-hour list holds.
 - [ ] **Step 6: Write the tests,** and add `serviceListKey`, `listQueries` and the inventory guard to `helpers_test.go` (Interfaces):
   - `TestServiceList` (`tools_inventory_test.go`), calling `s.listServices` directly against `serviceListKey` → `vm_up_list.json`:
-    - one datasource lookup and one request to `/graph/api/datasources/proxy/uid/metrics-uid/api/v1/query`, whose `query` is `serviceListQuery` verbatim, with `timeout=25s`, no `time`, and the caller's `Authorization`; no other request, so no version query;
+    - with `s.lastHour()`: one datasource lookup and one request to `/graph/api/datasources/proxy/uid/metrics-uid/api/v1/query`, whose `query` is `fmt.Sprintf(serviceListQuery, 3600)` verbatim, with `time=1789387200`, `timeout=25s` and the caller's `Authorization`; no other request, so no version query;
     - the result is exactly, in order: `svc-1` (`shop-mysql`, `node-1`, `demo-node`, `prod`, `c1`, 11:59:00Z), `svc-re-old` (11:10:00Z), `svc-2` (empty `Environment` and `Cluster`, 11:59:00Z after truncation), `svc-re-new` (11:59:00Z), `svc-px` (`proxysql`); rows 4 and 8 give no service;
     - `serviceNamed(services, "shop-re")` returns `svc-re-new`; an unknown name returns false;
-    - `serviceListQuery` contains `tlast_over_time(up[1h])` and no comparison on `up`, so a target whose last sample is `up=0` is listed;
+    - `serviceListQuery` has no comparison on `up`, so a target whose last sample is `up=0` is listed;
+    - `listSpan`: a 1-hour and a 7-day window come back unchanged and uncut; a 30-day window ending at `testNow` becomes 2026-09-07T12:00:00Z – 2026-09-14T12:00:00Z, cut;
     - the proxy answering 401 returns an error that `mapError` maps to `unauthorized`, not an empty list; a 5 MiB answer is `pmm_unavailable`.
   - `TestInventoryTool`, rewritten on `vm_up_services.json`, with the version routes `vmQuery + " ?mysql_version_info"`, `" ?pg_static"` and `" ?mongodb_version_info"`:
     - rows carry `last_seen` and no `address` or `port`; each engine's version comes from its own fixture;
@@ -160,14 +182,22 @@ CI's "Checks" job runs `make gen` and `make format` and fails on any diff (00), 
     - `engine: valkey` is accepted and returns the empty-list text; `engine: oracle` is `invalid_input` with no request;
     - the `node` filter, paging and the 401 answer as today;
     - the description contains "sent metrics in the last hour".
-  - `TestEngineOfOutsideList` (`tools_actions_test.go`): `pmm_get_schema` with `service_id: svc-secret`, `database: shop`, `tables: [orders]` answers exactly `error: not_found\n` + `notInServiceList` + `; use pmm_inventory to list service ids`. The message contains neither `svc-secret` nor any other service's name or ID, and no action starts.
+  - `TestServiceListQueryInBudget` (`tools_inventory_test.go`): `checkExpr(fmt.Sprintf(serviceListQuery, 604800), 0, 0)` returns no error and a time read of 7 days, plan 05's cap.
+  - `TestListFollowsTheWindow` (`tools_inventory_test.go`), with `serviceListKey` → `vm_up_services.json` and `vmQuery + " ?tlast_over_time(up[14400s]"` → `vm_up_window.json` (Step 5), so the longer route text wins for the 4-hour window:
+    - `pmm_service_health` with `service_id: svc-gone` and no window is `not_found`, ending `; searched 2026-09-14T11:00:00Z – 2026-09-14T12:00:00Z; use pmm_inventory to list service ids`, without `svc-gone` or `shop-gone`;
+    - with `period_from: now-6h, period_to: now-2h` it answers, and its list request has `up[14400s]` and `time=1789380000`;
+    - `pmm_query_detail` and `pmm_get_explain` with `queryid: QID-AAA`, `service_id: svc-gone` and that window get past the list: a `qan:getMetrics` and a `getReport` request carry `svc-gone`;
+    - `pmm_top_queries` with `service_name: shop-gone`, `group_by: queryid` and that window gives its rows a `query_ref.service_id` of `svc-gone`;
+    - `pmm_query_detail` with `service_id: svc-secret` and `period_from: now-30d` sends `up[604800s]` at `time=1789387200`, and answers `not_found` ending `; searched 2026-09-07T12:00:00Z – 2026-09-14T12:00:00Z, the last 7 days of the call's window`, without `svc-secret`;
+    - `pmm_get_config` with `service_id: svc-1` and `at: now-3h` sends `up[3600s]` at `time=1789376400`.
+  - `TestEngineOfOutsideList` (`tools_actions_test.go`): `pmm_get_schema` with `service_id: svc-secret`, `database: shop`, `tables: [orders]` answers exactly `error: not_found\n` + `errNotInList(s.lastHour(), "; use pmm_inventory to list service ids")`'s text. The message contains neither `svc-secret` nor any other service's name or ID, and no action starts.
   - `TestConfigByServiceName` (`hardening_test.go`, next to `TestConfigAcceptsServiceID` `:216`):
     - `service_name: shop-mysql` returns its variables;
     - `shop-re` on `vm_up_list.json` resolves to `svc-re-new`: the variables query carries `pg_settings_`, not `mysql_global_variables_`;
-    - a name outside the list is `not_found` with the text above, without the name, and sends no request to the proxy other than the list query;
+    - a name outside the list is `not_found` with `errNotInList` for the hour before `at`, without the name, and sends no request to the proxy other than the list query;
     - `service_name: proxy-1` is `invalid_input` naming `proxysql`.
   - `TestServiceHealthTool` (`tools_health_test.go`):
-    - `NotInTheServiceList` (`:367-377`) keeps its text and asserts no `query_range` request; it no longer asserts that the datasource was not looked up, because the list reads it;
+    - `NotInTheServiceList` (`:367-377`) expects `errNotInList` for the last hour, with its hint, and asserts no `query_range` request; it no longer asserts that the datasource was not looked up, because the list reads it;
     - new `OtherServiceType`: `svc-px` on `vm_up_list.json` is `invalid_input` with the message above and no `query_range` request;
     - `EverySignalIsNoData` (`:236-250`) asserts the new `allNoDataNote`, which no longer says that an Access Role hides the service's own series;
     - `NoNodeName` (`:404-418`) gets its unknown node from a list row without `node_name`, not from a failing `/v1/inventory/nodes`.
@@ -186,12 +216,13 @@ CI's "Checks" job runs `make gen` and `make format` and fails on any diff (00), 
   | `empty.json` on the services route (`contract_test.go:382`, `resolve_test.go:212`, `tools_qan_test.go:593`) | `vm_empty.json` on `serviceListKey` |
   | `failed` or an error on the services or nodes route (`contract_test.go:385`, `:394`, `:551-552`; `tools_qan_test.go:380`; `tools_inventory_test.go:201`, `:214`; `tools_health_test.go:407`) | the same fixture on `serviceListKey`; the nodes cases become a list row without `node_name` |
   | `requestsTo("/v1/inventory/services")` or `"/nodes"` (`hardening_test.go:322`, `:377`; `resolve_test.go:291`; `tools_actions_test.go:1021`; `tools_inventory_test.go:181`; `tools_qan_test.go:344`, `:375`, `:840`) | `listQueries(fake)`, with the same count |
+  | the text `notInServiceList` (`hardening_test.go:280`; `resolve_test.go:171`, `:215`, `:222`, `:331-332`; `tools_actions_test.go:470`; `tools_health_test.go:373`; `tools_qan_test.go:546`, `:598`) | the text `errNotInList` gives for the call's window and hint |
 
   A test whose expectation relied on routing by path alone changes with it. For example, `TestConfigAcceptsServiceID/ResolvesIDToName` (`hardening_test.go:222-248`) now reads version `8.0.46-37`, because the version query has its own route. `contract_test.go`'s `versionQuery` scenario fails the three version routes, not the plain query route. Delete the five inventory fixtures; `grep -rn 'v1/inventory' managed/services/mcp/` then finds no test route.
 - [ ] **Step 11: Update the contract tests.** In `TestUntrustedFieldsMarked` (`contract_test.go:158`), `pmm_inventory`'s list is `services[].service_name`, `services[].node_name`, `services[].version`, `services[].environment`, `services[].cluster` (tool-contract §7). Regenerate the golden file with `-update`.
 - [ ] **Step 12: Run `go test ./managed/services/mcp/...`, see PASS.**
 - [ ] **Step 13: Rewrite api-test `TestInventory`** (`api-tests/mcp/mcp_test.go:326-362`):
-  - add `func upRows(t *testing.T, authorization string) []map[string]string`: the Metrics datasource's uid from `/graph/api/datasources/name/Metrics`, then the rows of the service-list query, its text copied verbatim, from `/graph/api/datasources/proxy/uid/<uid>/api/v1/query`, both with `authorization`;
+  - add `func upRows(t *testing.T, authorization string) []map[string]string`: the Metrics datasource's uid from `/graph/api/datasources/name/Metrics`, then the rows of the service-list query for the last hour, its text copied verbatim with `up[3600s]`, from `/graph/api/datasources/proxy/uid/<uid>/api/v1/query`, both with `authorization`;
   - add `func adminAuthorization() string`: the Basic value of `-pmm.server-url`'s user;
   - for each row with a `service_id`, `pmm_inventory`'s text has `- <service_name> | <service_type> ` and `id=<service_id>`, and `page.total` is the number of distinct `service_id`s;
   - no row of the text contains `address=`; every `last_seen` is within the last hour;
@@ -202,11 +233,11 @@ CI's "Checks" job runs `make gen` and `make format` and fails on any diff (00), 
   - The `pmm_inventory` row (`:99`): its fields, and the datasource proxy's `/api/v1/query` on `up` with the version metrics as its backing API.
   - The rows of `pmm_query_detail`, `pmm_get_explain`, `pmm_get_schema`, `pmm_service_health` and `pmm_get_config` (`:101-108`) lose `GET /v1/inventory/services` and name the service list.
   - The links table (`:118`) adds ProxySQL and HAProxy.
-  - "The query tools see only your service list" (`:393`) states the one-hour rule, `up=0`, `last_seen`, that Access Roles filter the list, and that QAN can show a service the list lacks (spec §9.2).
+  - "The query tools see only your service list" (`:393`) states the look-back (the call's window, at most its last 7 days, said in the error when cut; the last hour for `pmm_inventory` and named tables; the hour before `at` for `pmm_get_config`), `up=0`, `last_seen`, that Access Roles filter the list, and that QAN can show a service the list lacks (spec §9.2).
   - The `pmm_service_health` paragraph (`:279`): the new note, and that a service outside the list, one an Access Role hides included, is `not_found`.
   - "Versions come from metrics" (`:395`): another service type reports `unknown`.
 - [ ] **Step 15: Commit** `PMM-15531 Build the MCP service list from series`.
-- [ ] **Step 16: Time the list query.** This needs no code from this plan; any PMM Server with at least 50 services and a week of data does, such as plan 05's load-test server (plan 05 Task 1 Step 1) while it runs. As Admin, through `/graph/api/datasources/proxy/uid/<uid>/api/v1/query`, time the query with `[1h]`, `[24h]` and `[7d]`, 20 runs each (`curl -w '%{time_total}'`). Record the p50 and p95, the number of services and the days of data on PMM-15531, and in ADR-08's Consequences through a pmm-specs PR. The look-backs stay 1 h for every tool and 7 days for `pmm_alerts` (ADR-17) unless a pmm-specs PR changes them.
+- [ ] **Step 16: Time the list query.** This needs no code from this plan; any PMM Server with at least 50 services and a week of data does, such as plan 05's load-test server (plan 05 Task 1 Step 1) while it runs. As Admin, through `/graph/api/datasources/proxy/uid/<uid>/api/v1/query`, time the query with `[1h]`, `[24h]` and `[7d]`, 20 runs each (`curl -w '%{time_total}'`). Record the p50 and p95, the number of services, the rows returned and the days of data on PMM-15531, and in ADR-08's Consequences through a pmm-specs PR. The look-backs are spec §8's: the call's window up to 7 days, 1 hour without a window, and 7 days for `pmm_alerts` (ADR-17); a pmm-specs PR changes spec §8 if the 7-day cost calls for it.
 - [ ] **Step 17: Run the pre-push checks** (Global Constraints) and push.
 
 ### Task 2: Remove the Viewer inventory rules (ADR-08)
@@ -280,7 +311,7 @@ Expected results, for a caller under a setup. Rows of the same engine apply to `
 | `pmm_top_queries` | `group_by: service_name, period_from: now-12h, limit: 100` | every dimension is in `A`; `{mysql-a, pg-a} ∩ A` are among them |
 |  | `service_name: s`, for each `s ∈ {mysql-b, pg-b} ∩ H` | no rows, and not an error |
 | `pmm_query_detail` | `queryid: Q_X, period_from: now-12h` | `C` empty: `not_found` naming the window; one: that service's `service_name`, and a `query_ref.service_id`, when set, of `id(X-a)`; two: not an error |
-|  | `queryid: Q_X, service_id: id(X-b), period_from: now-12h`, `X-b ∈ H` | `error: not_found` + `notInServiceList`, exactly |
+|  | `queryid: Q_X, service_id: id(X-b), period_from: now-12h`, `X-b ∈ H` | `not_found`, the text `errNotInList` gives for the 12-hour window, without the ID |
 | `pmm_get_explain` | `queryid: Q_X, period_from: now-12h` | `C` empty: `not_found`, "the query was not seen on any of your services in …"; one: MySQL a live plan, header `EXPLAIN (json, mysql mysql-a)`, PostgreSQL `pg-a`'s stored plan (`Stored plan (pg_stat_monitor`), and `query_ref.service_id` = `id(X-a)`; two: `invalid_input` listing `X-a (id(X-a))` and `X-b (id(X-b))` |
 |  | `queryid: Q_X, service_id: id(X-b), period_from: now-12h`, `X-b ∈ H` | `not_found` with the fixed text |
 | `pmm_get_schema` | `queryid: Q_X, period_from: now-12h` | as `pmm_get_explain` for `C`; one: one table block each for `orders` and `customers` |
@@ -334,7 +365,7 @@ Expected results, for a caller under a setup. Rows of the same engine apply to `
   - `go test ./api-tests/mcp/ -v` as 00 gives it, and `TestAccessRoleMatrix` on Task 4's environment, its server upgraded to this build;
   - the triage with a Viewer service-account token (00); `POST /mcp` answers 404 with the endpoint off;
   - **up=0:** with a client node's `mysqld_exporter` frozen (`pkill -STOP mysqld_exporter` in the pmm-client container) for 3 minutes, its MySQL service stays in `pmm_inventory` with a `last_seen` under 2 minutes old: vmagent sends `up=0` for the failed scrapes [I]. Then `pkill -CONT mysqld_exporter`;
-  - **no sample:** with the pmm-client container stopped, its push-mode services keep the `last_seen` from before the stop, and after 65 minutes they are no longer listed; started again, they are back within 2 minutes;
+  - **no sample:** with the pmm-client container stopped, its push-mode services keep the `last_seen` from before the stop. After 65 minutes they are no longer in `pmm_inventory`, and `pmm_service_health` for one of them answers `not_found` naming the last hour; with `period_from: now-2h` it still answers. Started again, they are back within 2 minutes;
   - **labels:** a service registered with `--environment=mcp-env --cluster=mcp-cluster` shows both in `pmm_inventory`; one registered without them shows neither.
 - [ ] **Step 5: Open PR 1** into `PMM-MCP-GA` ([00](00-roadmap.md#branch-and-pr-rules)): `PMM-15531 Build the MCP service list from series`, with the Feature Build link. The description says that the service-account token rows follow in PR 2, after PMM-15534.
 
@@ -362,15 +393,18 @@ PMM-15534 lands on `main` through its own ticket and PR, not through this plan. 
 - [ ] **Step 8: Run the pre-push checks** with `<base>` `origin/PMM-MCP-GA`, and push.
 - [ ] **Step 9: Open PR 2** into `PMM-MCP-GA` ([00](00-roadmap.md#branch-and-pr-rules)): merge `origin/PMM-MCP-GA` (behind 0), run a Feature Build, run the api-tests and the triage on it, and open `PMM-15531 Test MCP tokens under Access Roles` with the Feature Build link.
 
-## Open questions
+## Decisions
 
-- **A lookup over a past window.** The one-hour list makes `pmm_service_health`, `pmm_query_detail`, `pmm_get_explain` and `pmm_get_schema` answer `not_found` for a service that has been silent for more than an hour, whatever window they are given. That holds even when the caller asks about a window in which the service was alive, such as health over the last 6 hours for a service whose pmm-agent stopped 3 hours ago. Spec §9.2 and ADR-08 set one hour for every lookup, and only alerts use 7 days. A list whose look-back covers the call's window, up to 7 days, would answer these calls, at the cost Task 1 Step 16 measures. Kept at one hour unless a pmm-specs PR changes spec §8.
+No question is open.
+
+- **The look-back follows the call's window** (user decision, 2026-11-09). A call with a window reads the `up` series of that window, ending at its end, and at most its last 7 days; a longer window reads its last 7 days, and a `not_found` says so. A call without a window reads the last hour. Spec §8 holds the value and ADR-08's decision points there, so ADR-08 doesn't change. It answers the question this plan raised: with a one-hour list, a service silent for more than an hour was `not_found` even for a window in which it was alive.
 
 Settled here, with the reason:
-- **Nodes and the look-back parameter** move to plan 07 (Global Constraints).
+- **`pmm_get_config`'s list covers the hour before `at`.** It reads one instant, not a window; the hour before `at` is what its QAN link covers, and with the default `at` it is the last hour.
+- **Nodes** move to plan 07 (Global Constraints).
 - **`pmm_service_health` for another service type** answers `invalid_input` (Global Constraints).
-- **Two services with one name** within the hour: lookups by name take the one with the newest `last_seen`. The older one is the removed service, and list order can't decide it, because the two can have different engines.
-- **A large fleet:** a list row is about 300 bytes [I], so the 4 MiB read cap holds about 13,000 rows. Above that, every tool answers `pmm_unavailable`. The supported fleet size that plan 05 states is far below this, so there is no paging of the list.
+- **Two services with one name** within the look-back: lookups by name take the one with the newest `last_seen`. The older one is the removed service, and list order can't decide it, because the two can have different engines.
+- **A large fleet:** a list row is about 300 bytes [I], so the 4 MiB read cap holds about 14,000 rows over the look-back (Global Constraints). Above that, every tool answers `pmm_unavailable`. The supported fleet size that plan 05 states is far below this, so there is no paging of the list.
 - **Caps per principal** (spec §13, "revisit with plan 06"): unchanged, per caller key. Even with PMM-15534, MCP never learns the principal's user ID: `auth_request` resolves it, and MCP authorizes nothing itself (ADR-03). The per-replica and per-service caps still bound the total.
 - **The matrix's Admin** is an org Admin created for the test. PMM filters Grafana server admins the same way, by user ID (Review Focus), and changing the package's `admin` would touch every other api-test.
 - **PostgreSQL stored plans** are asserted like the other rows: the qan-api2 fix is in this branch (Review Focus). PMM-15697's Jira status was not checked [I].

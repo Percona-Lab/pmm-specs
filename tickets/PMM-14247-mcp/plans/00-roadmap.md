@@ -25,7 +25,7 @@
 - **Full-depth plan:** every task has its files, interfaces and checkbox steps. **Task-level plan:** tasks only, expanded into a full-depth plan before it starts. Plans 01 to 06 are full-depth, plans 07 and 08 task-level.
 - **Feature Build:** Jenkins builds PMM Server and Client images from the branches, through a draft PR in Percona-Lab/pmm-submodules. An outside contributor who can't run one verifies on a local setup and describes that setup in the PR instead.
 - **Design review:** the security design review of this folder and `tool-contract.md`; it gates plans 04 to 07. **Implementation review:** the security review of the code, plan 08 Task 1, run after plan 08's Tasks 5 and 6.
-- **The caller's service list:** the services the caller can see. From plan 06 on, they are the services in the `up` series of the last hour, read with the caller's credentials and filtered by vmproxy (ADR-08). Until plan 06, the list comes from the inventory API.
+- **The caller's service list:** the services the caller can see. From plan 06 on, they are the services in the `up` series of the call's window, at most its last 7 days, or of the last hour for a call without a window (spec §8), read with the caller's credentials and filtered by vmproxy (ADR-08). Until plan 06, the list comes from the inventory API.
 - **Filtered:** the backing API applies the caller's Access Roles. **Narrowed:** MCP drops results outside the caller's service list; narrowing is not a security boundary (ADR-03).
 - **Live inspection:** a tool call that starts a pmm-agent action on the monitored database (`pmm_get_explain` for MySQL and MongoDB, `pmm_get_schema`). **Passive:** a tool call that only reads what PMM has collected (ADR-05).
 
@@ -42,7 +42,7 @@
 | [07 Alerts](07-alerts-and-advisors.md) | PMM-15790 | plan 06, design review | Task-level |
 | [08 Release](08-release.md) | PMM-15532 | plans 01 to 07; the release gate of [spec §10](../spec.md#10-phase-5-release), PMM-15534 on `main` and merged into `PMM-MCP-GA` included | Task-level |
 
-- **Plan 06** builds the caller's service list from the metric series of the last hour, which vmproxy filters by the caller's Access Roles (ADR-08), uses it for every service lookup, and checks Access Roles end to end. It removes the Viewer rules for `GET /v1/inventory/services` and `/nodes` from #5942. Its branch is cut from plan 05's, and it lands in two PRs: the service list now, and the service-account token checks once PMM-15534 is merged in.
+- **Plan 06** builds the caller's service list from the metric series of the call's window (at most 7 days; the last hour without a window), which vmproxy filters by the caller's Access Roles (ADR-08), uses it for every service lookup, and checks Access Roles end to end. It removes the Viewer rules for `GET /v1/inventory/services` and `/nodes` from #5942. Its branch is cut from plan 05's, and it lands in two PRs: the service list now, and the service-account token checks once PMM-15534 is merged in.
 - **Plan 07** reads alerts from Grafana's folder-scoped rules API and narrows them to the caller's service list (ADR-03, ADR-17). No plan changes `lbacPrefixes` or adds a pmm-managed API for them. `pmm_advisors` is out of the Tech Preview (ADR-18), so no plan builds it.
 - **PMM-15534** (ADR-12) is not a plan here. It lands on `main` through its own ticket and PR, and reaches `PMM-MCP-GA` with the next merge of `main`. Plan 08 waits for it.
 - ADR-16 is deferred to its own ticket on `main`. ADR-13 (`mcp:use`) ships on PMM-15791 after the MCP release. Neither has a plan here.
