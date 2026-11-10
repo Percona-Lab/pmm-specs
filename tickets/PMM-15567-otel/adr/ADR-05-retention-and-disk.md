@@ -6,7 +6,7 @@
 
 ## Context
 
-- OTEL is on by default on every ClickHouse profile, including the 8 GB one (ADR-12), and logs share ClickHouse's disk with QAN.
+- OTEL can be on for every ClickHouse profile, including the 8 GB one (ADR-12; in 3.12.0 for new installs only, ADR-25), and logs share ClickHouse's disk with QAN.
 - A changed retention must apply to data already stored.
 - A size cap and a disk watermark must stop logs from starving QAN.
 - QAN drops daily partitions in qan-api2, on every replica. That is harmless only because a time-based drop is idempotent; a cap or watermark drop is not.
@@ -19,7 +19,7 @@
 
 ## Decision
 
-Option 2. A leader-only job in pmm-managed runs every 10 minutes:
+Option 2. A leader-only job in pmm-managed runs every 2 minutes (revised on 2026-11-09 from 10, because a burst can fill much of a disk in 10 minutes; the queries are cheap). On a ClickHouse cluster it reads disk and part sizes from every replica and acts on the fullest:
 1. It drops each `otel` partition older than its signal's retention: `logs_retention_days` for `logs`, and `traces_retention_days` for tables whose names start with `otel_traces`.
 2. While `otel` uses more than `max_disk_gb`, or the ClickHouse volume is used above `disk_watermark_percent` (default 80), it drops the oldest remaining partition. It never drops today's partition.
 3. If today's partition alone still breaks a limit, it pauses ingest: it stops `otel-collector` on every replica and raises an alert. Node collectors buffer in their disk queues.

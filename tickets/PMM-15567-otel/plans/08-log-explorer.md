@@ -4,6 +4,7 @@
 
 **Goal:** Admins search, filter, chart and read logs on a native PMM UI page built with `@percona/peak-ui`, without going through Grafana. The page:
 - shows a severity histogram;
+- groups lines into patterns, with counts and what is new (D27; Task 7, in the release after 3.12.0);
 - filters by node, PMM service, app, source, severity and text, with counts;
 - has a details pane with surrounding lines;
 - tails live;
@@ -16,17 +17,17 @@ The same API becomes the LBAC-enforced read path in plan 06.
 - A new `LogsService` in pmm-managed builds parameterized ClickHouse SQL from structured filters. It reads `otel.logs` as the read-only `otel_reader` user and resolves node and service names from inventory.
 - The PMM UI page `/logs` uses TanStack Query hooks over that API, and peak-ui components (`Table`, `Chip`, `CodeBlock`, `AutoCompleteInput`, `DateTimePickerInput`, `useDetailsPaneNavigation`, `usePerconaTableUrlState`, illustrations).
 - The page follows the RTA overview page (`ui/apps/pmm/src/pages/rta/overview/`).
-- It is Admin-only in this phase (ADR-07). Plan 06 opens it to restricted users once LBAC applies.
+- It is Admin-only in this phase (ADR-23). Plan 06 opens it to restricted users once LBAC applies.
 
 **Tech Stack:** Go (pmm-managed, clickhouse-go), protobuf/grpc-gateway, React, MUI v7, `@percona/peak-ui` 1.0.26+, `@mui/x-charts`, TanStack Query, Vitest.
 
 **Spec:**
 - [analysis](../spec.md) §7 and decision D20;
-- ADR-07, ADR-18, and ADR-21 (proposed);
+- ADR-18, ADR-21 and ADR-23 (proposed);
 - the [roadmap](00-roadmap.md) for the shared names.
 - [PMM-15722](https://perconadev.atlassian.net/browse/PMM-15722) (Logs explorer, under PMM-15567). Where its acceptance criteria differ from this plan, the ticket is current.
 
-**Depends on:** plan 01, Tasks 2–4 (`otel.logs`, `otel_reader`, settings), and plan 02 (data flowing). It can run in parallel with plan 03.
+**Depends on:** plan 01, Tasks 2–4 (`otel.logs` with `PatternHash`, `otel_reader`, settings), and plan 02 (data flowing). It can run in parallel with plan 03.
 
 ## Global Constraints
 
@@ -64,10 +65,10 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
 ## Review Focus
 
 1. **A log line of 64 KiB, or one with no newline at all.** Expected: the table shows one truncated line (CSS ellipsis, no layout break), and the details pane shows the whole body in a wrapping `CodeBlock`. Test in Task 4 (`renders very long body truncated in table and full in pane`).
-2. **Many lines sharing the same nanosecond timestamp across a page boundary.** Expected: no duplicates and no gaps when loading older pages. Test in Task 1 (`TestSearchCursorSameTimestamp`).
+2. **Many lines sharing the same nanosecond timestamp across a page boundary.** Expected: no duplicates and no gaps when loading older pages. Test in Task 1 (`TestSearchCursorSameTimestamp`, on a real ClickHouse, with inserts and merges between pages).
 3. **A search text with `%`, `_`, `'` or `\`.** Expected: a literal substring match, case-insensitive. Test in Task 1 (`TestSearchTextIsLiteral`).
 4. **OTEL disabled, or no data yet.** Expected: the page shows the "turned off" illustration linking to Settings → OTEL, or the "nothing found" illustration, never an error. Test in Task 3 (`shows disabled state`, `shows empty state`).
-5. **Live tail left running for hours.** Expected: it polls only for rows newer than the newest one shown, keeps at most 1000 rows in memory (the oldest drop off), and pauses while the tab is hidden. Test in Task 5 (`live tail appends and caps`, `pauses when hidden`).
+5. **Live tail left running for hours, or a burst faster than it polls.** Expected: it polls only for rows after the newest one shown, keeps at most 1000 rows in memory (the oldest drop off), pauses while the tab is hidden, and never drops lines silently: when it can't catch up it says how many it skipped. Test in Task 5 (`live tail appends and caps`, `pauses when hidden`, `live tail reports skipped lines`).
 
 ---
 
@@ -83,7 +84,7 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
   - `managed/services/logs/*_test.go`
   - `api-tests/logs/search_test.go`
 - Modify:
-  - `api/Makefile` (register the domain the way realtimeanalytics is registered at :22,38,57,75,118)
+  - `api/Makefile` (register the domain the way realtimeanalytics is registered at :22,39,59,78,122)
   - `managed/cmd/pmm-managed/main.go`: an `otel_reader` ClickHouse pool from `PMM_CLICKHOUSE_OTEL_READER_USER/PASSWORD` (max 4 connections), and gRPC and gateway registration
   - `managed/services/grafana/auth_server.go`: `"/v1/logs": admin`
 
@@ -91,15 +92,15 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
 - **Proto:**
   - `enum Severity { SEVERITY_UNSPECIFIED = 0; SEVERITY_TRACE = 1; SEVERITY_DEBUG = 2; SEVERITY_INFO = 3; SEVERITY_WARN = 4; SEVERITY_ERROR = 5; SEVERITY_FATAL = 6; }`
   - `message Filters { google.protobuf.Timestamp start = 1; google.protobuf.Timestamp end = 2; repeated string node_ids = 3; repeated string service_ids = 4; repeated string apps = 5; repeated string sources = 6; repeated Severity severities = 7; string text = 8; }`
-  - `message LogRecord { google.protobuf.Timestamp timestamp = 1; Severity severity = 2; string severity_text = 3; string body = 4; string app = 5; string node_id = 6; string node_name = 7; string service_id = 8; string service_name = 9; string source = 10; string trace_id = 11; string span_id = 12; map<string,string> attributes = 13; map<string,string> resource_attributes = 14; }`
+  - `message LogRecord { google.protobuf.Timestamp timestamp = 1; Severity severity = 2; string severity_text = 3; string body = 4; string app = 5; string node_id = 6; string node_name = 7; string service_id = 8; string service_name = 9; string source = 10; string trace_id = 11; string span_id = 12; map<string,string> attributes = 13; map<string,string> resource_attributes = 14; string event_id = 15; }`
   - `rpc Search(SearchRequest{Filters filters = 1; uint32 limit = 2; string cursor = 3;}) returns (SearchResponse{repeated LogRecord records = 1; string next_cursor = 2;})` at `POST /v1/logs:search`. Rows come newest first.
-  - `rpc Context(ContextRequest{string node_id = 1; string source = 2; string app = 3; google.protobuf.Timestamp timestamp = 4; uint32 before = 5; uint32 after = 6;}) returns (ContextResponse{repeated LogRecord records = 1;})` at `POST /v1/logs:context`. `before` and `after` default to 50 and are capped at 200. It returns lines from the same node and source (or app) around the timestamp.
+  - `rpc Context(ContextRequest{string event_id = 1; google.protobuf.Timestamp timestamp = 2; uint32 before = 3; uint32 after = 4;}) returns (ContextResponse{repeated LogRecord records = 1;})` at `POST /v1/logs:context`. `before` and `after` default to 50 and are capped at 200. The server looks up the clicked line by `event_id` (`timestamp` narrows the partition), takes its node, service, source and app from the row, and returns the lines around it from the same source, ordered by `(Timestamp, EventId)`, inside the caller's access filter. An unknown `event_id` is `NotFound`.
 - **Go:**
   - `func BuildSearchQuery(f *logsv1.Filters, limit uint32, c Cursor) (string, []any, error)` lives in `query.go`.
     - It filters on `TimestampTime`, `PmmNodeId IN ?`, `PmmServiceId IN ?`, `ServiceName IN ?` and `coalesce(LogAttributes['log.file.path'], LogAttributes['_SYSTEMD_UNIT']) IN ?`.
     - Severity is a `multiIf` over the `SeverityNumber` ranges, and text is `positionCaseInsensitive(Body, ?) > 0`.
-    - It orders with `ORDER BY Timestamp DESC`, and ends with `LIMIT ? SETTINGS max_execution_time = 30`.
-  - `type Cursor struct { BeforeNs int64; SkipAtTimestamp uint32 }`, base64-JSON encoded. A page returns rows with `Timestamp <= BeforeNs`, skipping the first `SkipAtTimestamp` rows that sit exactly at `BeforeNs`.
+    - It orders with `ORDER BY Timestamp DESC, EventId DESC`, and ends with `LIMIT ? SETTINGS max_execution_time = 30`.
+  - `type Cursor struct { BeforeNs int64; BeforeEventID string }`, base64-JSON encoded. A page returns rows with `(Timestamp, EventId) < (fromUnixTimestamp64Nano(BeforeNs), toUUID(BeforeEventID))`: keyset pagination on the `EventId` column (ADR-04). ClickHouse doesn't order rows with equal timestamps the same way from one query to the next, so skipping a count of tied rows would give duplicates and gaps.
   - Node and service names are resolved through `models.FindNodesByIDs` and `models.FindServicesByIDs`, with a 30 s cache.
   - `ClickHouse` in `deps.go` is the same small interface as in plan 01, Task 9.
 
@@ -115,9 +116,11 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
   func TestSearchRejectsMissingOrLongRange(t *testing.T) { /* no start → InvalidArgument; 32 days → InvalidArgument */ }
   func TestSearchLimitCapped(t *testing.T) { /* limit 5000 → 1000 bound */ }
   func TestSearchTextIsLiteral(t *testing.T) { /* "%_\\'" passed verbatim as one parameter to positionCaseInsensitive */ }
-  func TestSearchCursorSameTimestamp(t *testing.T) { /* 3 rows at the same ns, limit 2: page 1 → 2 rows with cursor {ns, 2}; page 2 → the 3rd row */ }
+  // Integration test on a real ClickHouse (the qan-api2 test container with the otel schema); skipped unless PMM_OTEL_CONTRACT_CLICKHOUSE is set, as in plan 01, Task 8.
+  func TestSearchCursorSameTimestamp(t *testing.T) { /* 500 rows over 3 timestamps, limit 37: walk every page; insert 50 more rows at those timestamps and run OPTIMIZE TABLE otel.logs FINAL between pages; the walk returns each original row exactly once */ }
   func TestSearchResolvesNames(t *testing.T) { /* node_id/service_id → names from inventory mock */ }
-  func TestContextSameSourceAround(t *testing.T) { /* … */ }
+  func TestContextSameSourceAround(t *testing.T) { /* 5 lines with the same timestamp in one source and 5 in another: context for the 3rd returns its 2 neighbours on each side from its own source only, in (Timestamp, EventId) order */ }
+  func TestContextUnknownEventIsNotFound(t *testing.T) { /* … */ }
   ```
 - [ ] **Step 2: Run them.** `make gen && cd managed && go test ./services/logs/`. Expected: FAIL.
 - [ ] **Step 3: Implement** the proto, the query builder, the cursor, the service, the pool and the registration.
@@ -266,7 +269,8 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
 
 **Interfaces:**
 - **Live tail:** `useLiveTail(filters, intervalMs)`.
-  - On each tick it calls `Search` with `start = newest shown timestamp`, then prepends the new rows, de-duplicated.
+  - On each tick it calls `Search` with `after` set to the newest shown `(timestamp, eventId)` and ascending order, and keeps fetching pages until it has caught up, at most 5 pages per tick. `SearchRequest` gains `string after_cursor = 4` and `bool ascending = 5` for this (Task 1's keyset, in the other direction).
+  - If it is still behind after 5 pages, it jumps to the newest rows and shows "N lines skipped" with a link that opens that time range in the table, instead of leaving lines out silently.
   - It keeps at most 1000 rows.
   - It stops while `document.visibilityState === 'hidden'`.
   - It turns off as soon as the user picks an absolute range.
@@ -274,6 +278,7 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
 
 - [ ] **Step 1: Write the failing tests.**
   - `live tail appends and caps`.
+  - `live tail reports skipped lines`: the mocked API returns 6 full ascending pages in one tick; the tail fetches 5, shows the skipped-lines notice with the count, and continues from the newest row.
   - `pauses when hidden`.
   - `absolute range disables live tail`.
   - `csv escapes quotes and newlines`.
@@ -290,9 +295,8 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
 
 **Files:**
 - Modify:
-  - the service summary dashboards and Node Summary (the same files as plan 03, Task 6): their log links open the native explorer, `/logs?service=${service_id}&from=${__from}&to=${__to}`, or `node=${node_id}` from Node Summary;
-  - `dashboards/dashboards/OTel/Logs.json`: a panel link "Open in Logs explorer" with the same filters;
-  - the Grafana fork's Inventory Services tab (`/srv/runner/4/percona/grafana/public/app/percona/inventory/`): a "Logs" row action for services that have log sources.
+  - the service summary dashboards `dashboards/dashboards/MySQL/MySQL_Instance_Summary.json`, `PostgreSQL/PostgreSQL_Instance_Summary.json` and `MongoDB/MongoDB_Instance_Summary.json`, and `OS/Node_Summary.json` (check the names with `ls dashboards/dashboards/*/`): their log links open the native explorer, `/logs?service=${service_id}&from=${__from:date:iso}&to=${__to:date:iso}`, or `node=${node_id}` from Node Summary. Use `:date:iso`, because `useLogsUrlFilters` accepts ISO or relative times only;
+  - the Inventory Services tab: a "Logs" row action for services that have log sources. If PMM-15002 has moved Inventory into `ui/apps/pmm` by then, add it there; otherwise in percona/grafana, `public/app/percona/inventory/`.
 
   Use the PMM UI base path for the URL (`PMM_NEW_NAV_PATH` in `ui/apps/pmm/src/lib/constants.ts`, and the path Grafana uses to reach the PMM UI). Check it on a Feature Build.
 
@@ -300,3 +304,46 @@ The roadmap's constraints apply, together with `ui/AGENTS.md` and peak-ui's `AGE
 - [ ] **Step 2: Implement** the links, the Inventory row action (with its Grafana fork test), and run `cleanup-dash.py`.
 - [ ] **Step 3: Run the checks again.** The pytest, `cleanup-dash.py --check-only` on every changed dashboard, and the fork test (`yarn test Services`). Expected: PASS. Then on a Feature Build, check that a link from the MySQL summary opens the explorer filtered to that service and time range.
 - [ ] **Step 4: Commit** in each repo: `git commit -s -m "PMM-15722 Link dashboards and Inventory to Logs"`.
+
+### Task 7: Patterns (after 3.12.0, D27)
+
+This task ships in the release after 3.12.0. The `PatternHash` column it reads ships in 3.12.0 (plan 01, Task 3).
+
+**Files:**
+- Modify:
+  - `api/logs/v1/logs.proto`
+  - `managed/services/logs/query.go` and `service.go`, and their tests
+  - `ui/apps/pmm/src/api/logs.ts`, `ui/apps/pmm/src/hooks/api/useLogs.ts`, `ui/apps/pmm/src/pages/logs/filters/useLogsUrlFilters.ts`
+- Create:
+  - `ui/apps/pmm/src/pages/logs/patterns/LogPatterns.tsx` and its test
+
+**Interfaces:**
+- Consumes `otel.logs.PatternHash` and `logpatterns.Expr` (plan 01, Task 3; D27).
+- **Proto** (additive to Task 1's messages):
+  - `Filters`: `uint64 pattern_hash = 9; repeated uint64 exclude_pattern_hashes = 10;`. `BuildSearchQuery` and every other query apply them as `PatternHash = ?` and `PatternHash NOT IN ?`.
+  - `message LogPattern { string pattern = 1; uint64 pattern_hash = 2; uint64 count = 3; uint64 previous_count = 4; bool is_new = 5; Severity max_severity = 6; google.protobuf.Timestamp first_seen = 7; google.protobuf.Timestamp last_seen = 8; string sample = 9; }`
+  - `rpc Patterns(PatternsRequest{Filters filters = 1; uint32 limit = 2;}) returns (PatternsResponse{repeated LogPattern patterns = 1;})` at `POST /v1/logs:patterns`. `limit` defaults to 50 and is capped at 200. Rows are ordered by `count`, highest first.
+- **Semantics:**
+  - Lines are grouped by the stored `PatternHash`. `pattern` is `logpatterns.Expr` applied, in ClickHouse, to one sample `Body` per group, so only returned groups are masked.
+  - `previous_count` covers the window of the same length just before `start`.
+  - `is_new` is `previous_count == 0` while the previous window has rows for the same filters, so a source added in this window doesn't mark everything new.
+- **UI:**
+  - a Lines | Patterns toggle on `/logs`, in the URL as `view=patterns`;
+  - a peak-ui `Table` with the pattern, the count, the change against the previous window, a "New" `Chip`, and the max-severity `Chip`;
+  - a row click switches to Lines filtered by that pattern (URL `pattern`);
+  - a row action "Hide" adds the pattern to `exclude_pattern_hashes` (URL `xpattern`, repeatable).
+  - `pattern_hash` and `exclude_pattern_hashes` are `uint64`. grpc-gateway sends them as JSON strings, and most `cityHash64` values exceed 2⁵³, so the UI keeps them as strings everywhere (types, URL, query keys) and never parses them as numbers.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `TestPatternsQueryGroupsByStoredHash`: the SQL groups by `PatternHash`, and `logpatterns.Expr` appears only around the sample column.
+  - `TestPatternsIsNewNeedsPreviousRows`: no rows in the previous window gives `is_new = false`; rows there but none of this pattern gives `true`.
+  - `TestSearchExcludesPatternHashes`: `exclude_pattern_hashes = [1, 2]` binds `PatternHash NOT IN ?` with both values.
+  - Vitest: `row click filters lines by pattern`, `hide adds xpattern to URL`, and `keeps pattern hashes as strings`: a hash of `"18446744073709551557"` survives the round trip through the table, the URL and the next request unchanged.
+- [ ] **Step 2: Run them.** `make gen && cd managed && go test ./services/logs/ -run 'Pattern'` and `cd ui && pnpm --filter pmm test -- logs`. Expected: FAIL.
+- [ ] **Step 3: Implement** the RPC, the filters and the Patterns view.
+- [ ] **Step 4: Run them again.** Same commands, then `make prepare-pr` and `make lint format-check` in `ui`. Expected: PASS. Then on a Feature Build, check that the server's own logs group into patterns and that "Hide" removes their lines from Lines.
+- [ ] **Step 5: Commit.**
+  ```bash
+  git add api/logs managed/services/logs ui/apps/pmm/src
+  git commit -s -m "PMM-15722 Group log lines into patterns"
+  ```

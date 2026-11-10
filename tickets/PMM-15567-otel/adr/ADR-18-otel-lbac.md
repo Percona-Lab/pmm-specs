@@ -34,13 +34,14 @@ Option 1, with node identity verified at ingest.
    - Selectors are evaluated with Prometheus matcher semantics (anchored regexes; a missing label equals `""`).
    - They are evaluated against `MergeLabels(node, service)` for each service, and `MergeLabels(node)` for each node.
    - The resulting predicate is `(PmmServiceId, PmmNodeId) IN {allowed pairs} OR (PmmServiceId = '' AND PmmNodeId IN {allowed nodes})`.
+   - For restricted users it also requires `pmm.identity_verified=true`. Records without it, including everything stored before ingest verification ships, are visible to Admins only.
 4. **Fail closed.**
-   - No header for a non-Admin means deny.
+   - While access control is disabled (the default, `AccessControlEnabledDefault = false`), `/v1/logs` and `/v1/traces` stay Admin-only (ADR-23). Non-Admins reach them only when access control is enabled.
+   - `/v1/logs` and `/v1/traces` are LBAC-covered paths, so a restricted user's request always carries the user's selectors.
+   - With access control enabled, a request without the header is full access: the auth server sends none when the user has no filters.
    - Any selector that doesn't parse means deny.
-   - Service-account tokens follow an explicit rule.
-5. **Defaults.**
-   - The Grafana `pmm-otel` datasource stays Admin-only.
-   - A PMM UI log explorer uses the API.
+   - Service-account and anonymous credentials, which skip LBAC today, follow an explicit rule (plan 07, Task 3) before these paths open to non-Admins.
+5. **Defaults.** A PMM UI log explorer uses the API. There is no Grafana OTEL datasource (ADR-23).
 
 Options 2–4 were rejected for these reasons:
 - Labels stamped at ingest freeze access at write time.
@@ -56,4 +57,5 @@ Options 2–4 were rejected for these reasons:
   - node-level logs need node labels, as node metrics do today.
 - **Partial traces.** A trace that crosses services returns only the spans the user may see, and is marked partial.
 - **Shared code.** The selector evaluator is shared code that other LBAC consumers can adopt.
+- **Records stored before ingest verification** carry no `pmm.identity_verified`, so they stay Admin-only and need no migration.
 - **Spoofed rows.** The pair predicate means a record claiming another node's service never matches that service.

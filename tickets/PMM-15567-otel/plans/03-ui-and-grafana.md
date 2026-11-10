@@ -1,33 +1,28 @@
-# OTel 03: Settings → OTEL UI, Grafana Datasource, Logs Dashboard Implementation Plan
+# OTel 03: Settings → OTEL UI and Collector Health Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Admins manage OTEL, parser presets and log sources in Settings → OTEL. They read logs in a Grafana Logs dashboard backed by a read-only ClickHouse datasource that only Admins can query. They see collector health and get alerts when records are dropped.
+**Goal:** Admins manage OTEL, parser presets and log sources in Settings → OTEL. They see collector health and get alerts when records are dropped. Logs are read in the native explorer (plan 08); there is no Grafana OTEL datasource or Logs dashboard (ADR-23).
 
 **Architecture:**
 - **PMM UI** (`ui/apps/pmm`): a new Settings tab built on TanStack Query hooks over `/v1/otel/*` and `/v1/server/settings`.
-- **Grafana:**
-  - a provisioned `ClickHouse-OTEL` datasource with uid `pmm-otel` and user `otel_reader`;
-  - a plugin-client middleware in the Grafana fork that denies non-Admin queries to `pmm-otel`, needed because nginx can't see query bodies (analysis F8);
-  - dashboards in `dashboards/dashboards/OTel/`.
+- **Grafana:** a collector-health dashboard on the Metrics datasource, in `dashboards/dashboards/OTel/`, and alert templates.
 
-**Tech Stack:** React, MUI, `@percona/peak-ui`, react-hook-form with zod, TanStack Query, Vitest; Grafana dashboards JSON and the ClickHouse datasource plugin 4.21.3; Go (Grafana fork middleware, pmm-managed).
+**Tech Stack:** React, MUI, `@percona/peak-ui`, react-hook-form with zod, TanStack Query, Vitest; Grafana dashboards JSON; Go (pmm-managed alert templates).
 
 **Spec:**
-- [analysis](../spec.md): §6.4, §7.3, F8, F12, decision D7;
-- PMM-15574 (UI), PMM-15576, PMM-15593 (dashboard, alerts);
+- [analysis](../spec.md): §6.4, decisions D7 and D26;
+- ADR-23;
+- PMM-15574 (UI), PMM-15593 (dashboard, alerts);
 - the [roadmap](00-roadmap.md) for the shared names.
 
-**Depends on:** plan 01 (settings, status, purge, `otel_reader`) and plan 02 (preset and source API, statuses, self-metrics).
+**Depends on:** plan 01 (settings, status, purge) and plan 02 (preset and source API, statuses, self-metrics).
 
 ## Global Constraints
 
 The roadmap's **Shared contract** and **Global constraints** apply, together with `ui/AGENTS.md` and `dashboards/dashboards/AGENTS.md`. In addition:
 - The tab shows a **Technical Preview** label.
-- The datasource uses `otel_reader`, so even an Admin can't write or run DDL through it.
-- A Viewer can't query `pmm-otel`, neither from a dashboard nor through `/graph/api/ds/query`.
 - Dashboards pass `cleanup-dash.py --check-only`.
-- No textbox variable reaches SQL unescaped: use Grafana's `${var:sqlstring}`.
 - No unsigned plugin.
 - **The UI doesn't edit custom labels in this plan.** `axios-case-converter` rewrites map keys (the prototype hit this); custom labels remain a pmm-admin feature.
 
@@ -36,8 +31,8 @@ The roadmap's **Shared contract** and **Global constraints** apply, together wit
 1. **`PMM_ENABLE_OTEL` set in the environment while an Admin flips the switch.** Expected: the API returns `FailedPrecondition`, the UI shows that message in an error toast, and the switch reverts. Test in Task 2 (`shows env lock error and reverts`).
 2. **A preset name that is valid YAML but a duplicate, or a built-in name.** Expected: the server error text is shown in the dialog, and the dialog stays open with the input kept. Test in Task 3 (`keeps dialog open on server validation error`).
 3. **A log source whose state is `NOT_READABLE` or `NOT_ALLOWED`.** Expected: the row shows the state and the reason text from the agent. Test in Task 4 (`renders source state reason`).
-4. **A search text containing `'`, `\` or `%`.** Expected: the Logs dashboard query stays valid and matches literally. Test in Task 6 (a dashboard check that every `$search` use is `${search:sqlstring}`).
-5. **A Viewer opening a dashboard link to Logs.** Expected: the panels show "access denied", not data, and no SQL runs. Test in Task 5 (middleware unit test for a Viewer), and an api-test in Task 6 (`TestViewerCannotQueryOtelDatasource`).
+4. **A log source whose path contains spaces or non-ASCII characters.** Expected: shown and editable verbatim. Test in Task 4 (`renders path verbatim`).
+5. **Purge while the collector is running.** Expected: a confirmation dialog, then status `disk_bytes` drops. Test in Task 2 (`purge requires confirmation`).
 
 ---
 
@@ -200,10 +195,12 @@ The roadmap's **Shared contract** and **Global constraints** apply, together wit
   Submit calls `addLogSource({ nodeId, … })`.
 
 - [ ] **Step 1: Write the failing tests.**
+  - `shows pending discovery`: a `collection_requests` entry in state `failed` with reason "database unreachable" shows as a row for its service, with the state and the reason, although it has no source.
   - `renders source state reason`: a row with state `NOT_ALLOWED` and the reason "path /opt/x is not under an allowed path" shows both.
   - `service list filtered by node`.
   - `submits node-bound app source`: assert the payload `{ nodeId: 'n1', kind: 'file', path: '/var/log/app.log', presetName: 'json', appName: 'billing' }`.
   - `remove asks for confirmation`.
+  - `renders path verbatim`: a source with path `/var/log/my app/журнал.log` is shown, and opens in the edit dialog, unchanged.
 - [ ] **Step 2: Run them.** `cd ui && pnpm --filter pmm test -- LogSourcesSection`. Expected: FAIL.
 - [ ] **Step 3: Implement** the section and the dialog.
 - [ ] **Step 4: Run them again.** Same command, then `make lint format-check`. Expected: PASS.
@@ -213,81 +210,13 @@ The roadmap's **Shared contract** and **Global constraints** apply, together wit
   git commit -s -m "PMM-15574 Manage log sources in the UI"
   ```
 
-### Task 5: `ClickHouse-OTEL` datasource, with Admin-only queries in the Grafana fork
+### Task 5: `ClickHouse-OTEL` datasource
 
-**Files:**
-- In percona/pmm, modify:
-  - `build/ansible/roles/grafana/files/datasources.yml`: add the datasource `name: ClickHouse-OTEL`, `uid: pmm-otel`, `type: grafana-clickhouse-datasource`, with `jsonData` `{username: ${PMM_CLICKHOUSE_OTEL_READER_USER}, host: ${PMM_CLICKHOUSE_HOST}, port: ${PMM_CLICKHOUSE_PORT}, defaultDatabase: otel, logs: {defaultDatabase: otel, defaultTable: logs, otelEnabled: true}}` and `secureJsonData.password: ${PMM_CLICKHOUSE_OTEL_READER_PASSWORD}`. Also add it to `deleteDatasources` (:2-4), so it is re-provisioned.
-  - `managed/services/supervisord/supervisord.go`: add `PMM_CLICKHOUSE_OTEL_READER_USER/PASSWORD` to the grafana template env (:340-343) and to the params (:453-460).
-  - `managed/testdata/supervisord.d/grafana.ini`
-- In `/srv/runner/2/percona/grafana`, on branch `PMM-15576-otel-admin-only`:
-  - Create `pkg/services/pluginsintegration/clientmiddleware/percona_otel_admin_middleware.go` and its `_test.go`.
-  - Modify `pkg/services/pluginsintegration/pluginsintegration.go` (:222-223): register the middleware next to `NewPerconaForwarderHTTPClientMiddleware`.
-
-**Interfaces:**
-- Produces `func NewPerconaOtelAdminMiddleware(uid string) plugins.ClientMiddleware`, constructed with `"pmm-otel"`. For `QueryData`, `CallResource` and `CheckHealth`:
-  - when `req.PluginContext.DataSourceInstanceSettings != nil`, its `UID == uid`, and `req.PluginContext.User == nil || req.PluginContext.User.Role != "Admin"`, it returns an error that maps to HTTP 403 with the message "only Admins can query OpenTelemetry data";
-  - otherwise it calls the next handler.
-
-- [ ] **Step 1: Write the failing tests.**
-  - In the fork: `TestOtelAdminMiddleware` has cases Viewer (403), Editor (403), Admin (passes) and another datasource as Viewer (passes), for `QueryData` and for `CallResource`. Use the fake handler pattern from the other `clientmiddleware` tests.
-  - In pmm: the `TestConfig` golden `grafana.ini` contains `PMM_CLICKHOUSE_OTEL_READER_USER`.
-- [ ] **Step 2: Run them.** `go test ./pkg/services/pluginsintegration/clientmiddleware/ -run OtelAdmin` in the fork, and `cd managed && go test ./services/supervisord/`. Expected: FAIL.
-- [ ] **Step 3: Implement** the middleware and its registration, the datasource provisioning and the supervisord env.
-- [ ] **Step 4: Run them again.** Same commands. Expected: PASS. Then on a Feature Build that includes both PRs:
-  - As Admin, `GET /graph/api/datasources/uid/pmm-otel/health` gives `OK`.
-  - The query `INSERT INTO otel.logs (Body) VALUES ('x')` through the datasource fails with a readonly error.
-- [ ] **Step 5: Commit** in each repo.
-  ```bash
-  git commit -s -m "PMM-15576 Provision the ClickHouse-OTEL datasource"
-  git commit -s -m "PMM-15576 Allow only Admins to query OTEL data"
-  ```
+Removed by ADR-23.
 
 ### Task 6: Logs dashboard and links
 
-**Files:**
-- Create:
-  - `dashboards/dashboards/OTel/Logs.json` (uid `pmm-otel-logs`)
-  - `api-tests/otel/datasource_test.go`
-- Modify:
-  - `dashboards/pmm-app/src/plugin.json` (`includes`)
-  - `dashboards/dashboards/MySQL/MySQL_Instance_Summary.json`
-  - `dashboards/dashboards/PostgreSQL/PostgreSQL_Instance_Summary.json`
-  - `dashboards/dashboards/MongoDB/MongoDB_Instance_Summary.json`
-  - `dashboards/dashboards/OS/Node_Summary.json`
-
-  Check the exact file names with `ls dashboards/dashboards/*/`.
-  - `managed/services/grafana/client.go`, with a startup call from `managed/cmd/pmm-managed/main.go`: set the `OTel` folder permissions to Admin-only (`POST /api/folders/{uid}/permissions` with `[{"role":"Admin","permission":1}]`). Use the existing Grafana client, and the same startup hook as the other Grafana provisioning calls.
-
-**Interfaces:**
-- **Variables:**
-  - `node_name`: Metrics datasource, `label_values(node_uname_info, node_name)`, multi-select, include All.
-  - `node_id`: hidden, `label_values(node_uname_info{node_name=~"$node_name"}, node_id)`.
-  - `service_id`: `pmm-otel`, `SELECT DISTINCT PmmServiceId FROM otel.logs WHERE $__timeFilter(TimestampTime) AND PmmNodeId IN (${node_id:singlequote})`, with the text from `ResourceAttributes['pmm.service_name']`.
-  - `app`: distinct `ServiceName`.
-  - `source`: distinct `LogAttributes['log.file.path']`.
-  - `severity`: custom list, TRACE to FATAL.
-  - `search`: textbox.
-- **Panels:**
-  - log volume by severity: a time series of `count()` grouped by `toStartOfInterval(TimestampTime, INTERVAL $__interval_s second)` and `SeverityText`;
-  - a logs panel with `Timestamp`, `SeverityText`, `Body` and the attributes as labels, `LIMIT 1000`.
-- **Text search:** `positionCaseInsensitive(Body, ${search:sqlstring}) > 0` when `search` is not empty.
-- **Links:**
-  - each service summary links to `/graph/d/pmm-otel-logs?var-service_id=${service_id}&${__url_time_range}`;
-  - Node Summary links with `var-node_name=${node_name}`.
-  - When the native explorer (plan 08) ships, plan 08, Task 6 retargets these links to it. This dashboard stays as the Admin-only Grafana view for ad-hoc queries.
-
-- [ ] **Step 1: Write the failing checks.**
-  - `api-tests/otel/datasource_test.go` `TestViewerCannotQueryOtelDatasource`: a Viewer POSTs to `/graph/api/ds/query` with a `pmm-otel` query and gets 403; an Admin gets 200.
-  - Add a test to the dashboards Python suite (`dashboards/misc/test_*.py`, following the existing tests), `test_otel_search_is_sqlstring`: every occurrence of `$search` or `${search` in `OTel/*.json` is `${search:sqlstring}`.
-- [ ] **Step 2: Run them.** `python3 -m pytest dashboards/misc -k otel`, and the api-test against the Task 5 build. Expected: FAIL, because the dashboard doesn't exist yet. The api-test passes once Task 5 has merged.
-- [ ] **Step 3: Implement** the dashboard, the links, the `plugin.json` entry and the folder permission call. Then run `python3 dashboards/misc/cleanup-dash.py dashboards/dashboards/OTel/Logs.json`.
-- [ ] **Step 4: Run them again.** `python3 dashboards/misc/cleanup-dash.py --check-only` on every changed dashboard, the pytest, and `cd dashboards/pmm-app && yarn lint:check`. Expected: PASS. Then on a Feature Build, check each filter manually, and check that a link from the MySQL summary opens Logs filtered to that service and time range.
-- [ ] **Step 5: Commit.**
-  ```bash
-  git add dashboards managed/services/grafana managed/cmd/pmm-managed/main.go api-tests/otel/datasource_test.go
-  git commit -s -m "PMM-15576 Add the Logs dashboard and service links"
-  ```
+Removed by ADR-23. Plan 08, Task 6 adds the dashboard links to the native explorer.
 
 ### Task 7: Collector health dashboard and alert templates
 
