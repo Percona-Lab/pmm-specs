@@ -6,7 +6,7 @@
 
 | Path | Content |
 |---|---|
-| [spec.md](spec.md) | Analysis and design, decisions D1–D32 |
+| [spec.md](spec.md) | Analysis and design, decisions D1–D34 |
 | [plans/00-roadmap.md](plans/00-roadmap.md) | Roadmap and shared contract for plans 01–08 |
 | [adr/](adr/README.md) | ADR-01..14, ADR-17..25 |
 

@@ -95,7 +95,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   - `qan-api2/Makefile` (`start-clickhouse`: mount the one file `../build/ansible/roles/clickhouse/files/users.d/otel.xml` at `/etc/clickhouse-server/users.d/otel.xml:ro`. Not the whole directory: the image writes `users.d/default-user.xml` when `CLICKHOUSE_USER` is set [I, upstream image].)
 
 **Interfaces:**
-- Produces the users `otel_writer` and `otel_reader`, both with `password_sha256_hex` of their own name and networks `::1`, `127.0.0.1`.
+- Produces the users `otel_writer` and `otel_reader`, both with `password_sha256_hex` of their own name and networks `::1`, `127.0.0.1`, as for the existing `grafana` user. Generated passwords for every built-in ClickHouse user are a follow-up (D34).
   - `otel_writer`: profile `otel_writer`, `GRANT INSERT ON otel.*`.
   - `otel_reader`: profile `otel_reader` (`readonly=1`, `max_execution_time` changeable in readonly, the same as the `datasource` profile at `default-users.xml:27-34`), `GRANT SELECT ON otel.*`.
   - Both profiles: `max_memory_usage` 1073741824 and `max_execution_time` 60. These values are provisional until PMM-15592.

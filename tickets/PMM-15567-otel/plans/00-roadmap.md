@@ -4,7 +4,7 @@
 
 **Goal:** Collect database, OS, application and PMM Server logs, and later traces, through OpenTelemetry Collectors, and store them in ClickHouse next to QAN. The work follows epic [PMM-15567](https://perconadev.atlassian.net/browse/PMM-15567).
 
-**Spec:** [`spec.md`](../spec.md), together with PMM-15567 and its child tickets. The analysis records decisions D1–D32: D1–D17 were decided in the interview on 2026-10-10, D18–D24 in the review on 2026-10-11, D25–D28 on 2026-11-05, D29 on 2026-11-09 and D30–D32 on 2026-11-10. If the epic owner or the architects overturn one when reviewing ADR-19, ADR-20 or ADR-24 (the D12 API path), re-plan the tasks that decision lists under "Blocks".
+**Spec:** [`spec.md`](../spec.md), together with PMM-15567 and its child tickets. The analysis records decisions D1–D34: D1–D17 were decided in the interview on 2026-10-10, D18–D24 in the review on 2026-10-11, D25–D28 on 2026-11-05, D29 on 2026-11-09 and D30–D34 on 2026-11-10. If the epic owner or the architects overturn one when reviewing ADR-19, ADR-20 or ADR-24 (the D12 API path), re-plan the tasks that decision lists under "Blocks".
 
 ---
 
@@ -53,6 +53,7 @@ The QA automation ticket (PMM-15578) adds its tests in percona/pmm-qa against ea
 - downgrade behaviour: the `otel` database and the `log_sources` and `log_parser_presets` tables stay in place, unused; an older server ignores them, and an older client never receives the agent type.
 
 **Follow-ups** (not planned here):
+- Generated passwords for every built-in ClickHouse user (`default`, `grafana`, `otel_writer`, `otel_reader`), kept across upgrades (D34). No ticket yet.
 - The Patterns view (plan 08, Task 7; D27) in the release after 3.12.0. The `PatternHash` column ships in 3.12.0, so no migration is needed then.
 - Open a log line's query in QAN (`findQuery`, D28). Two options: a new qan-api2 RPC that matches a statement or a MongoDB query ID against `pmm.metrics` (preferred: qan-api2 owns that table and its LBAC), or pmm-managed reading `pmm.metrics` directly, as the prototype does. The MongoDB query ID needs pmm-agent's fingerprinter moved to a shared package either way.
 - AI-drafted parsers for unknown formats (D23), filed as [PMM-15725](https://perconadev.atlassian.net/browse/PMM-15725): opt-in, redacted samples, a model the admin configures, admin approval. It is blocked by PMM-15723 and PMM-15574. No ticket yet owns the setting for the admin-configured model; file one, or add it to PMM-15725's scope, before that work starts.

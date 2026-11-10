@@ -35,7 +35,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 
 **From PMM-15574:**
 - Built-ins are read-only, and can be cloned.
-- Custom presets allow only known operator types. `EXPR(` and environment expansion (`${`) are rejected.
+- Custom presets allow only known operator types. `EXPR(` and environment expansion (`${`) are rejected. No operator writes to `resource`: parsed content stays in the body and the log attributes.
 - Every preset is validated with the bundled `otelcol validate`.
 - Deleting a preset that is in use fails.
 - A literal `{{` in a preset works.
@@ -44,7 +44,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 ## Review Focus
 
 1. **A symlink under an allowed prefix that points outside it** (`/var/log/x -> /etc/shadow`). Expected: `NOT_ALLOWED`, because the allow-list checks the resolved path. Test in Task 6 (`TestRenderRejectsSymlinkEscape`).
-2. **Globs and `..`** (`/var/log/../etc/*`, `/var/log/mysql/*.log`). Expected: a path containing `..` is rejected. A glob is checked on its static directory prefix. A file that a glob or a rotation pattern matches later, such as a symlink created in the log directory after the check, is checked when it is read: if it resolves outside the source's directory and the allow-list, its records keep only a fixed "blocked" body (ADR-08). Test in Task 6 (`TestAllowListGlobsAndDotDot`, `TestRenderGuardRoots`, `TestFilelogGuardBlocksSymlinkEscape`).
+2. **Globs and `..`** (`/var/log/../etc/*`, `/var/log/mysql/*.log`). Expected: a path containing `..` is rejected. A glob is checked on its static directory prefix. A file that a glob or a rotation pattern matches later, such as a symlink created in the log directory after the check, is checked when it is read: if it resolves outside the source's directory and the allow-list, its records keep only a fixed "blocked" body and no parsed fields (ADR-08). Test in Task 6 (`TestAllowListGlobsAndDotDot`, `TestRenderGuardRoots`, `TestFilelogGuardBlocksSymlinkEscape`).
 3. **Log lines of 64 KiB or more, or binary content.** Expected: each line is truncated at `max_log_size` (64 KiB), and every OTLP request stays under nginx's 10 MB limit, whatever the compression ratio. Test in Task 6 (`TestNodeCollectorRequestsStayUnder10MB`, with the real collector).
 4. **Two collectors created concurrently for one pmm-agent** (two `pmm-admin add logs` at once). Expected: exactly one collector. The second request reuses it. Test in Task 3b (`TestAddLogSourceConcurrentCreatesOneCollector`, using the partial unique index).
 5. **A log file rotated while the collector is down.** Expected, and documented as best-effort: with rename-and-create rotation, the rest of the renamed file is read from its checkpoint; lines written to the new file while the collector was down are skipped, because a file with no checkpoint starts at its end. With copy-and-truncate, lines written between the copy and the truncate can be lost. Test in Task 6 (`TestFilelogRotationWhileStopped`, with the real collector).
@@ -130,6 +130,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
     - the YAML parses as a non-empty list of maps, each with a `type`;
     - `type` is one of `regex_parser`, `json_parser`, `csv_parser`, `key_value_parser`, `syslog_parser`, `time_parser`, `severity_parser`, `trace_parser`, `scope_name_parser`, `move`, `copy`, `remove`, `retain`, `flatten`, `add`, `recombine`, `noop`;
     - it rejects any string containing `EXPR(`, `${` or `env(`;
+    - it rejects a `field`, `from`, `to` or `parse_to` that starts with `resource`, so content from a file never lands in resource attributes, which the guard in Task 6 doesn't clear;
     - errors name the operator index and the offending value.
 - Built-in fixes from PMM-15574 (applied in Task 2b):
   - `mysql_error` parses `log_timestamps=SYSTEM` offsets (`2026-10-10T12:00:00.123456+02:00`) as well as `Z`.
@@ -145,6 +146,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
           "unknown op":   "- type: router\n",
           "expr add":     "- type: add\n  field: body.x\n  value: EXPR(env(\"HOME\"))\n",
           "env expansion": "- type: add\n  field: body.x\n  value: ${env:PMM_AGENT_SERVER_PASSWORD}\n",
+          "to resource":  "- type: move\n  from: body.x\n  to: resource.x\n",
           "empty":        "",
       } {
           t.Run(name, func(t *testing.T) { require.Error(t, CheckCustom(y)) })
@@ -402,7 +404,8 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   - **One pipeline per accepted source,** `logs/<id>`: receivers `[filelog/<id>]` or `[journald/<id>]`, processors `[memory_limiter, resource/pmm, resource/<id>, batch]`, with `transform/guard-<id>` after `memory_limiter` for a file source, exporters `[otlphttp]`.
   - **`filelog/<id>`:** `include: [path, path + ".*", path + "-*"]`, which match rotated names such as `error.log.1`, `mysqld.log-20261109` and `mongod.log.2026-11-09T00-00-00`; `exclude: [path + "*.gz", path + "*.xz", path + "*.bz2", path + "*.zst"]` (a renamed file keeps being read from its checkpoint; compressed rotations are skipped), `include_file_path: true`, `include_file_path_resolved: true`, `start_at: end`, `storage: file_storage`, `max_log_size: 65536`, `operators` = the parsed `OperatorsYaml`.
   - **`journald/<id>`:** `units`, `start_at: end`, `storage: file_storage`, `operators`.
-  - **`transform/guard-<id>`** (file sources only), `log_statements` with context `log`, both under the condition `not IsMatch(attributes["log.file.path_resolved"], "<roots>")`: `keep_keys(attributes, ["log.file.path", "log.file.path_resolved"])`, then `set(body, "[blocked by pmm-agent: the file resolves outside the allowed directories]")`.
+  - **`transform/guard-<id>`** (file sources only), `log_statements` with context `log`, both under the condition `not IsMatch(attributes["log.file.path_resolved"], "<roots>")`: `keep_keys(attributes, ["log.file.path", "log.file.path_resolved"])`, then `set(body, "[blocked by pmm-agent: the file resolves outside the allowed directories]")`, then clear the severity text and the trace and span IDs. Resource attributes need no clearing: no preset may write them (Task 2's `CheckCustom`).
+    - It stops content leaving the node; it doesn't stop the read. The boundary for reads stays the `pmm-agent` user's file permissions (ADR-08), and the threat model (PMM-15591) records the guard as an egress control.
     - `<roots>` is `^(` + each allowed root through `regexp.QuoteMeta`, joined with `|`, + `)/`. A discovered source has one root: the resolved directory of its path. Any other source has the resolved allow-list entries.
     - It covers files that the collector opens after `CheckAllowed` ran: a glob or a rotation pattern can match a symlink created later (ADR-08 resolves symlinks before the check).
     - Check that the pinned filelog receiver supports `include_file_path_resolved`, and record the result.
@@ -453,7 +456,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   func TestRenderedFilelogUsesStorageAndStartAtEnd(t *testing.T) { /* assert storage, start_at, include_file_path, include_file_path_resolved, the .* and -* rotation patterns and the compressed excludes */ }
   func TestRenderGuardRoots(t *testing.T) { /* a discovered source's guard has only its resolved directory as root; a manual source's has the resolved allow-list; a journald source has no guard */ }
   // Real collector, skipped unless PMM_OTEL_CONTRACT_BINARY is set.
-  func TestFilelogGuardBlocksSymlinkEscape(t *testing.T) { /* dir A holds x.log, dir B holds secret.log; start the collector on A/x.log; create A/x.log.1 -> B/secret.log and append lines to secret.log; assert no secret line reaches the httptest server, and those records carry the blocked body */ }
+  func TestFilelogGuardBlocksSymlinkEscape(t *testing.T) { /* dir A holds x.log, dir B holds secret.log; start the collector on A/x.log; create A/x.log.1 -> B/secret.log and append lines to secret.log, with a preset that parses a field into an attribute and sets the severity; assert no part of a secret line reaches the httptest server, in the body, the attributes, the resource attributes, the severity text or the trace and span IDs, and those records carry the blocked body */ }
   // Real collector, skipped unless PMM_OTEL_CONTRACT_BINARY is set.
   func TestFilelogRotationWhileStopped(t *testing.T) { /* subtests rename-create and copy-truncate: write lines A, stop the collector, write lines B, rotate, write lines C, start it; assert A and B arrive once each for rename-create, C is skipped, nothing arrives twice; for copy-truncate assert no duplicates and record what is lost */ }
   func TestRenderLocalReceiverHasNoAuth(t *testing.T) { /* SendToLocalReceiver: endpoint 127.0.0.1:4318, no Authorization header */ }
