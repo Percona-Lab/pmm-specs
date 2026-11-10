@@ -36,7 +36,7 @@ Marks used below:
 | Our own UI for reading logs, built with `@percona/peak-ui`, not only Grafana | Grafana datasource and Logs dashboard only (PMM-15576). | Build a native Logs explorer in the PMM UI, on a new `LogsService` API in pmm-managed: search, histogram, facets, surrounding lines, live tail, deep links. It is Admin-only now, and plan 06 adds LBAC to the same API ([plan 08](plans/08-log-explorer.md)). It is the only log UI: no Grafana datasource or Logs dashboard. It also groups lines into patterns (D27). **Decided: D20, D26 (ADR-23), D27.** |
 | How LBAC works with this | Admins only, until LBAC covers logs. | Phase 1: Admin-only, enforced by the `"/v1/logs": admin` rule on the explorer's API (ADR-23); PMM-15576's approach can't work ([§5](#5-findings-on-main-that-change-the-tickets)). Later: a PMM logs query API that turns the user's LBAC selectors into an allow-list of service and node IDs and fails closed ([§7](#7-lbac)). |
 
-**Decisions:** [§8](#8-decisions). D1–D17 were decided in the interview on 2026-10-10, and D18–D24 in the review on 2026-10-11. D2, D11 and D12 change the epic or its tickets, so they go to the epic owner and the architects as Proposed ADRs (ADR-19, ADR-20 and ADR-24) before coding.
+**Decisions:** [§8](#8-decisions). D1–D17 were decided in the interview on 2026-10-10, D18–D24 in the review on 2026-10-11, D25–D28 on 2026-11-05, D29 on 2026-11-09 and D30–D32 on 2026-11-10. D2, D11 and D12 change the epic or its tickets, so they go to the epic owner and the architects as Proposed ADRs (ADR-19, ADR-20 and ADR-24) before coding.
 
 ---
 
