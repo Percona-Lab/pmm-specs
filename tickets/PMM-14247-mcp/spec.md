@@ -377,6 +377,7 @@ Decision: [ADR-11](adr/ADR-11-output-contract.md).
    | `pmm_query_metrics` expression | — | 4 KiB, 10 series selectors (each OR group counts); a regex metric name has a literal prefix of at least 3 bytes and a literal service or node scope; no `@`; no `WITH` or `ttf`, `ru`, `range_median`, `alias` templates; no `count_values`, `count_values_over_time`, `histogram`, `histogram_over_time`, or `aggr_over_time` naming one; no non-ASCII character or backslash outside a string; a subquery's step at least the time read ÷ 2,000; at most 4,000 points per series for a rollup over an expression; an instant query's root is not a range selector or subquery |
    | `pmm_query_metrics` series one selector matches over the time read, counted before the query | — | 2,000 |
    | A VictoriaMetrics response, as MCP reads it | — | 4 MiB |
+   | A Grafana alerting response (rules API, Alertmanager alerts, silences), as `pmm_alerts` reads it | — | 16 MiB; a longer one is `pmm_unavailable`, and the message names the limit |
    | `pmm_list_metrics` names, labels, values or series | 100 | 1000; names over the limit grouped by prefix with counts; series also within 16 KiB |
    | `pmm_list_metrics` look-back | 1 h | 7 days, every `kind` |
    | The caller's service list: look-back of the `up` series (ADR-08) | the call's window, at most 7 days, ending at its end; 1 h without a window | 7 days: a longer window reads its last 7 days, and a `not_found` says so |
