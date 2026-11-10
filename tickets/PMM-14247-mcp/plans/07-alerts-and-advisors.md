@@ -26,7 +26,7 @@
 - **Source of the list:** the rules API only. An Alertmanager alert adds silence state to an alert of a rule the rules API returned, joined by rule UID and label set: the rules API alert's labels plus `__alert_rule_uid__` set to the rule's `uid` equal the Alertmanager alert's `labels`. It never adds an alert. Silenced means a non-empty `status.silencedBy`; the silence end is the latest `endsAt` of those silences, from `/api/v2/silences` (ADR-17).
 - A failing service list fails the tool call; the tool never returns un-narrowed results.
 - Firing alerts only, silenced or not, with the silence's end time; current state, no history. The tool description and every result, an empty one included, carry the note "Currently firing alerts only; resolved alerts are not shown." (ADR-17). Read only: no silencing or acknowledging (ADR-05).
-- Caps (spec §8): `pmm_alerts` 50/200 (default/maximum), paged with `limit` and `offset`.
+- Caps (spec §8): `pmm_alerts` 50/200 (default/maximum), paged with `limit` and `offset`. Each call takes a metric-call slot and a metric token, as the metric tools do, since it reads the 7-day service list (plan 05's per-caller limits).
 - A `service_id`, `service_name` or `node_name` filter outside `L` answers plan 06's `not_found` (`errNotInList`), which names the 7 days searched and never echoes the value the caller sent.
 - Untrusted fields: an alert's name, severity, labels, summary and description.
 - Every map field in a result is `omitempty` or always non-nil (plan 03's contract rule).
