@@ -4,7 +4,7 @@
 
 **Goal:** `pmm_alerts` returns the caller's firing alerts from Grafana's folder-scoped rules API, narrowed by MCP to the caller's service list (plan 06). `pmm_advisors` is out of the Tech Preview ([ADR-18](../adr/ADR-18-advisors.md)); this plan doesn't build it.
 
-**Architecture:** The tool reads Grafana's rules API through nginx on loopback with the caller's credentials, like every other tool (ADR-03). That API is folder-scoped, so the tool shows a Viewer what PMM's own alert page shows; Grafana's alert list endpoints are not, and never supply the list. Silence state comes from the Alertmanager, joined by rule UID only. MCP then keeps the alerts that belong to the caller's service list, filters, sorts and pages them, and returns plan 03's typed results. No new pmm-managed API, no `lbacPrefixes` change, no Grafana fork change.
+**Architecture:** The tool reads Grafana's rules API through nginx on loopback with the caller's credentials, like every other tool (ADR-03). That API is folder-scoped, so the tool shows a Viewer what PMM's own alert page shows; Grafana's alert list endpoints are not, and never supply the list. Silence state comes from the Alertmanager, joined by rule UID and label set (ADR-17). MCP then keeps the alerts that belong to the caller's service list, filters, sorts and pages them, and returns plan 03's typed results. No new pmm-managed API, no `lbacPrefixes` change, no Grafana fork change.
 
 **Tech Stack:** Go 1.27, go-sdk v1.8.0, Grafana's alerting HTTP API (the Prometheus-style rules API and the Alertmanager API).
 
@@ -17,12 +17,13 @@
 - **The caller's service list `L`** is plan 06's list: services of every `service_type` (ProxySQL, HAProxy and the rest included) and every node in it, hosts with only node_exporter included. Plan 06 builds the services only, over a window (its Global Constraints); Task 2 adds the nodes. For `pmm_alerts`, `L` covers the last 7 days: `listServicesAndNodes(ctx, auth, window{now - alertListLookback, now})` (ADR-17). Its query takes a slot of plan 05's limit on requests to VictoriaMetrics, like every request MCP sends there.
 - **Alert narrowing** (ADR-17), against `L`:
   - only four labels count, each checked against one set of `L`: `service_id` against the service IDs, `service_name` against the service names, `node_id` against the node IDs, `node_name` against the node names;
-  - an alert of PMM's own rules is shown whatever it names: those are PMM's HA and PMM Server component rules, whose `node_id`, `node_name` and `service_name` name PMM Server replicas and components, never in `L` (ADR-17). They are identified by rule UID or provenance, as Task 1 records, never by a label;
+  - an alert of PMM's own rules is shown whatever it names: those are PMM's HA and PMM Server component rules, whose `node_id`, `node_name` and `service_name` name PMM Server replicas and components, never in `L` (ADR-17). They are identified by `provenance` `file` together with a UID from PMM's catalog (`catalogUIDs()`, `managed/services/alerting/provisioning_catalog.go`), as Task 1 recorded, never by a label;
+  - a service or node label whose value is `[no value]` counts as absent: rules made from PMM templates carry it in `service_name` and `node_name` when the series lacks the label (ADR-17, Task 1);
   - an alert that carries `service_id` or `service_name` is kept only if each service label it carries is in its set; its node labels are not checked, because PMM's `*_down` templates name the node the exporter's pmm-agent runs on (`pmm-server` for RDS and Azure services), not the service's node (ADR-17);
   - an alert that carries no service label but `node_id` or `node_name` is kept only if each node label it carries is in its set;
   - an alert that carries none of them is shown, as Grafana's UI shows it to the same caller;
   - annotations and labels other than these four, `pmm_provisioned` included, are never used for narrowing.
-- **Source of the list:** the rules API only. An Alertmanager alert adds silence state to an alert of a rule the rules API returned, joined by rule UID; it never adds an alert.
+- **Source of the list:** the rules API only. An Alertmanager alert adds silence state to an alert of a rule the rules API returned, joined by rule UID and label set: the rules API alert's labels plus `__alert_rule_uid__` set to the rule's `uid` equal the Alertmanager alert's `labels`. It never adds an alert. Silenced means a non-empty `status.silencedBy`; the silence end is the latest `endsAt` of those silences, from `/api/v2/silences` (ADR-17).
 - A failing service list fails the tool call; the tool never returns un-narrowed results.
 - Firing alerts only, silenced or not, with the silence's end time; current state, no history. The tool description and every result, an empty one included, carry the note "Currently firing alerts only; resolved alerts are not shown." (ADR-17). Read only: no silencing or acknowledging (ADR-05).
 - Caps (spec §8): `pmm_alerts` 50/200 (default/maximum), paged with `limit` and `offset`.
@@ -60,7 +61,7 @@
   - whether each alert carries the labels `service_name`, `node_name`, `severity`, `alertname`, and its rule's UID;
   - which field identifies PMM's own HA and PMM Server component rules: their fixed rule UIDs, or the rules' provenance.
 - As the same callers, call `GET /graph/api/alertmanager/grafana/api/v2/alerts` and `GET /graph/api/alertmanager/grafana/api/v2/silences`, and record how a silenced alert carries its rule UID (the `__alert_rule_uid__` label [I]) and `silencedBy`, and where the silence's end time is.
-- PMM's own alert page reads the same rules API (`ui/apps/pmm/src/api/alerting.ts`). `pmm_alerts` joins the silence state by rule UID only, and never takes an alert from the Alertmanager list.
+- PMM's own alert page reads the same rules API (`ui/apps/pmm/src/api/alerting.ts`). `pmm_alerts` joins the silence state by rule UID and label set, and never takes an alert from the Alertmanager list.
 - If the rules API shows the Viewer a rule of the folder without Viewer access, stop: ADR-17 changes through a pmm-specs PR before Task 2.
 - Record the field mapping and the evidence in ADR-17 through a pmm-specs PR `PMM-15790 Record the Grafana rules API for MCP`. Task 2 starts after it is merged.
 
@@ -72,7 +73,7 @@
 
 **Interfaces:**
 - `pmmAPI` gains `Alerts(ctx context.Context, auth callerAuth) ([]grafanaAlert, error)`: a raw `getJSON` on `graph/api/prometheus/grafana/api/v1/rules`, one `grafanaAlert` per firing alert of the rules returned; and `SilencedAlerts` and `Silences`, raw `getJSON`s on the Alertmanager API, for silence state only.
-- `type grafanaAlert struct { RuleUID string; PMMRule bool; Labels, Annotations map[string]string; StartsAt time.Time; Silenced bool; SilencedUntil *time.Time }`, filled per Task 1's mapping. `PMMRule` comes from the rule UID or provenance, never from a label. `Silenced` and `SilencedUntil` are joined by rule UID only; an Alertmanager alert whose rule UID isn't among the rules returned is ignored.
+- `type grafanaAlert struct { RuleUID string; PMMRule bool; Labels, Annotations map[string]string; StartsAt time.Time; Silenced bool; SilencedUntil *time.Time }`, filled per Task 1's mapping. `PMMRule` is true when the rule's `provenance` is `file` and its UID is in PMM's catalog, never from a label. `Silenced` and `SilencedUntil` are joined by rule UID and label set; an Alertmanager alert that matches no alert of the rules returned is ignored.
 - Plan 06's `listServices(ctx, auth, w window) ([]serviceInfo, error)` becomes a call of `func (s *Service) listServicesAndNodes(ctx context.Context, auth callerAuth, w window) ([]serviceInfo, []nodeInfo, error)`, which drops the nodes. `type nodeInfo struct { NodeID, NodeName string }`: one per distinct `node_id`, named as in its newest row, or per `node_name` when a row has no `node_id`, across every row of the query, with a service or not (ADR-08). `const alertListLookback = 7 * day`.
 - `type serviceSet struct { serviceIDs, serviceNames, nodeIDs, nodeNames map[string]bool }`; `func newServiceSet(services []serviceInfo, nodes []nodeInfo) serviceSet`, from both results of `listServicesAndNodes`; `func (l serviceSet) keepAlert(a grafanaAlert) bool` applies the alert narrowing rule.
 - `type alertsInput struct { ServiceID, ServiceName, NodeName, Severity string; Limit, Offset int }`, every field `omitempty`.
@@ -91,11 +92,14 @@
   - for a restricted caller, PMM's own rules with `node_id` = `PMM_HA_NODE_ID` (`pmm_ha_node_unreachable` on HA), with `service_name="clickhouse"` (`pmm_clickhouse_down` on HA), and with `node_name="pmm-server"` (`pmm_grafana_down` on a standalone server): all kept;
   - a user's rule labelled `pmm_provisioned="1"` that names a service outside `L`: dropped;
   - no service or node label: shown;
+  - a node-level alert of a template rule with `service_name="[no value]"` and a node in `L`: kept; a server-level one with both labels `[no value]`: shown;
+  - an Editor's rule that takes a catalog UID with no `provenance`, naming a service outside `L`: dropped;
   - an annotation that names a hidden service: no effect;
   - each of the four labels checked against its own set: an alert with only a `node_name` equal to a listed service's name is still dropped.
 - Write `TestAlertsTool` against a fixture with alerts for allowed service A, hidden service B, A's node, a node of B only, a server-level alert and a silenced alert:
   - the result holds A's alert, the node alert of A's node, the server-level alert and the silenced alert with `silenced_until`;
   - an Alertmanager alert whose rule UID isn't in the rules API's answer adds no alert, and its silence marks nothing; an alert's silence state comes from the Alertmanager alert with its rule UID, not from matching labels;
+  - two alerts of one rule with a silence on one of them: only that one is silenced, until the silence's end;
   - the `service_name`, `node_name` and `severity` filters;
   - a `service_id` filter for B is `not_found` with the fixed text, and the message contains neither B's ID nor any other service's name or ID;
   - the order above; 120 alerts with `limit` 50 set `page.truncated`;
