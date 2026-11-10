@@ -39,6 +39,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 3. **External ClickHouse (`PMM_DISABLE_BUILTIN_CLICKHOUSE`) without the `otel_*` users.** Expected: `GET /v1/otel/status` says `otel_writer` can't authenticate, instead of the collector failing silently. Test in Task 9 (`TestGetStatusReportsWriterAuthFailure`).
 4. **Clients pushing while the collector is disabled or paused.** Expected: `/otlp/` answers 502, the clients keep the data queued, and nothing reaches ClickHouse. Test in Task 7 (api-test `TestOTLPWhenCollectorDisabled`).
 5. **A cap smaller than one day's data, and a retention lowered below existing partitions.** Expected: the next pass drops the old partitions, never today's, and ingest pauses when today alone exceeds the cap. Test in Task 10 (`TestPlanCleanup*`).
+6. **PMM Server restarts while ClickHouse is down.** Expected: the server collector's queue is on disk, so what it held is written once ClickHouse is back. Gaps are not allowed; duplicates are (D31). Test in Task 8 (`TestServerQueueSurvivesRestart`, with the real collector).
 
 ---
 
@@ -147,6 +148,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
     - plus `PmmNodeId LowCardinality(String) MATERIALIZED ResourceAttributes['pmm.node_id']` and `PmmServiceId LowCardinality(String) MATERIALIZED ResourceAttributes['pmm.service_id']`;
     - plus `PatternHash UInt64 MATERIALIZED <logpatterns.HashExpr("Body")> CODEC(ZSTD(1))`, written out literally in `01_logs.up.sql` and not in the sort key (D27, ADR-04);
     - plus `EventId UUID DEFAULT generateUUIDv4()`, not in the sort key, for stable paging in the explorer (ADR-04);
+    - plus `INDEX idx_timestamp TimestampTime TYPE minmax GRANULARITY 1` (ADR-04). If the upstream template already indexes `TimestampTime`, keep its index and leave this one out;
     - `ENGINE = {{ .engine }} PARTITION BY toDate(TimestampTime) ORDER BY (PmmNodeId, PmmServiceId, ServiceName, TimestampTime) SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1`;
     - no TTL (D1).
   - `package logpatterns` (`utils/logpatterns`):
@@ -167,6 +169,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       assert.Contains(t, ddl, "PARTITION BY toDate(TimestampTime)")
       assert.Contains(t, ddl, "ORDER BY (PmmNodeId, PmmServiceId, ServiceName, TimestampTime)")
       assert.NotContains(t, ddl, "TTL ")
+      assert.Regexp(t, `INDEX \w+ TimestampTime TYPE minmax`, ddl)
 
       _, err := db.ExecContext(t.Context(), `INSERT INTO otel_test.logs (Timestamp, Body, ResourceAttributes)
           VALUES (now64(9), 'x', map('pmm.node_id','n1','pmm.service_id','s1'))`)
@@ -274,7 +277,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 
 **Interfaces:**
 - Produces:
-  - `type ServerConfigParams struct { ClickHouseAddr, Database, Username, Password string; ReceiverEndpoint, TelemetryEndpoint string }`
+  - `type ServerConfigParams struct { ClickHouseAddr, Database, Username, Password string; ReceiverEndpoint, TelemetryEndpoint string; QueueDir string }`. `QueueDir` is `/srv/otelcol/server-queue` in production; tests use a temp directory.
   - `func ServerCollectorConfig(p ServerConfigParams) ([]byte, error)`, which marshals typed structs with `gopkg.in/yaml.v3`. Keys are sorted, so the output is deterministic.
   - `func escapeConfmap(s string) string`, which replaces `$` with `$$`. It is applied to every string that comes from env or settings.
 - Config content:
@@ -290,7 +293,8 @@ These inputs and conditions are implied by the spec but no task naturally tests 
     - `replace_pattern(body, "(?i)(identified\\s+(?:with\\s+\\S+\\s+)?by\\s+')[^']*", "$$1[REDACTED]")`, for MySQL `IDENTIFIED BY '…'`;
     - the same seven as `replace_all_patterns(attributes, "value", …)` and `replace_all_patterns(resource.attributes, "value", …)`.
     - The regexes above are a starting point; Task 8's corpus decides them.
-  - `exporters.clickhouse`: `endpoint: tcp://<addr>?dial_timeout=10s`, `database: otel`, `username`, `password`, `logs_table_name: logs`, `create_schema: false`, `timeout: 10s`, `retry_on_failure` (5s/30s/300s), `sending_queue: {enabled: true, queue_size: 1000}`.
+  - `exporters.clickhouse`: `endpoint: tcp://<addr>?dial_timeout=10s`, `database: otel`, `username`, `password`, `logs_table_name: logs`, `create_schema: false`, `timeout: 10s`, `retry_on_failure` (5s/30s/300s), `sending_queue: {enabled: true, queue_size: 1000, storage: file_storage}`. The queue is on disk, so a restart of the collector or of PMM Server keeps what it holds (D31).
+  - `extensions.file_storage`: `directory: QueueDir`, `create_directory: true`, `compaction.on_start: true`; listed in `service.extensions`. In HA each replica has its own, on its `/srv` volume.
   - `service.telemetry.metrics`: a pull reader on `TelemetryEndpoint` (`127.0.0.1:4319`), level `normal`.
   - `service.pipelines.logs: [otlp] → [memory_limiter, transform/redact, batch] → [clickhouse]`.
 
@@ -323,7 +327,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   Use the golden-file helper this repo already uses, if there is one (`grep -rn golden managed --include=*_test.go`). Otherwise compare against `os.ReadFile`, with an `-update` flag.
 - [ ] **Step 2: Run them.** `cd managed && go test ./services/otel/ -run ServerCollectorConfig`. Expected: FAIL, the package does not exist.
 - [ ] **Step 3: Implement `ServerCollectorConfig`** with typed structs, one per config section.
-- [ ] **Step 4: Run them again.** Same command. Expected: PASS. Task 8 proves that the redaction regexes and `$$1` behave as intended in the real collector.
+- [ ] **Step 4: Run them again.** Same command. Expected: PASS. Then run `otelcol validate --config testdata/server-config.golden.yaml` with the pinned binary (Task 1). Expected: valid. If the pinned exporter rejects `sending_queue.storage`, drop the key, record that here, and the docs say the server's queue is lost on restart. Task 8 proves that the redaction regexes, `$$1` and the disk queue behave as intended in the real collector.
 - [ ] **Step 5: Commit.**
   ```bash
   git add managed/services/otel
@@ -495,6 +499,14 @@ These inputs and conditions are implied by the spec but no task naturally tests 
       _, err := net.DialTimeout("tcp", "127.0.0.1:4317", time.Second)
       require.Error(t, err)
   }
+
+  func TestServerQueueSurvivesRestart(t *testing.T) {
+      // same skip as above; QueueDir = t.TempDir()
+      // start the collector with ClickHouseAddr pointing at a closed port; POST 100 records "queue-<uuid>-<n>"
+      // stop it, then start it again with the real ClickHouse address and the same QueueDir
+      // poll up to 60s: SELECT DISTINCT Body FROM otel.logs WHERE Body LIKE 'queue-<uuid>-%'
+      assert.Len(t, bodies, 100) // duplicates are allowed (D31), gaps are not
+  }
   ```
   Also send every line of `testdata/redaction-corpus.txt`. It has two sections:
   - `# must-mask`: JSON `"password": "…"`, MySQL, PostgreSQL and MongoDB connection strings with credentials, `https://user:pass@host`, `PGPASSWORD=…`, `--password=…`, `IDENTIFIED BY '…'`, bearer and `glsa_` tokens. Each line names its secret; the test fails if any secret is stored.
@@ -502,7 +514,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 
 - [ ] **Step 2: Run it locally against a collector without the redaction processor**: temporarily drop `transform/redact` from the pipeline in a scratch copy of the config. Expected: FAIL on `NotContains`. This proves the test can catch a missing redaction.
 - [ ] **Step 3: Restore the generator's config.** No production code changes, unless the test exposes a regex or `$$` problem; fix that in `server_config.go`.
-- [ ] **Step 4: Run it.** `PMM_OTEL_CONTRACT_BINARY=… PMM_OTEL_CONTRACT_CLICKHOUSE=127.0.0.1:19000 go test ./managed/services/otel/ -run TestCollectorContract`, then check that the CI workflow is green. Expected: PASS.
+- [ ] **Step 4: Run it.** `PMM_OTEL_CONTRACT_BINARY=… PMM_OTEL_CONTRACT_CLICKHOUSE=127.0.0.1:19000 go test ./managed/services/otel/ -run 'TestCollectorContract|TestServerQueueSurvivesRestart'`, then check that the CI workflow is green. Expected: PASS.
 - [ ] **Step 5: Commit.**
   ```bash
   git add managed/services/otel/contract_test.go .github/workflows/otelcol.yml

@@ -16,7 +16,7 @@
 - pmm-managed asks for them with a new `LogDiscoveryRequest` on the agent channel:
   - right after the add-service transaction commits, which stores the requested collection first;
   - for `--discover` (Phase 1b);
-  - again on every pmm-agent reconnect, on a service change, and every 10 minutes while a request is pending or failed (Task 3's reconciler).
+  - again on every pmm-agent reconnect, on a service change, every 10 minutes while a request is pending or failed, and every hour while it is collecting (Task 3's reconciler).
 - pmm-agent keeps the paths it discovered in memory, and lets exactly those paths bypass its allow-list (plan 02, Task 6's `DiscoveredPaths`), but only regular files inside the database's own directories, after resolving symlinks (Task 2's `AcceptDiscoveredPath`).
 - **Supported setups:** native installs, and pmm-agent sharing the database's filesystem (a bind mount at the same path, or a sidecar with the directories mounted). Before accepting a path, pmm-agent checks that it sees the same database instance (Task 2's `SameInstance`); otherwise the request is `not_local`.
 
@@ -30,7 +30,7 @@
 
 **Depends on:** plan 02 (the `log_sources` API, the presets harness, `Render` with `DiscoveredPaths`).
 
-**Release criterion for Tasks 2–5** (D29): Add a MySQL, PostgreSQL or MongoDB service with `pmm-admin add` on the same host as its database; within a few minutes its log shows in the explorer, filtered to that service, with no log source configured by hand. It also holds when the database is down at add time: once it is back, its log appears within one reconciler interval (10 minutes). Each task's Feature Build check builds toward it, and QA (PMM-15578) runs it for all three databases.
+**Release criterion for Tasks 2–5** (D29, D30): Add a MySQL, PostgreSQL or MongoDB service with `pmm-admin add` on the same host as its database; within a few minutes its log shows in the explorer, filtered to that service, with no log source configured by hand. It also holds when the database is down at add time: once it is back, its log appears within one reconciler interval (10 minutes). On RHEL-family systems, where the collector can't read database logs by default (ADR-08), it passes when the request's reason and `pmm-admin` print the exact command, and the log appears within one reconciler interval after the user runs it. Each task's Feature Build check builds toward it, and QA (PMM-15578) runs it for all three databases, with the outages and restarts of D32.
 
 ## Global Constraints
 
@@ -56,9 +56,9 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - slow and general logs: only when `@@log_output` includes `FILE`.
 - **PostgreSQL:**
   - `log_directory` is relative to `data_directory` unless absolute;
-  - `log_filename` becomes a glob;
+  - `log_filename` becomes a glob; for `csvlog` and `jsonlog`, a trailing `.log` becomes `.csv` or `.json`, or that suffix is appended, which is how PostgreSQL names those files;
   - `log_destination` picks the preset;
-  - `logging_collector=off` means journald, or a message.
+  - `logging_collector=off`: on Debian and Ubuntu, `cluster_name` (`16/main`) gives `/var/log/postgresql/postgresql-16-main.log`, which `pg_ctlcluster` writes; otherwise journald, or a message.
 - **MongoDB:**
   - `getCmdLineOpts` `systemLog.path`, with an `--logpath` argv fallback;
   - `destination: syslog` gives a message and no source.
@@ -68,7 +68,8 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - `logfile ""` with `daemonize no` means stdout, so a journald source or a message; with `daemonize yes` the log goes to `/dev/null`, so a message and no source;
   - syslog is written in addition to `logfile`: `syslog-enabled yes` gives a message and no source only when `logfile` is empty;
   - a `log-format` or `log-timestamp-format` other than `legacy` gets the `auto` preset instead of `valkey`, with a message.
-- The path is read again on every pmm-agent reconnect.
+- The path is read again on every pmm-agent reconnect, and every hour while the request is collecting.
+- When the collector can't read a log, the reason gives the command that makes it readable, if there is one for that database and OS family (RHEL-family, D30).
 
 **D2:** `--collect-logs` defaults to `error` for MySQL and to `on` for PostgreSQL, MongoDB and Valkey. `--collect-logs=none` (MySQL) or `--no-collect-logs` (the others) opts out.
 
@@ -84,6 +85,10 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
 6. **A Valkey instance whose `CONFIG` command is renamed or not permitted.** Expected: the service is added, and the message says to add the log with `pmm-admin add logs --service-name=… --path=…`. Test in Task 6 (`TestDiscoverValkeyConfigDenied`).
 7. **A format no built-in matches** (a custom application log). Expected: `auto` still extracts an ISO-8601 or syslog timestamp and a level word when present, and keeps the line otherwise. Suggest returns no candidate rather than a wrong one. Test in Task 7 (`TestAutoPresetFallsBackToRaw`, `TestSuggestNoCandidate`).
 8. **A Valkey 8.1 instance with `log-format logfmt` or `log-timestamp-format iso8601`.** Expected: the source gets `auto` instead of `valkey`, the message says why, and no line is lost. Test in Task 6 (`TestDiscoverValkey`, cases `logfmt` and `iso8601 timestamps`).
+9. **PostgreSQL with `log_destination` set to `csvlog` or `jsonlog`.** Expected: the glob ends in `.csv` or `.json`, because PostgreSQL replaces a trailing `.log`, and the preset matches the file it reads. Test in Task 2 (`TestPostgresLogGlob`), and on a VM in Step 4.
+10. **Ubuntu's packaged PostgreSQL, with `logging_collector=off`.** Expected: the source is `/var/log/postgresql/postgresql-<version>-<cluster>.log`, found from `cluster_name`, not an empty journald source. Test in Task 2 (`TestDebianClusterLog`), and on an Ubuntu 24.04 VM in Step 4.
+11. **A RHEL-family host where the collector can't read the log.** Expected: the request is `failed`, and its reason and `pmm-admin`'s output give the exact command for that database. After the user runs it, the log appears within one reconciler interval. Test in Task 2 (`TestPermissionHint`), and on a RHEL 9 VM in Step 4.
+12. **A log path changed while the source is collecting** (`SET GLOBAL slow_query_log_file`, or a new `log_directory` and a reload). Expected: the source follows the new path within an hour, with no reconnect. Test in Task 3 (`TestReconcilerFollowsPathChangedWhileCollecting`).
 
 ---
 
@@ -167,7 +172,9 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
     - `kinds` take the values `error`, `slow` and `general` for MySQL, and `log` for PostgreSQL, MongoDB and Valkey (Task 6).
   - **Pure resolvers:**
     - `func ResolveMySQLLogPath(value, datadir string) (path string, journald bool)`
-    - `func PostgresLogGlob(logDirectory, dataDirectory, logFilename string) string`
+    - `func PostgresLogGlob(logDirectory, dataDirectory, logFilename, destination string) string`. For `csvlog` and `jsonlog` it replaces a trailing `.log` with `.csv` or `.json`, and otherwise appends that suffix [I, from the PostgreSQL docs; Step 4 confirms it].
+    - `func DebianClusterLog(clusterName string) (string, bool)`: `16/main` gives `/var/log/postgresql/postgresql-16-main.log` and `true`; any other form gives `false`. It is used only when `logging_collector=off`, the file exists and is regular, and `SameInstance` passes. The path is checked against the allow-list (`/var/log` by default) like a hand-added path: it is not in the database's own directories, so it doesn't go into `DiscoveredPaths`.
+    - `func PermissionHint(serviceType inventoryv1.ServiceType, osRelease, path string) string`: the one command that lets the collector read a database's log, by service type and OS family (`ID_LIKE` in `/etc/os-release` contains `rhel` or `fedora`), or `""` elsewhere. Step 4 writes and verifies the commands for MySQL, PostgreSQL and MongoDB on RHEL 9; the docs list the same commands. PostgreSQL creates its logs with mode 0600 inside a 0700 data directory, so its command also sets `log_file_mode = 0640` [I].
     - `func PostgresPreset(logDestination string) (preset string, journald bool, reason string)`: `stderr` → `postgres`, `csvlog` → `postgres_csv`, `jsonlog` → `postgres_json`, and `syslog` → no source, reason "PostgreSQL logs to syslog; add the OS log instead". When `log_destination` lists several, prefer `jsonlog`, then `csvlog`, then `stderr`.
     - `func IsLocalAddress(host string, socket string) bool`: true for a socket, a loopback address, or an address of one of the host's interfaces. This is necessary but not enough: a loopback address can be a port that Docker publishes from a container.
     - `func SameInstance(ctx context.Context, db queryer, serviceType inventoryv1.ServiceType, socket string) (bool, string)`: a Unix-socket connection counts as the same instance. Over TCP, pmm-agent compares a marker file on its own filesystem with the running database: MySQL `<@@datadir>/auto.cnf` holds `@@server_uuid`; PostgreSQL `<data_directory>/postmaster.pid` line 3 equals `extract(epoch from pg_postmaster_start_time())::bigint`; MongoDB `<dbPath>/mongod.lock` holds `serverStatus().pid`. A mismatch, or a marker it can't read, gives `false` and a reason that suggests connecting through the socket or adding the log by hand. These markers are inferred [I]; the tests confirm each one on every supported version.
@@ -176,9 +183,9 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - **Discovery:**
     - `func Discover(ctx context.Context, req *agentv1.LogDiscoveryRequest, readable func(string) error) *agentv1.LogDiscoveryResponse`
     - `type Cache struct{…}` with `Add(entries)`, `Paths() map[string]bool` and `Units() map[string]bool`. Entries are replaced per service on each discovery.
-  - The `readable` check uses the collector credential from plan 02, Task 7 (`ReadableAs`), so "can't read" means "the collector can't read it".
+  - The `readable` check uses the collector credential from plan 02, Task 7 (`ReadableAs`), so "can't read" means "the collector can't read it". When it fails for lack of permission, the reason ends with `PermissionHint`'s command, if there is one.
   - **MySQL:** `SELECT @@log_error, @@datadir, @@log_output, @@slow_query_log, @@slow_query_log_file, @@general_log, @@general_log_file`. Presets are `mysql_error`, `mysql_slow` and `mysql_general`. `log_error=stderr` gives a journald source with units `["mysqld.service", "mysql.service"]`; when `FirstLoadedUnit` finds one, only that unit is kept.
-  - **PostgreSQL:** `SELECT name, setting FROM pg_settings WHERE name IN ('logging_collector','log_destination','log_directory','log_filename','data_directory')`. Call `pg_current_logfile()` only to confirm the glob, and treat a permission error as "not needed".
+  - **PostgreSQL:** `SELECT name, setting FROM pg_settings WHERE name IN ('logging_collector','log_destination','log_directory','log_filename','data_directory','cluster_name')`. Call `pg_current_logfile(<format>)` only to confirm the glob, and treat a permission error as "not needed".
   - **MongoDB:** the shared `getLogFilePath`.
 
 - [ ] **Step 1: Write the failing tests.**
@@ -197,9 +204,11 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   }
 
   func TestPostgresLogGlob(t *testing.T) {
-      assert.Equal(t, "/var/lib/pgsql/16/data/log/postgresql-*.log", PostgresLogGlob("log", "/var/lib/pgsql/16/data", "postgresql-%a.log"))
-      assert.Equal(t, "/var/log/postgresql/postgresql-*_*.log", PostgresLogGlob("/var/log/postgresql", "/x", "postgresql-%Y-%m-%d_%H%M%S.log"))
-      assert.Equal(t, "/var/log/pg/fixed.log", PostgresLogGlob("/var/log/pg", "/x", "fixed.log"))
+      assert.Equal(t, "/var/lib/pgsql/16/data/log/postgresql-*.log", PostgresLogGlob("log", "/var/lib/pgsql/16/data", "postgresql-%a.log", "stderr"))
+      assert.Equal(t, "/var/log/postgresql/postgresql-*_*.log", PostgresLogGlob("/var/log/postgresql", "/x", "postgresql-%Y-%m-%d_%H%M%S.log", "stderr"))
+      assert.Equal(t, "/var/log/pg/fixed.log", PostgresLogGlob("/var/log/pg", "/x", "fixed.log", "stderr"))
+      assert.Equal(t, "/var/lib/pgsql/16/data/log/postgresql-*.csv", PostgresLogGlob("log", "/var/lib/pgsql/16/data", "postgresql-%a.log", "csvlog"))
+      assert.Equal(t, "/var/log/pg/pg-*.json", PostgresLogGlob("/var/log/pg", "/x", "pg-%j", "jsonlog"))
   }
 
   func TestPostgresPreset(t *testing.T) { /* stderr, csvlog, jsonlog, "stderr,jsonlog", syslog */ }
@@ -207,19 +216,24 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   func TestSameInstance(t *testing.T) { /* socket → true; TCP with a marker that matches → true; TCP with a marker that differs, or none → false with a reason */ }
   func TestAcceptDiscoveredPath(t *testing.T) { /* a file in the data dir → accepted; a symlink from the data dir to /etc/shadow → rejected; a directory → rejected; a path outside dirs → rejected */ }
   func TestFirstLoadedUnit(t *testing.T) { /* systemctl output faked: a loaded unit, an alias resolved to its Id, LoadState=not-found for every candidate, systemctl missing */ }
+  func TestDebianClusterLog(t *testing.T) { /* "16/main" → /var/log/postgresql/postgresql-16-main.log, true; "", "main", "16/main/x" → false */ }
+  func TestPermissionHint(t *testing.T) { /* RHEL 9 and Oracle Linux 9 os-release: a command for MySQL, PostgreSQL and MongoDB, and the PostgreSQL one sets log_file_mode; Ubuntu os-release: "" */ }
   func TestCacheReplacesPerService(t *testing.T) { /* … */ }
   ```
   Add `TestDiscoverMySQL` with `sqlmock`, for `log_output=TABLE` (slow and general not collectable, with the reason "log_output does not include FILE") and `log_output=FILE,TABLE`. Add `TestDiscoverMongoDBSyslog`, with the shared helper mocked to return destination `syslog`.
 - [ ] **Step 2: Run them.** `make gen && cd agent && go test ./logdiscovery/ ./utils/mongodb/`. Expected: FAIL.
 - [ ] **Step 3: Implement** the proto, the resolvers, the per-database discovery, the cache, the client dispatch, the move of the mongolog helper, and the supervisor wiring.
-- [ ] **Step 4: Run them again.** Same command, plus `go test ./agents/mongodb/... ./client/...`. Expected: PASS. Then on a CHAOS VM with PostgreSQL 13 and 17, using PMM's documented grants (`pg_monitor`): run discovery, and record whether `pg_current_logfile()` needs anything more, for the docs PR (PMM-15585 AC).
+- [ ] **Step 4: Run them again.** Same command, plus `go test ./agents/mongodb/... ./client/...`. Expected: PASS. Then on a CHAOS VM with PostgreSQL 13 and 17, using PMM's documented grants (`pg_monitor`): run discovery, and record whether `pg_current_logfile()` needs anything more, for the docs PR (PMM-15585 AC). Then, for the D30 criterion:
+  - **Ubuntu 24.04**, with MySQL, PostgreSQL (from apt) and MongoDB from their vendors' packages, in their default configuration: each log is found and read, PostgreSQL's through `DebianClusterLog`.
+  - **A RHEL 9-family OS**, with the same three databases: the collector can't read their logs. Write each `PermissionHint` command, run it, and check that the log is read, and still read after `logrotate -f`. Record the commands in this plan and in the docs PR.
+  - **On both:** set PostgreSQL's `log_destination` to `csvlog` and then to `jsonlog`, and check that the files have the names `PostgresLogGlob` predicts.
 - [ ] **Step 5: Commit.**
   ```bash
   git add api/agent agent
   git commit -s -m "PMM-15584 Discover database log paths on pmm-agent"
   ```
 
-### Task 3: Discovery in pmm-managed: add-time, `--discover`, and reconnect
+### Task 3: Discovery in pmm-managed: add-time, retries and reconnect
 
 **Files:**
 - Create:
@@ -235,7 +249,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - the add-service handlers: when OTEL is off, the sources are still created (Task 4 of plan 02 withholds them), and `log_collection_messages` says "OTEL is turned off; this log is collected once an Admin turns it on". Test: `TestAddMySQLWithOtelOffCreatesSourceAndSaysSo`.
   - `managed/services/agents/registry.go` (`authenticate`): after the agent is registered, reconcile every `log_collection_requests` row of a service on this pmm-agent's node, whatever its state, and update a source's path when it changed. Then `RequestStateUpdate`.
   - `managed/services/inventory/services.go` (`ChangeService`, :376): reconcile the changed service's request after the change commits.
-  - `managed/cmd/pmm-managed/main.go`: the reconciler as a leader service (`haService.AddLeaderService`), every 10 minutes for requests in `pending` or `failed` whose `next_attempt_at` has passed.
+  - `managed/cmd/pmm-managed/main.go`: the reconciler as a leader service (`haService.AddLeaderService`). Every 10 minutes it reconciles the requests in `pending`, `failed` or `collecting` whose `next_attempt_at` has passed.
   - `managed/services/otel/log_sources_grpc.go`: the `DiscoverLogSources` handler.
 
 **Interfaces:**
@@ -244,7 +258,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - `type LogDiscoverer struct{ r *Registry; db *reform.DB }`
   - `func (d *LogDiscoverer) Discover(ctx context.Context, q *reform.Querier, service *models.Service, agent *models.Agent, kinds []string) ([]*agentv1.LogDiscoveryEntry, error)`. It builds the DSN from the service's exporter agent, the way `ServiceInfoBroker` does (`managed/services/agents/service_info_broker.go:148`), with a 5 s timeout. It is version-gated: an older agent gets the message "log discovery needs pmm-agent <version> or newer", with the version from `version.CollectLogsSupportVersion`.
   - `func (d *LogDiscoverer) RediscoverOnConnect(ctx context.Context, pmmAgentID string) error`
-  - `func (d *LogDiscoverer) Reconcile(ctx context.Context, serviceID string) error`: runs discovery for one request and sets `state` and `reason`: `collecting` when every requested kind has a source, `not_local` when the service isn't on the agent's host (Task 2), `failed` with the agent's reason otherwise. A failure sets `next_attempt_at` 10 minutes ahead.
+  - `func (d *LogDiscoverer) Reconcile(ctx context.Context, serviceID string) error`: runs discovery for one request and sets `state` and `reason`: `collecting` when every requested kind has a source, `not_local` when the service isn't on the agent's host (Task 2), `failed` with the agent's reason otherwise. A failure sets `next_attempt_at` 10 minutes ahead, and `collecting` sets it one hour ahead, so a path changed at runtime is followed: a moved path updates the source.
   - `ListLogSourcesResponse` gains `repeated LogCollectionRequest collection_requests` (`service_id`, `kinds`, `state`, `reason`, `updated_at`), so the API and the UI show requests that have no source yet.
 
 - [ ] **Step 1: Write the failing tests** (sqlmock, with a fake channel for the agent request):
@@ -256,6 +270,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - `TestAddStoresRequestBeforeDiscovery`: the request row is committed before the agent round trip starts, and no transaction is open during it.
   - `TestReconcilerCollectsAfterDatabaseReturns`: discovery fails at add (state `failed`); the next reconciler pass succeeds and the state becomes `collecting` with one source.
   - `TestReconnectRetriesServiceWithoutSources`: a `failed` request with no sources is retried on reconnect.
+  - `TestReconcilerFollowsPathChangedWhileCollecting`: a `collecting` request whose `next_attempt_at` has passed; discovery returns a new path; the source's path is updated, and `next_attempt_at` is one hour ahead.
 - [ ] **Step 2: Run them.** `make gen && cd managed && go test ./services/agents/ ./services/management/ -run 'CollectLogs|Discovery|Rediscover|RemoteService'`. Expected: FAIL.
 - [ ] **Step 3: Implement** everything listed above.
 - [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS. Write api-tests in `api-tests/management/mysql_test.go` and the PostgreSQL and MongoDB equivalents. Using the server's own `pmm-server-postgresql` service with `DiscoverLogSources`, assert a source with the path `/srv/logs/postgresql.log`, or the message explaining why not (`logging_collector=off` → stdout, analysis F21).
@@ -293,7 +308,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
 - [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS. Then on a CHAOS VM with MySQL 8.4, PostgreSQL 17 and MongoDB 7 (`pmm-qa:chaos-docker-provisioning`), check the acceptance criteria of PMM-15584/85/86:
   - default add → rows in `otel.logs` within 1 minute, labelled with the service;
   - a remote add → a message and no source;
-  - `--discover` on a service added before this feature.
+  - on a RHEL 9-family VM, the reason printed for an unreadable log gives Task 2's command, and after running it the log arrives within one reconciler interval.
 - [ ] **Step 5: Commit.**
   ```bash
   git add admin
@@ -309,7 +324,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition,
   - `managed/services/otel/presets/builtin/mysql_general.yml`
   - `managed/services/otel/presets/builtin/postgres_csv.yml`
   - `managed/services/otel/presets/builtin/postgres_json.yml`
-  - `managed/services/otel/presets/testdata/<name>/input.log` and `expected.json`, one sample per supported version: MongoDB 6, 7, 8; MySQL 8.0, 8.4; PostgreSQL 13–17 for csv, 15–17 for json
+  - `managed/services/otel/presets/testdata/<name>/input.log` and `expected.json`, one sample per supported version: MongoDB 6, 7, 8; MySQL 8.0, 8.4; PostgreSQL 13–17 for csv, 15–17 for json; and for plan 02's `postgres` preset, one sample with PostgreSQL's default `log_line_prefix` (`%m [%p] `) and one with Debian's (`%m [%p] %q%u@%d `) [I]
 - Modify: `managed/services/otel/presets/validate_test.go` (`TestBuiltInsLoad`, adding the five names)
 
 **Interfaces:**

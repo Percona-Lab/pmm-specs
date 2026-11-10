@@ -1,7 +1,7 @@
 # OpenTelemetry in PMM: analysis and design (PMM-15567)
 
 - **Date:** 2026-10-10
-- **Updated:** 2026-11-05 and 2026-11-09 (D25–D29, ADR-23 to ADR-25)
+- **Updated:** 2026-11-05, 2026-11-09 and 2026-11-10 (D25–D32, ADR-23 to ADR-25)
 - **Epic:** [PMM-15567](https://perconadev.atlassian.net/browse/PMM-15567), with 21 child tickets when it was read, plus the tickets filed from this analysis (both listed in [§2](#2-sources)).
 - **Prototype:** [percona/pmm#5118](https://github.com/percona/pmm/pull/5118), branch `tibi-holmes`. It is a reference only.
 - **Code base:** percona/pmm `main` at `3c6cba77c` (percona/grafana `4a94c794`, percona-helm-charts `9dffe16`), rebased on 2026-11-05 from `285cefaf8`. Line numbers below refer to those commits; re-check them before you edit, because `main` moves.
@@ -75,8 +75,9 @@ pmm-agent (root in packages, uid 1002 in Docker)         nginx :443
      processors: memory_limiter → resource(identity)       processors: memory_limiter → transform(redaction)
                  → batch                                               → batch
      exporter: otlphttp → https://<server>/otlp/            exporter: clickhouse (user otel_writer, db otel)
-       sending_queue on file_storage (disk)                     │
-     extension: file_storage (paths.otelcol_data_dir)           ▼
+       sending_queue on file_storage (disk)                   sending_queue on file_storage (disk, D31)
+     extension: file_storage (paths.otelcol_data_dir)           │
+                                                                ▼
                                                          ClickHouse  otel.logs (Phase 1)
 PMM Server node (its own pmm-agent):                                 otel.otel_traces (+2 helpers, Phase 2)
  └─ otel-collector with the server log sources           ▲
@@ -188,6 +189,7 @@ Other agent types keep their current behaviour. The collector reaches the networ
 - **One collector per pmm-agent:** a partial unique index on `agents(pmm_agent_id) WHERE agent_type = 'otel-collector'`, not a check-then-insert as in the prototype.
 - **State flow:** pmm-agent reports a `state` and `state_reason` for each source in a new repeated field on `StateChangedRequest`. For example: a path outside the allow-list, a file it can't read, or `journalctl` missing.
 - **Allow-list:** pmm-agent checks paths before rendering. It drops sources that fail, and keeps the collector running for the rest.
+- **Files opened later:** a glob or a rotation pattern can match a file after the check, for example a symlink created in the log directory. The node collector records each file's resolved path, and a record from a file that resolves outside the source's directory and the allow-list keeps only a fixed "blocked" body (plan 02, Task 6). This applies ADR-08's rule that symlinks are resolved before the check.
 
 ### 6.3 Default log collection on `pmm-admin add`
 
@@ -195,13 +197,14 @@ Other agent types keep their current behaviour. The collector reaches the networ
 - **Transport:** a new server→agent request, `LogDiscoveryRequest{service_type, dsn, kinds}` → `LogDiscoveryResponse{entries[]{kind, path, units, readable, reason}}`.
   - It is version-gated.
   - The add transaction stores the requested collection (`log_collection_requests`, state `pending`). After the commit, discovery runs with a 5 s timeout, outside any transaction.
-  - A leader-only reconciler retries `pending` and `failed` requests every 10 minutes, and on every pmm-agent reconnect and service change, so a database that was down at add time gets its log later. It also re-reads paths for sources whose `discovery` is set, so a moved file is followed (PMM-15584).
+  - A leader-only reconciler retries `pending` and `failed` requests every 10 minutes, and on every pmm-agent reconnect and service change, so a database that was down at add time gets its log later. It also re-runs discovery for `collecting` requests every hour, and re-reads the paths of sources whose `discovery` is set on every reconnect, so a path changed at runtime (`SET GLOBAL slow_query_log_file`, a new `log_directory`) is followed (PMM-15584).
   - Reuse `slowlog.go:226-282` (relative path resolution against `@@datadir`) and `mongolog.go:241-267` (`getCmdLineOpts`).
 - **Default:** the CLI default is `--collect-logs=error` for MySQL. For PostgreSQL, MongoDB and Valkey it is `--collect-logs` on (one log each). Valkey's path comes from `CONFIG GET logfile`; a relative path is joined with `CONFIG GET dir`, which Valkey reports as its working directory, so no `/proc` access is needed. An empty `logfile` means stdout (journald) with `daemonize no`, and no log at all with `daemonize yes`. Syslog is written in addition to the file (PMM-15724). A remote service gets no source, and the command prints why. `--collect-logs=none` (MySQL) or `--no-collect-logs` (the others) opts out.
 - **Why not guess default paths:**
   - `@@log_error`, PostgreSQL settings and `getCmdLineOpts` are readable with the privileges PMM already documents.
   - A guessed path is wrong whenever two instances share a host.
   - A guessed path is also wrong under custom layouts, and it attributes the wrong file to a service without saying so.
+  - One path is derived rather than read: Debian and Ubuntu run PostgreSQL with `logging_collector=off`, and `pg_ctlcluster` writes `/var/log/postgresql/postgresql-<version>-<cluster>.log`, which no setting reports [I, distro defaults]. pmm-agent derives it from `cluster_name` (`16/main`), which names the instance, and uses it only when `SameInstance` passes (D30).
 - **Old server:** pmm-admin doesn't send `collect_logs` to a server older than the release that adds it, and prints that logs need a newer server (F5).
 
 ### 6.4 Parsers in the UI
@@ -375,6 +378,9 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 | D27 | Log patterns in the explorer | In 3.12.0. `otel.logs` stores `PatternHash`, a hash of the line with its variable parts masked. The masking rules live in `utils/logpatterns`, shared by the qan-api2 migration test and pmm-managed. A rules change ships as a new migration with `MODIFY COLUMN` only; old rows keep their old hash until retention drops them (ADR-04). Amended 2026-11-09: the column and the package ship in 3.12.0; the Patterns API and view (plan 08, Task 7) follow in the next release. | Plans 01, 08 |
 | D28 | Open a log line's query in QAN (`findQuery`) | A follow-up, not planned. Two options are recorded: a new qan-api2 RPC that matches a statement or a MongoDB query ID against `pmm.metrics` (preferred, because qan-api2 owns that table and its LBAC), or pmm-managed reading `pmm.metrics` directly, as the prototype does. | Follow-up |
 | D29 | What the 3.12.0 Technical Preview is | A usable database-logs preview, not only the pipeline. Release criterion: Add a MySQL, PostgreSQL or MongoDB service with `pmm-admin add` on the same host as its database; within a few minutes its log shows in the explorer, filtered to that service, with no log source configured by hand. So plan 04 Tasks 2–5 (discovery on pmm-agent and in pmm-managed, `--collect-logs` on `pmm-admin add mysql\|postgresql\|mongodb`, the database presets) ship in 3.12.0; Tasks 1, 6 and 7 (`pmm-admin add/remove logs`, Valkey, the `auto` preset and suggestions) stay in Phase 1b. | Roadmap, plan 04 |
+| D30 | The release criterion per OS family | Hands-off on Debian and Ubuntu, including PostgreSQL's default `logging_collector=off`, whose log path pmm-agent derives from `cluster_name`. On RHEL-family systems the collector's `pmm-agent` user can't read database logs by default (ADR-08). There the criterion passes when the collection request's reason and `pmm-admin` give the exact command for that database, and the log appears within one retry interval after the user runs it. The collector gets no broader file-read rights. | Roadmap, plan 04 |
+| D31 | Delivery guarantee | At least once. No gaps across collector restarts, PMM Server restarts and ClickHouse outages while the queues have room; a retry can store a record twice. The server collector's export queue is on disk (`file_storage`), like the node collector's. | Plan 01, docs |
+| D32 | Release condition for the 3.12.0 preview | QA (PMM-15578) runs the D29 workflow on a Feature Build, on Ubuntu 24.04 and on one RHEL 9-family OS, with MySQL 8.4, PostgreSQL 17 and MongoDB 7 in their default configuration, and records the packages used. Numbered marker lines are written through each database while ClickHouse is stopped for 10 minutes, and while pmm-agent, the server collector and PMM Server are each restarted. It passes when every marker is in `otel.logs` at least once; duplicates are allowed (D31). On RHEL it runs after the one documented command (D30). | Roadmap, PMM-15578 |
 
 **Interview of 2026-10-10:**
 - Every recommendation above was accepted: D1–D14, and D15–D17 as written.
@@ -393,14 +399,18 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 - D27 was amended: the Patterns view moves to the next release; the column stays.
 - ADR-25 was revised: upgraded installs stay off; new installs are on only if PMM-15592 passes.
 
+**Review of 2026-11-10:**
+- D30–D32 were decided: the release criterion per OS family, at-least-once delivery, and the release condition.
+- ADR-04 gained a `minmax` index on `TimestampTime`, because the explorer opens across all nodes and services.
+
 ---
 
 ## 9. Risks
 
-- **Log volume shares ClickHouse and its disk with QAN on the 8 GB profile.** The cap, the watermark and the separate ClickHouse users with resource limits are release blockers (PMM-15571, PMM-15592). The capacity test includes the `PatternHash` insert cost, and measures QAN, not only the logs pipeline: QAN query latency and ingest under a log burst, under disk pressure up to the watermark, with one ClickHouse replica down (HA), and after a long collector outage drains its queues.
+- **Log volume shares ClickHouse and its disk with QAN on the 8 GB profile.** The cap, the watermark and the separate ClickHouse users with resource limits are release blockers (PMM-15571, PMM-15592). The capacity test includes the `PatternHash` insert cost, and measures QAN, not only the logs pipeline: QAN query latency and ingest under a log burst, under disk pressure up to the watermark, with one ClickHouse replica down (HA), and after a long collector outage drains its queues. It also runs the explorer's opening queries, which span all nodes and services: search, histogram and facets over the last hour and the last 24 hours (ADR-04).
 - **On for new installs** (ADR-25) means a fresh install starts a new process, creates a schema and collects the server's own logs from the start. Upgrades stay off. The capacity test (PMM-15592) decides whether new installs are on.
 - **Discovery doesn't work in Kubernetes sidecars:** the uid is 1002, there is no `journalctl`, and database log directories are not mounted. The operators must mount them (PMM-15577). Until they do, document that `--collect-logs` reports "file not visible" there.
-- **Non-root reads:** on RHEL, MySQL, PostgreSQL and MongoDB logs are not readable by `adm` [I, distro defaults]. Users must add an ACL or group. The `state_reason` and the docs must say how.
+- **Non-root reads:** on RHEL, MySQL, PostgreSQL and MongoDB logs are not readable by the `pmm-agent` user [I, distro defaults]. Users run one command per database, which the collection request's reason and `pmm-admin` print, and the docs list (D30). PostgreSQL keeps its logs inside the data directory (mode 0700) and creates them with mode 0600, so an ACL on the directory alone gives no access; its command also sets `log_file_mode` [I]. Plan 04, Task 2 writes and verifies the commands on RHEL 9.
 - **A schema written by qan-api2 and a collector built from a pinned version can drift.** A CI contract test runs the pinned collector against the migrated schema (PMM-15571).
 - **The work is large.** 21 tickets, plus the three filed under the epic on 2026-10-11, across pmm, grafana, the helm charts and the build. The prototype took 265 commits without review. Follow the roadmap's order, and merge ADRs and the threat model first.
 - **Schedule.** On 2026-11-05 every epic ticket except PMM-15577 was unassigned. 3.12.0 needs plans 01, 02, 03 and 08, and plan 04 Tasks 2–5, merged by its code freeze (D29).

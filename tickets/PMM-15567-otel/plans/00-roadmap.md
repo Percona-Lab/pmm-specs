@@ -4,7 +4,7 @@
 
 **Goal:** Collect database, OS, application and PMM Server logs, and later traces, through OpenTelemetry Collectors, and store them in ClickHouse next to QAN. The work follows epic [PMM-15567](https://perconadev.atlassian.net/browse/PMM-15567).
 
-**Spec:** [`spec.md`](../spec.md), together with PMM-15567 and its child tickets. The analysis records decisions D1–D24: D1–D17 were decided in the interview on 2026-10-10, and D18–D24 in the review on 2026-10-11. If the epic owner or the architects overturn one when reviewing ADR-19, ADR-20 or ADR-24 (the D12 API path), re-plan the tasks that decision lists under "Blocks".
+**Spec:** [`spec.md`](../spec.md), together with PMM-15567 and its child tickets. The analysis records decisions D1–D32: D1–D17 were decided in the interview on 2026-10-10, D18–D24 in the review on 2026-10-11, D25–D28 on 2026-11-05, D29 on 2026-11-09 and D30–D32 on 2026-11-10. If the epic owner or the architects overturn one when reviewing ADR-19, ADR-20 or ADR-24 (the D12 API path), re-plan the tasks that decision lists under "Blocks".
 
 ---
 
@@ -22,9 +22,10 @@
 | [07](07-access-hardening.md) | Access hardening of existing surfaces found during research: LBAC on ClickHouse datasources, on QAN detail endpoints and for service-account tokens; LBAC-relevant labels protected from values parsed out of query comments | file in Jira per `SECURITY.md`; Task 2 merged as PMM-15697 | pmm, grafana | none: independent of 01–06; can start now |
 | [08](08-log-explorer.md) | Native Logs explorer in the PMM UI with peak-ui: the `LogsService` API (search, context, histogram, facets) and a page with filters, histogram, table, details pane, live tail, export and deep links. The only log UI (ADR-23). Task 7 (the Patterns view) follows in the next release (D27) | PMM-15722 | pmm, grafana (Inventory link) | 01 tasks 2–4, 02 |
 
-**Release gating** (D25 and D29, decided on 2026-11-05 and 2026-11-09):
+**Release gating** (D25, D29, D30 and D32, decided on 2026-11-05, 2026-11-09 and 2026-11-10):
 - Phase 0, plans 01, 02, 03 and 08 (Tasks 1–6), and plan 04 Tasks 2–5 make up the **3.12.0** Technical Preview (3.12.0 is due on 14 January 2027). Plan 08 is required: the native explorer is the only log UI (D26, ADR-23).
-- **Release criterion** (D29): Add a MySQL, PostgreSQL or MongoDB service with `pmm-admin add` on the same host as its database; within a few minutes its log shows in the explorer, filtered to that service, with no log source configured by hand. It must also hold when the database is down at add time: once it is back, its log appears within one discovery-retry interval (plan 04, Task 3). QA (PMM-15578) checks it on a Feature Build for each of the three databases.
+- **Release criterion** (D29, D30): Add a MySQL, PostgreSQL or MongoDB service with `pmm-admin add` on the same host as its database; within a few minutes its log shows in the explorer, filtered to that service, with no log source configured by hand. It must also hold when the database is down at add time: once it is back, its log appears within one discovery-retry interval (plan 04, Task 3). On RHEL-family systems, where the collector can't read database logs by default (ADR-08), it passes when the request's reason and `pmm-admin` give the exact command, and the log appears within one retry interval after the user runs it.
+- **Release condition** (D32): QA (PMM-15578) runs that workflow on a Feature Build, on Ubuntu 24.04 and on one RHEL 9-family OS, with MySQL 8.4, PostgreSQL 17 and MongoDB 7 in their default configuration, and records the packages used. Numbered marker lines are written through each database while ClickHouse is stopped for 10 minutes, and while pmm-agent, the server collector and PMM Server are each restarted. It passes when every marker is in `otel.logs` at least once; duplicates are allowed (D31).
 - **Default** (ADR-25): upgraded installs stay off until an Admin turns OTEL on. New installs are on only if the capacity test (PMM-15592) has passed by 3.12.0 code freeze; the build-time constant `OtelOnForNewInstalls` records the result.
 - Plan 04 Tasks 1, 6 and 7 are Phase 1b. Plan 08 Task 7 (the Patterns view) follows in the next release (D27).
 - Plan 05 is Phase 2.
@@ -45,7 +46,8 @@ The QA automation ticket (PMM-15578) adds its tests in percona/pmm-qa against ea
 - the sizing guide;
 - log collection across collector restarts is best-effort: what survives a rotation while the collector is down, and what doesn't (plan 02, Task 6);
 - where database log discovery works: native installs, and pmm-agent sharing the database's filesystem; what `not_local` means (plan 04, Task 2);
-- the non-root read requirements: `adm` and `systemd-journal` groups, and ACLs on RHEL;
+- the non-root read requirements: the `adm` and `systemd-journal` groups, and on RHEL-family systems the one command per database that `pmm-admin` prints (plan 04, Task 2; D30);
+- delivery is at least once: nothing is lost across restarts and ClickHouse outages while the queues have room, and a retry can store a line twice (D31);
 - the `docker run` mounts for journald and database logs;
 - a correction of the 3.8.0/3.8.1 statement that PMM accepts no inbound OTel traffic;
 - downgrade behaviour: the `otel` database and the `log_sources` and `log_parser_presets` tables stay in place, unused; an older server ignores them, and an older client never receives the agent type.
@@ -144,7 +146,7 @@ Plan 08, Task 7 adds `uint64 pattern_hash = 9` and `repeated uint64 exclude_patt
 
 **ClickHouse**
 - Database `otel`, tables `otel.logs` (plan 01), and `otel.otel_traces`, `otel.otel_traces_trace_id_ts`, `otel.otel_traces_service_name` (plan 05).
-- Materialized columns `PmmNodeId` and `PmmServiceId`, `PatternHash` (D27), and `EventId UUID DEFAULT generateUUIDv4()` for stable paging; the last two are outside the sort key. Sort key `(PmmNodeId, PmmServiceId, ServiceName, TimestampTime)`. Daily partitions `toDate(TimestampTime)`.
+- Materialized columns `PmmNodeId` and `PmmServiceId`, `PatternHash` (D27), and `EventId UUID DEFAULT generateUUIDv4()` for stable paging; the last two are outside the sort key. Sort key `(PmmNodeId, PmmServiceId, ServiceName, TimestampTime)`. Daily partitions `toDate(TimestampTime)`. A `minmax` index on `TimestampTime` (ADR-04).
 - Users `otel_writer` (INSERT on `otel.*`) and `otel_reader` (SELECT on `otel.*`), in one `users.d` drop-in: `build/ansible/roles/clickhouse/files/users.d/otel.xml`.
 - Env `PMM_CLICKHOUSE_OTEL_WRITER_USER/PASSWORD` and `PMM_CLICKHOUSE_OTEL_READER_USER/PASSWORD`. Defaults are user = password = the user name, with localhost-only networks, as for the existing `grafana` user. HA overrides them with generated secrets.
 - qan-api2 owns the schema: `migrations.RunOtel(dsn string, templateData map[string]any, isCluster bool, clusterName string) error`, with SQL in `qan-api2/migrations/otel/sql/` and migrations table `otel_schema_migrations`.
@@ -153,6 +155,7 @@ Plan 08, Task 7 adds `uint64 pattern_hash = 9` and `repeated uint64 exclude_patt
 - supervisord program `otel-collector`, log `/srv/logs/otel-collector.log`.
 - Config `/etc/otel-collector/config.yaml`, mode 0600, owned by `pmm`.
 - OTLP/HTTP receiver on `127.0.0.1:4318`; self-metrics on `127.0.0.1:4319`. No gRPC.
+- Export queue on disk: `file_storage` in `/srv/otelcol/server-queue` (D31).
 - Binary `/usr/local/percona/pmm/tools/otelcol`, from the pmm-client tarball (the Nomad precedent).
 - nginx `location /otlp/ → http://127.0.0.1:4318/`.
 

@@ -31,6 +31,7 @@
   - `PmmServiceId LowCardinality(String) MATERIALIZED ResourceAttributes['pmm.service_id']`
 - **Layout:** `PARTITION BY toDate(TimestampTime)`, `ORDER BY (PmmNodeId, PmmServiceId, ServiceName, TimestampTime)`. There is no table TTL (ADR-05).
 - **`service.name` for database sources:** the server program (`mysqld`, `postgres`, `mongod`).
+- **Time index** (decided on 2026-11-10): `INDEX idx_timestamp TimestampTime TYPE minmax GRANULARITY 1`, unless the upstream template already indexes `TimestampTime`. The explorer opens across all nodes and services (ADR-23), and the sort key can't skip granules by time for such queries. Within a part each granule holds a short time range of one service, so the index can.
 - **Stable paging** (decided on 2026-11-09): `otel.logs` gets `EventId UUID DEFAULT generateUUIDv4()`, outside the sort key. ClickHouse doesn't order rows with equal timestamps the same way from one query to the next, so the explorer pages on `(Timestamp, EventId)`.
 - **Patterns** (D27, decided on 2026-11-05):
   - `otel.logs` gets `PatternHash UInt64 MATERIALIZED cityHash64(<masked Body>) CODEC(ZSTD(1))`. It is not in the sort key.
@@ -41,7 +42,7 @@
 
 - The exporter and the Grafana plugin work against the table unchanged.
 - Filtering by PMM node and service, the common case and the shape LBAC needs (ADR-18), reads only the matching ranges.
-- A query for "everything in the last five minutes, across all nodes" reads more granules than with a time-first key. This is acceptable for a per-node and per-service product.
+- A query across all nodes and services, which is how the explorer opens, can't use the sort key for its time range. Daily partitions and the `minmax` index on `TimestampTime` limit what it reads. The capacity test (PMM-15592) measures the explorer's opening queries.
 - A CI contract test runs the pinned collector against the migrated schema, so a collector upgrade can't break inserts unnoticed.
 - `PatternHash` costs about a dozen regex replacements per inserted row. The capacity test (PMM-15592) measures it.
 - `EventId` costs 16 bytes per row.
