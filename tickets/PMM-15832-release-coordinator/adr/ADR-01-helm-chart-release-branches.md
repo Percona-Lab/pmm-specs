@@ -3,13 +3,20 @@
 - Status: Proposed
 - Date: 2026-11-11
 - Tickets: PMM-15832
-- Implemented: not yet. Needs the coordinator steps below; nothing changes in percona/percona-helm-charts.
+- Implemented: not yet. Needs the coordinator steps below and a change to the version check in two percona/percona-helm-charts PR workflows.
 
 ## Context
 
-The `pmm` and `pmm-ha` charts live in percona/percona-helm-charts, a repository PMM shares with the operator teams. CODEOWNERS gives `charts/pmm/` and `charts/pmm-ha/` to `@percona/pmm-review-be`, and everything else to the operator teams. **[V]**
+The `pmm`, `pmm-ha` and `pmm-ha-dependencies` charts live in percona/percona-helm-charts, a repository PMM shares with the operator teams. CODEOWNERS gives `charts/pmm/` and `charts/pmm-ha/` to `@percona/pmm-review-be`, and everything else to the operator teams. **[V]**
 
-**Merging to `main` is releasing.** `release.yaml` runs on every push to `main` and nowhere else. It runs chart-releaser with `skip_existing: true`, which publishes every chart whose `Chart.yaml` `version` has no release yet, to the Helm repository on `gh-pages` and to `oci://ghcr.io/percona/percona-helm-charts`. **[V]** On pull requests, `ct lint --target-branch "$GITHUB_BASE_REF"` checks `charts/pmm`, and chart-testing fails a changed chart whose version was not increased. **[V]** for the call, **[I]** for the version check (chart-testing's default). `pmm-ha` is excluded from `ct lint`, so nothing enforces its bump. **[V]** So every `pmm` chart PR merged to `main` ships a new chart version on merge.
+**Merging to `main` is releasing.** `release.yaml` runs on every push to `main` and nowhere else. **[V]** It runs chart-releaser-action v1.6.0, which packages every chart that changed since the repository's latest release tag, then uploads a GitHub Release and updates the `gh-pages` index for each package whose version has no release yet. `skip_existing: true` skips only that upload. The next step `helm push`es every package to `oci://ghcr.io/percona/percona-helm-charts`, including those skipped. **[V]** from `cr.sh` and `release.yaml`. So a change merged without a bump probably overwrites the existing OCI tag with new content while `gh-pages` keeps serving the old package. **[I]**: GHCR and the job logs need authentication to confirm.
+
+**PRs to `main` must bump.** Two PR workflows run `ct lint` with the version-increment check (chart-testing's default, on by explicit flag for `pmm-ha`):
+
+- `test-chart-lint.yaml` (shared with the operator teams) lints `charts/pmm` with `--target-branch "$GITHUB_BASE_REF"`. **[V]**
+- `pmm-ha-pr-checks.yaml` (PMM's) lints `charts/pmm-ha` and `charts/pmm-ha-dependencies` with `--check-version-increment=true` and no `--target-branch`, so it compares against `main` from `.github/ct.yaml`, whatever the PR's base. **[V]** That lint runs inside the `lint-test` job, before the kind cluster, the `ct install` of both charts and the render checks. None of those have `if: always()`, so a lint failure skips the HA install tests. **[V]**
+
+Neither check is required for merging: #916, #848 and #929 changed `charts/pmm-ha` on `main` without a bump. **[V]** from git history. #916 merged after `pmm-ha` 1.6.0 was released (#909) and before #930 bumped it to 1.6.1, so users got it only with 1.6.1. **[V]** from git history.
 
 During a PMM release cycle, chart work comes in two kinds, and today both can only go to `main`:
 
@@ -29,12 +36,12 @@ The PMM HA Jenkins jobs (`pmm3-ha-eks`, `pmm3-ha-rosa`, `pmm3-ha-helm-upgrade-te
 1. **Status quo: everything goes to `main`, and "later" PRs stay open until release day.** Rejected: nothing is integrated until the release. Held PRs conflict with each other, RC testing cannot run them together, and release day turns into several merges, each one a separate chart release.
 2. **One long-lived `develop` (or `pmm-next`) branch.** Rejected: the name does not say which release a change ships in. When 3.11.0 is in freeze and 3.12.0 work starts, one branch has to serve two releases. The branch never empties, so it needs back-merges from `main` for good, a cost `PMM-HA-GA` already showed.
 3. **Change how the repository publishes**, so that charts ship on a tag or a manual workflow run instead of on merge. Rejected: this changes the release model of the operator charts, which other teams own. `main` would also stop matching what `helm install` gives users.
-4. **Merge to `main` without a version bump, and publish later by bumping.** Rejected: the next unrelated bump would ship everything that had piled up, which is the opposite of choosing.
+4. **Merge to `main` without a version bump, and publish later by bumping.** Rejected: the next unrelated bump would ship everything that had piled up, which is the opposite of choosing. It has already happened: #916 merged to `main` unbumped and reached users only with the next bump. Meanwhile the GHCR copy of the same version probably changed under users while `gh-pages` did not (see Context).
 5. **One branch per PMM release, `release-pmm-X.Y.Z`, with `main` kept as what is published.**
 
 ## Decision
 
-Option 5. These rules apply to `charts/pmm` and `charts/pmm-ha`.
+Option 5. These rules apply to `charts/pmm`, `charts/pmm-ha` and `charts/pmm-ha-dependencies`.
 
 1. **The PR's base branch is the release decision.**
    - Base `main`: the change ships when the PR merges. Use it for chart-only changes that work with the released PMM. Bump the chart's patch `version` (the repository's CONTRIBUTING rule), and leave `appVersion` unchanged.
@@ -45,7 +52,7 @@ Option 5. These rules apply to `charts/pmm` and `charts/pmm-ha`.
    - **Create** it from `main`. The coordinator creates `release-pmm-<next>` when it closes the previous release (step 6, where it already moves leftover tickets to the next Jira version). Anyone may create it earlier, named after the Jira fixVersion.
    - **Keep it current** by merging `main` into it, never by rebasing, because other PRs are based on it. Do this after each merge to `main` that touches `charts/pmm*`, and at the latest before RC testing, so that conflicts are resolved during the cycle and not on release day.
    - **Test it.** The RC runs of the HA and Helm jobs use `HELM_CHART_BRANCH=release-pmm-X.Y.Z` with the RC images, so RC testing covers the chart that will ship.
-   - **Release it.** The coordinator's "Helm PR" in step 4 becomes a commit on the release branch that sets the image tag and `appVersion` to X.Y.Z. The same commit bumps each chart's `version` from its version on `main` at that moment: minor for a PMM minor release, patch for a PMM patch release. The coordinator then opens the PR `release-pmm-X.Y.Z` → `main`. It is merged with a merge commit, as #859 and #927 were, so that each change keeps its own commit on `main`. The timing is unchanged: the PR is merged after the GA tag, once the docs are live.
+   - **Release it.** The coordinator's "Helm PR" in step 4 becomes a commit on the release branch that sets the image tag and `appVersion` to X.Y.Z. The same commit bumps the `version` of `pmm`, `pmm-ha` and every other chart the branch changed (in practice `pmm-ha-dependencies`) from its version on `main` at that moment: minor for a PMM minor release, patch for a PMM patch release. A changed chart left unbumped would get no GitHub Release, probably overwrite its GHCR tag, and fail `pmm-ha-pr-checks` on the release PR. The coordinator then opens the PR `release-pmm-X.Y.Z` → `main`. It is merged with a merge commit, as #859 and #927 were, so that each change keeps its own commit on `main`. The timing is unchanged: the PR is merged after the GA tag, once the docs are live.
    - **Delete** the branch after the merge.
    - A release with no chart changes carries only the version bump, the same PR as today.
 4. **Several release branches can be open at once**, for example `release-pmm-3.10.1` for a patch and `release-pmm-3.11.0` for the next minor. Each one starts from `main`. Once one of them merges, the others merge `main` in. A change goes to the earliest release that needs it, and later releases get it through `main`. See the example below.
@@ -58,13 +65,14 @@ Option 5. These rules apply to `charts/pmm` and `charts/pmm-ha`.
 
 | Where | Change | Owner |
 |---|---|---|
+| percona-helm-charts `pmm-ha-pr-checks.yaml` | In the `ct lint` call, add `--target-branch "$GITHUB_BASE_REF"` and replace `--check-version-increment=true` with `--check-version-increment=${{ github.base_ref == 'main' }}`. **Prerequisite:** otherwise every `pmm-ha` PR to a release branch fails the lint against `main`'s version and skips the HA install tests. | PMM |
+| percona-helm-charts `test-chart-lint.yaml` | Add `--check-version-increment=${{ github.base_ref == 'main' }}` (it already passes `--target-branch "$GITHUB_BASE_REF"`). Otherwise `pmm` PRs to a release branch show a failed lint, as #921 did on `PMM-HA-GA` (run 36879153059, reported in the review of pmm-specs#18). | Shared workflow: agree it with the operator teams |
 | Release coordinator (PMM-15832) | Create the branch, merge `main` into it, make the release commit and PR, delete the branch, run the checks in rule 5 | PMM |
 | RC test runs | Pass the release branch as `HELM_CHART_BRANCH` | PMM QA |
 
-Nothing changes in percona/percona-helm-charts:
+Nothing else changes in percona/percona-helm-charts:
 
-- **Workflows.** The PR workflows that cover `charts/pmm*` (`test-chart-lint`, `test-chart-install`, `pmm-ha-pr-checks`) have no base-branch filter, so they also run on PRs to release branches. **[V]**
-- **Version check.** PRs into a non-`main` branch already merge without a bump. `PMM-HA-GA` took 42 chart changes without one. Most touched only `pmm-ha`, which `ct lint` skips, but #921 also changed `charts/pmm` templates and merged into `PMM-HA-GA` with no `version` change. **[V]** from git history. So the version-increment check does not block a merge; whether it shows red on such a PR was not checked. **[I]** If it does and that gets noisy, skipping it for `release-pmm-*` is a one-line change in the shared `test-chart-lint.yaml`, but it is not a prerequisite.
+- **Workflows.** The PR workflows that cover these charts (`test-chart-lint`, `test-chart-install`, `pmm-ha-pr-checks`) have no base-branch filter, so they also run on PRs to release branches. **[V]** `PMM-HA-GA` passed the `pmm-ha` check only because #968 bumped `pmm-ha` to 1.8.0 on the branch early, while `main` was on 1.6.1. **[V]** A release branch could pass the same way by bumping when it is created. But then the version would be fixed before release time, and two open branches (rule 4) could claim the same version, so this decision bumps only in the release commit.
 - **Branch protection.** Not needed. Changes reach a release branch through reviewed PRs, as they reached `PMM-HA-GA`, and the branch publishes nothing: only the merge to `main` does, through `main`'s existing rules.
 
 ## Example: ArgoCD support during the 3.11.0 cycle
@@ -104,6 +112,6 @@ Cases this does not cover on its own:
 - `main` always equals the published charts.
 - RC testing runs on the exact chart that will ship.
 - Merging `main` into open release branches is a recurring task, given to the coordinator. Conflicts surface during the cycle, not on release day.
-- No change to the shared repository's workflows or settings, so nothing to agree with the operator teams.
+- One line changes in PMM's `pmm-ha-pr-checks.yaml`, and one in the shared `test-chart-lint.yaml`, which the operator teams have to agree to. No repository settings change.
 - Chart patch numbers no longer follow PMM patch numbers (1.10.0, then 1.10.1 for ArgoCD, then 1.11.0 with PMM 3.11.0). `pmm-ha` already does not follow them.
 - Review moves earlier. A PR to a release branch is reviewed as ready to ship, and the release PR to `main` only needs its version bump reviewed.
