@@ -48,7 +48,7 @@ Option 5. These rules apply to `charts/pmm` and `charts/pmm-ha`.
    - **Release it.** The coordinator's "Helm PR" in step 4 becomes a commit on the release branch that sets the image tag and `appVersion` to X.Y.Z. The same commit bumps each chart's `version` from its version on `main` at that moment: minor for a PMM minor release, patch for a PMM patch release. The coordinator then opens the PR `release-pmm-X.Y.Z` → `main`. It is merged with a merge commit, as #859 and #927 were, so that each change keeps its own commit on `main`. The timing is unchanged: the PR is merged after the GA tag, once the docs are live.
    - **Delete** the branch after the merge.
    - A release with no chart changes carries only the version bump, the same PR as today.
-4. **Several release branches can be open at once**, for example `release-pmm-3.10.1` for a patch and `release-pmm-3.11.0` for the next minor. Each one starts from `main`. Once one of them merges, the others merge `main` in.
+4. **Several release branches can be open at once**, for example `release-pmm-3.10.1` for a patch and `release-pmm-3.11.0` for the next minor. Each one starts from `main`. Once one of them merges, the others merge `main` in. A change goes to the earliest release that needs it, and later releases get it through `main`. See the example below.
 5. **Coordinator checks before release** (steps 3–4):
    - List open PRs that touch `charts/pmm*`, and ask about any that target `release-pmm-X.Y.Z` but are still open.
    - Flag PRs merged into the release branch whose Jira ticket has a different fixVersion.
@@ -69,6 +69,32 @@ No other workflow changes. The PR workflows that cover `charts/pmm*` (`test-char
 
 - **Ship now:** PR to `main` that bumps `pmm` from 1.10.0 to 1.10.1, with `appVersion` staying at 3.10.0. Merging it publishes 1.10.1. Later, `main` is merged into `release-pmm-3.11.0`, and the 3.11.0 release publishes 1.11.0 with ArgoCD support included.
 - **Ship with 3.11.0:** the same PR, with base `release-pmm-3.11.0` and no bump. Nothing is published until the 3.11.0 release PR merges and publishes 1.11.0.
+
+## Example: a patch and a minor in flight
+
+PMM 3.10.0 is out, with `pmm` chart 1.10.0. Work on 3.11.0 has started, and a 3.10.1 patch is planned. Both branches start from `main`.
+
+```
+main ───●──────────●───────────●──────────────────────●──▶
+      1.10.0     1.10.1      1.10.2                 1.11.0
+        │       (ArgoCD)       ▲   │                    ▲
+        │                      │   │ merge main         │
+        ├─ release-pmm-3.10.1 ─┘   │                    │
+        │   fix, release commit    ▼                    │
+        └─ release-pmm-3.11.0 ─────●── release commit ──┘
+            feat, feat
+```
+
+1. **Both open.** `release-pmm-3.10.1` takes the chart fixes that ship with the patch. `release-pmm-3.11.0` takes the 3.11.0 work. Chart-only changes such as ArgoCD go straight to `main`. Neither release branch changes `version`, so no two of them claim the same chart version.
+2. **3.10.1 releases.** The release commit sets `appVersion` 3.10.1 and bumps the patch version from what `main` has then (1.10.1 → 1.10.2). The branch merges into `main`, which publishes 1.10.2, and is deleted.
+3. **The coordinator merges `main` into `release-pmm-3.11.0`.** The 3.10.1 fixes and ArgoCD now reach 3.11.0. `Chart.yaml` and the image tag merge cleanly, because the 3.11.0 branch has not touched them. A conflict can only come from two changes to the same template, and it is resolved here, by the author of the 3.11.0 change.
+4. **3.11.0 releases.** The release commit bumps the minor version from `main` (1.10.2 → 1.11.0) and sets `appVersion` 3.11.0.
+
+Cases this does not cover on its own:
+
+- **A fix both releases need.** It goes to `release-pmm-3.10.1` only. If 3.11.0 RC testing needs it before 3.10.1 ships, merge `release-pmm-3.10.1` into `release-pmm-3.11.0`. This is safe, because the patch ships first and its content is a subset of what 3.11.0 ships. Never merge the other way, and never cherry-pick: the same fix would then be two commits that conflict later.
+- **The patch is dropped or overtaken** (3.11.0 is about to ship first). Merge `release-pmm-3.10.1` into `release-pmm-3.11.0` and delete the patch branch. Its fixes ship with 3.11.0.
+- **A patch for an older minor** after the next minor has shipped, for example 3.10.2 after 3.11.0. This is not supported: `main` has moved on, and the published chart line is 1.11.x. Such a branch would have to start from the 3.10.1 release commit and publish from outside `main`. That would need its own decision.
 
 ## Consequences
 
