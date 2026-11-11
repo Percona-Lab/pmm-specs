@@ -3,7 +3,7 @@
 - Status: Proposed
 - Date: 2026-11-11
 - Tickets: PMM-15832
-- Implemented: not yet. Needs one lint change and a branch protection rule in percona/percona-helm-charts, and the coordinator steps below.
+- Implemented: not yet. Needs the coordinator steps below; nothing changes in percona/percona-helm-charts.
 
 ## Context
 
@@ -29,7 +29,7 @@ The PMM HA Jenkins jobs (`pmm3-ha-eks`, `pmm3-ha-rosa`, `pmm3-ha-helm-upgrade-te
 1. **Status quo: everything goes to `main`, and "later" PRs stay open until release day.** Rejected: nothing is integrated until the release. Held PRs conflict with each other, RC testing cannot run them together, and release day turns into several merges, each one a separate chart release.
 2. **One long-lived `develop` (or `pmm-next`) branch.** Rejected: the name does not say which release a change ships in. When 3.11.0 is in freeze and 3.12.0 work starts, one branch has to serve two releases. The branch never empties, so it needs back-merges from `main` for good, a cost `PMM-HA-GA` already showed.
 3. **Change how the repository publishes**, so that charts ship on a tag or a manual workflow run instead of on merge. Rejected: this changes the release model of the operator charts, which other teams own. `main` would also stop matching what `helm install` gives users.
-4. **Merge without a version bump, and publish later by bumping.** Rejected: `ct lint` fails without a bump. Even with that worked around, the next unrelated bump would ship everything that had piled up, which is the opposite of choosing.
+4. **Merge to `main` without a version bump, and publish later by bumping.** Rejected: the next unrelated bump would ship everything that had piled up, which is the opposite of choosing.
 5. **One branch per PMM release, `release-pmm-X.Y.Z`, with `main` kept as what is published.**
 
 ## Decision
@@ -58,12 +58,14 @@ Option 5. These rules apply to `charts/pmm` and `charts/pmm-ha`.
 
 | Where | Change | Owner |
 |---|---|---|
-| percona-helm-charts `test-chart-lint.yaml` | Pass `--check-version-increment=false` when `GITHUB_BASE_REF` matches `release-pmm-*`. Otherwise every PR to a release branch would need a bump relative to that branch. | Shared workflow: agree it with the operator teams |
-| percona-helm-charts branch protection | Add a rule for `release-pmm-*` that requires a PR and a review from `@percona/pmm-review-be` | Repository admin |
 | Release coordinator (PMM-15832) | Create the branch, merge `main` into it, make the release commit and PR, delete the branch, run the checks in rule 5 | PMM |
 | RC test runs | Pass the release branch as `HELM_CHART_BRANCH` | PMM QA |
 
-No other workflow changes. The PR workflows that cover `charts/pmm*` (`test-chart-lint`, `test-chart-install`, `pmm-ha-pr-checks`) have no base-branch filter, so they also run on PRs to release branches. **[V]**
+Nothing changes in percona/percona-helm-charts:
+
+- **Workflows.** The PR workflows that cover `charts/pmm*` (`test-chart-lint`, `test-chart-install`, `pmm-ha-pr-checks`) have no base-branch filter, so they also run on PRs to release branches. **[V]**
+- **Version check.** PRs into a non-`main` branch already merge without a bump. `PMM-HA-GA` took 42 chart changes without one. Most touched only `pmm-ha`, which `ct lint` skips, but #921 also changed `charts/pmm` templates and merged into `PMM-HA-GA` with no `version` change. **[V]** from git history. So the version-increment check does not block a merge; whether it shows red on such a PR was not checked. **[I]** If it does and that gets noisy, skipping it for `release-pmm-*` is a one-line change in the shared `test-chart-lint.yaml`, but it is not a prerequisite.
+- **Branch protection.** Not needed. Changes reach a release branch through reviewed PRs, as they reached `PMM-HA-GA`, and the branch publishes nothing: only the merge to `main` does, through `main`'s existing rules.
 
 ## Example: ArgoCD support during the 3.11.0 cycle
 
@@ -102,6 +104,6 @@ Cases this does not cover on its own:
 - `main` always equals the published charts.
 - RC testing runs on the exact chart that will ship.
 - Merging `main` into open release branches is a recurring task, given to the coordinator. Conflicts surface during the cycle, not on release day.
-- One change to a workflow shared with the operator teams, which they have to agree to.
+- No change to the shared repository's workflows or settings, so nothing to agree with the operator teams.
 - Chart patch numbers no longer follow PMM patch numbers (1.10.0, then 1.10.1 for ArgoCD, then 1.11.0 with PMM 3.11.0). `pmm-ha` already does not follow them.
 - Review moves earlier. A PR to a release branch is reviewed as ready to ship, and the release PR to `main` only needs its version bump reviewed.
