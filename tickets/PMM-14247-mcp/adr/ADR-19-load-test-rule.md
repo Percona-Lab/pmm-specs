@@ -47,3 +47,9 @@ The load is the worst case a client within the caps can produce, not normal use.
 - A cap that slows dashboards noticeably, without failing a rule or restarting a component, passes. The recorded numbers make it visible, and a review can lower the caps on them.
 - How MCP behaves on large fleets is argued from the caps, not measured.
 - The documentation shows no MCP-specific fleet limit.
+- Runs under this rule, on the 4-core, 8 GB server with 53 MySQL services, five callers at the caps for 10 minutes: the run of record with about 2 days of data (2026-11-09) and a confirmation run with about 6 days (2026-11-13). Both passed: no rule-evaluation failure added and no restart. Recorded, in that order:
+  - the dashboard probe's p95: 47 → 170 ms and 50 → 167 ms;
+  - VictoriaMetrics' CPU at most 2.3 and 2.9 cores, its memory at most 1.24 and 1.61 GB;
+  - MCP calls: 13,028 and 9,702, of which 2,481 and 1,360 answered, with an answered p95 of 2.9 s and 6.7 s.
+
+  More data slowed MCP's own calls, not the dashboards.
