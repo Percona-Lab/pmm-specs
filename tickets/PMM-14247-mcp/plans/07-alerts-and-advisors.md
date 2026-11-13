@@ -147,6 +147,6 @@
   - an alert of the folder without Viewer access doesn't reach a Viewer;
   - a Viewer whose Access Role is `{service_name!="B"}` doesn't get B's alerts, and gets the node-only alerts of every host;
 - Add `pmm_alerts` to `TestAccessRoleMatrix`: under every setup, no alert names a service in `H`, and with `service_name` of a service in `H ∩ {mysql-b, pg-b}` the call is `not_found` with the 7-day fixed text.
-- Run plan 05's load test again (plan 05 Task 9 Step 4) with a fourth loop per caller that calls `pmm_alerts`, which reads the 7-day list. The same pass threshold applies.
+- Run plan 05's load test again (plan 05 Task 9 Step 4) with a fourth loop per caller that calls `pmm_alerts`, which reads the 7-day list. The same pass rule applies (ADR-19).
 - Record the results on PMM-15790.
 - The last step of the plan (00): merge `origin/PMM-MCP-GA` into the branch, with `PMM-MCP-GA` behind 0; run a Feature Build from the branch, verify live, and open the PR `PMM-15790 Add pmm_alerts` into `PMM-MCP-GA`.

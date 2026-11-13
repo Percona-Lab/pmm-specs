@@ -3,6 +3,7 @@
 - Status: Accepted (2026-11-05), after the review in pmm-specs#4
 - Date: 2026-10-24, revised 2026-10-26, 2026-10-30, 2026-11-02, 2026-11-06 and 2026-11-07 (the mechanism as built in plan 05; the decision is unchanged)
 - Tickets: PMM-14247, PMM-15790
+- Superseded in part: the fleet-size bullet, by [ADR-19](ADR-19-load-test-rule.md)
 - Implemented: plan 05, [percona/pmm#6291](https://github.com/percona/pmm/pull/6291) (draft until the load test)
 
 ## Context
@@ -58,7 +59,7 @@ Option 3. All metric reads go through the Grafana datasource proxy (ADR-09); vmp
 - **Concurrency.** A cap on metric calls in flight per caller and per pmm-managed replica across all callers; a further call answers `rate_limited` (ADR-05). The QAN tools share it, with a capped window.
 - **Requests to VictoriaMetrics.** One per-replica limit covers every request MCP sends to VictoriaMetrics, from any tool: each `pmm_service_health` query, the caller's service list (ADR-08) and the list behind alerts (ADR-17) included. The limit is half of VictoriaMetrics' limit on concurrent queries, at least 1, so dashboards and alert evaluation keep the other half. That limit is `VM_search_maxConcurrentRequests` when it is set; otherwise it is VictoriaMetrics' own default, `min(2 × CPUs, 16)` (checked in the v1.154.0 source). PMM doesn't set `-search.maxConcurrentRequests` itself. A request waits for a slot until its call's deadline.
 - **Rate per caller.** A token bucket per caller key limits how often metric calls start, as one does for live calls (ADR-05); an empty bucket answers `rate_limited` with `retry_after` (ADR-11).
-- **Fleet size.** The supported fleet size is the one the load test passed with, stated in spec §8 and `mcp.md`.
+- **Fleet size.** The supported fleet size is the one the load test passed with, stated in spec §8 and `mcp.md`. Superseded by [ADR-19](ADR-19-load-test-rule.md): no fleet size of MCP's own.
 
 **Response budget** for `pmm_query_metrics` (values in spec §8):
 - One budget per response, in points and bytes, rather than separate caps per series. The byte budget covers the text and the structured content together.
