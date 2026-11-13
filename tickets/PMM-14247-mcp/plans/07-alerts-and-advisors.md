@@ -80,7 +80,7 @@
 - `type alertRow struct { Name, Severity string (both Untrusted); Labels map[string]string (Untrusted); Summary, Description string (both Untrusted); StartsAt time.Time; Silenced bool; SilencedUntil *time.Time; PMMURL string }`, snake_case JSON. `Labels` is `json:"labels,omitempty"` and leaves out labels that start with `__`. `PMMURL` is `<base>graph/alerting/grafana/<rule uid>/view`, the pattern PMM's UI uses (`AlertStatusTable.utils.ts:85`), or `<base>graph/alerting/list` when there is no rule UID.
 - `type alertsResult struct { Alerts []alertRow; Page page; Note string }` with `render()`: the note, then one line per alert (severity, name, service, node, start time, silence end, link) with its summary below, then the paging marker. `Note` is always "Currently firing alerts only; resolved alerts are not shown."
 - Filters are exact. `service_id`, `service_name` and `node_name` compare labels; `severity` compares the `severity` label, case-insensitively. An alert without the label never matches a filter on it.
-- Order: severity `critical`, `error`, `warning`, then other values alphabetically; then `starts_at`, newest first; then name.
+- Order: severity `emergency`, `alert`, `critical`, `error`, `warning` (PMM's scale), then other values alphabetically; then `starts_at`, newest first; then name.
 
 **Steps:**
 - Write `TestKeepAlert`, a table:
