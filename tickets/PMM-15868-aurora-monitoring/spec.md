@@ -51,6 +51,7 @@ Changes from the design as first reviewed, and why.
 | 14 | A role signal for Aurora PostgreSQL 13 and older stays out of Release 2. | Not needed for the details view; the new `aurora_replica_status()` series could provide it later (see Known limitations). |
 | 15 | Release 2 also registers the dashboard in `dashboards/pmm-app/src/plugin.json`, and Oldest Transaction ID Age and Statement Latency show two decimals. | The repository's dashboard guide requires the registration, which the plan missed; with no decimals, 1.5 billion displayed as "2 Bil" (final review), and four decimals printed latencies like 800.0000 µs (screenshot review). |
 | 16 | The pmm-qa branches of both releases merge pmm-qa `main`. | Release 1's Feature Build turned 9 e2e jobs red because its test branch predated the native-Inventory test update (percona/pmm-qa#1613). |
+| 17 | MySQL Amazon Aurora Details has no Serverless capacity row. | Aurora MySQL exposes no status variable for ACUs, so the row's `mysql_global_status_aurora_serverless_*_acu` series never exist (code review). Serverless v2 capacity is only in CloudWatch (`ServerlessDatabaseCapacity`, `ACUUtilization`, per instance), which rds_exporter doesn't collect; a follow-up if wanted. |
 
 ## The Problem
 
@@ -74,7 +75,7 @@ Checked on 2026-11-04 on a PMM 3.10.1 dev build, against two Aurora MySQL 3 inst
 
 Release 1:
 
-1.  **Aurora details work when opened normally.** Opened from the menu, search or the Amazon RDS page with no URL variables, MySQL Amazon Aurora Details lists every Aurora MySQL service, and its panels have data except rows labelled as needing a reader, a feature in use, or Serverless.
+1.  **Aurora details work when opened normally.** Opened from the menu, search or the Amazon RDS page with no URL variables, MySQL Amazon Aurora Details lists every Aurora MySQL service, and its panels have data except rows labelled as needing a replica or a feature in use.
 2.  **One view of every RDS and Aurora database.** The Amazon RDS page lists every MySQL and PostgreSQL service on a `remote_rds` Node, grouped by Aurora cluster, Multi-AZ DB cluster or replication group, including instances added before the upgrade, with no label edits.
     An instance without AWS details (an older pmm-client, or a failed AWS lookup) appears under "AWS info unavailable" instead of disappearing.
 3.  **Health at a glance.** For each group and instance: exporters connected, writers or role, firing alerts, throughput and storage.
@@ -255,7 +256,7 @@ Same file, uid (`mysql-amazonaurora`), variable names and panel ids, so links an
 
 *   **Variables:** `service_name` and `node_name` read `{__name__=~"mysql_global_status_auroradb_(commits|thread_deadlocks)"}`, which exists on Aurora MySQL 3 and 2. Variables no panel used are removed.
 *   **Panel fixes:** Statement Latency drops the query-cache term, fixes the SELECT expression and shows 0 for an idle statement type (PMM-6655). Problems keeps `aurora_reserved_mem_exceeded_incidents` and replaces the two counters Aurora 3 dropped with CloudWatch Deadlocks and BlockedTransactions. Memory Used replaces `aurora_dict_sys_mem_size` with temp-table RAM. Special Command Counters shows one line per command. The six panels are now `timeseries`.
-*   **New rows:** "Cache and local storage" (buffer cache hit ratio, free local storage, cluster volume used); "Instance resources (CloudWatch)", expanded (CPU utilization, freeable memory, connections, IOPS, throughput, network throughput, disk queue depth, swap); collapsed "Replication (needs a reader)", "Write forwarding", "Parallel query" and "Serverless capacity (Serverless only)".
+*   **New rows:** "Cache and local storage" (buffer cache hit ratio, free local storage, cluster volume used); "Instance resources (CloudWatch)", expanded (CPU utilization, freeable memory, connections, IOPS, throughput, network throughput, disk queue depth, swap); collapsed "Replication (replicas only)", "Write forwarding" and "Parallel query".
 *   A dashboard link opens the Amazon RDS page.
 
 ### 6. Generic panels on RDS nodes
