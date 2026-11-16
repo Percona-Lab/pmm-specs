@@ -52,6 +52,7 @@ Changes from the design as first reviewed, and why.
 | 15 | Release 2 also registers the dashboard in `dashboards/pmm-app/src/plugin.json`, and Oldest Transaction ID Age and Statement Latency show two decimals. | The repository's dashboard guide requires the registration, which the plan missed; with no decimals, 1.5 billion displayed as "2 Bil" (final review), and four decimals printed latencies like 800.0000 µs (screenshot review). |
 | 16 | The pmm-qa branches of both releases merge pmm-qa `main`. | Release 1's Feature Build turned 9 e2e jobs red because its test branch predated the native-Inventory test update (percona/pmm-qa#1613). |
 | 17 | MySQL Amazon Aurora Details has no Serverless capacity row. | Aurora MySQL exposes no status variable for ACUs, so the row's `mysql_global_status_aurora_serverless_*_acu` series never exist (code review). Serverless v2 capacity is only in CloudWatch (`ServerlessDatabaseCapacity`, `ACUUtilization`, per instance), which rds_exporter doesn't collect; a follow-up if wanted. |
+| 18 | Under a search, a group's alert badge and its **Show all** link cover all of the group's instances, including those the search hides. | The badge counted the whole group while the link covered only the matching instances, so the link could list fewer alerts than the badge (code review). |
 
 ## The Problem
 
@@ -111,7 +112,6 @@ The design questions are settled: D1 (info series on `/enhanced`), D3 (the key i
 Known limitations and follow-ups:
 
 *   **Show all in Alert groups** filters on `node_name` only, so an alert that names an instance only through `service_name` is counted on the page but not listed there.
-*   Under a search, a group's alert badge also counts alerts of the instances the search hides.
 *   Aurora MySQL added with `pmm-admin` gets no Deadlocks line in Problems: the status counter Aurora 3 dropped was replaced by CloudWatch `Deadlocks`, which needs rds_exporter.
 *   The new no-data text on the InnoDB data I/O panels mentions Aurora also for non-Aurora instances that have no data.
 *   Aurora PostgreSQL 13 and older shows role "unknown": `pg_settings_in_hot_standby` needs PostgreSQL 14, and the replication collectors are skipped on Aurora.
