@@ -2,17 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Every node runs at most one pmm-agent-managed OpenTelemetry Collector, as the non-root `pmm-agent` user. It ships the node's log sources to PMM Server through a disk-backed queue, tags each record with PMM identity, and survives restarts and server outages without losing lines. PMM Server's own logs flow through the same path.
+**Goal:** Every node runs at most one pmm-agent-managed OpenTelemetry Collector, under pmm-agent's own user (D35, ADR-26). It ships the node's log sources to PMM Server through a disk-backed queue, tags each record with PMM identity, and survives restarts and server outages without losing lines. PMM Server's own logs flow through the same path.
 
 **Architecture:**
 - pmm-managed stores log sources and parser presets in PostgreSQL. It builds a typed `OtelCollectorParams` for each collector and sends it in `SetStateRequest`.
-- pmm-agent turns those params into collector YAML (typed structs, no templates). It enforces its local allow-list, drops privileges, runs the binary, and reports a status for each source.
+- pmm-agent turns those params into collector YAML (typed structs, no templates). It enforces its local allow-list, runs the binary under its own user, and reports a status for each source.
 - Built-in presets ship as embedded YAML and are upserted at startup.
 
 **Tech Stack:** Go (pmm-managed, pmm-agent, pmm-admin), protobuf, reform/PostgreSQL, OpenTelemetry Collector (filelog, journald, otlphttp, file_storage), the stanza library (preset tests only, in a separate Go module).
 
 **Spec:**
-- [analysis](../spec.md): §3, §5 F1–F7, F9, F12, F14, §6.1, §6.2, §6.6, §6.7, decisions D3, D10, D11, D13;
+- [analysis](../spec.md): §3, §5 F1–F7, F9, F12, F14, §6.1, §6.2, §6.6, §6.7, decisions D10, D11, D13, D35;
 - PMM-15572, PMM-15574 (backend), PMM-15575, PMM-15577 (client), PMM-15593 (scrape);
 - the [roadmap](00-roadmap.md) for the shared names.
 
@@ -23,7 +23,7 @@
 The roadmap's **Shared contract** and **Global constraints** apply. In addition:
 
 **From PMM-15572:**
-- The collector process runs as `pmm-agent`, never as root.
+- The collector process runs under pmm-agent's own user, as the exporters do (D35, ADR-26). PMM-15572 asks for "never as root"; D35 amends that, and the ticket is updated after approval.
 - No OTLP port is open in this plan; the node traces receiver comes in plan 05.
 - Every record carries `pmm.node_id` and `pmm.agent_id`. Service-bound sources add `pmm.service_id` and `pmm.service_name`. App sources add `service.name`.
 - A source bound to a service on another node is rejected.
@@ -405,7 +405,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   - **`filelog/<id>`:** `include: [path, path + ".*", path + "-*"]`, which match rotated names such as `error.log.1`, `mysqld.log-20261109` and `mongod.log.2026-11-09T00-00-00`; `exclude: [path + "*.gz", path + "*.xz", path + "*.bz2", path + "*.zst"]` (a renamed file keeps being read from its checkpoint; compressed rotations are skipped), `include_file_path: true`, `include_file_path_resolved: true`, `start_at: end`, `storage: file_storage`, `max_log_size: 65536`, `operators` = the parsed `OperatorsYaml`.
   - **`journald/<id>`:** `units`, `start_at: end`, `storage: file_storage`, `operators`.
   - **`transform/guard-<id>`** (file sources only), `log_statements` with context `log`, both under the condition `not IsMatch(attributes["log.file.path_resolved"], "<roots>")`: `keep_keys(attributes, ["log.file.path", "log.file.path_resolved"])`, then `set(body, "[blocked by pmm-agent: the file resolves outside the allowed directories]")`, then clear the severity text and the trace and span IDs. Resource attributes need no clearing: no preset may write them (Task 2's `CheckCustom`).
-    - It stops content leaving the node; it doesn't stop the read. The boundary for reads stays the `pmm-agent` user's file permissions (ADR-08), and the threat model (PMM-15591) records the guard as an egress control.
+    - It stops content leaving the node; it doesn't stop the read. While pmm-agent runs as root, so does the collector (ADR-26), and the allow-list and this guard are the only limits on what it reads and ships. The threat model (PMM-15591) records the guard as an egress control.
     - `<roots>` is `^(` + each allowed root through `regexp.QuoteMeta`, joined with `|`, + `)/`. A discovered source has one root: the resolved directory of its path. Any other source has the resolved allow-list entries.
     - It covers files that the collector opens after `CheckAllowed` ran: a glob or a rotation pattern can match a symlink created later (ADR-08 resolves symlinks before the check).
     - Check that the pinned filelog receiver supports `include_file_path_resolved`, and record the result.
@@ -417,7 +417,7 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
     - `headers.Authorization`: `Basic base64(user:pass)`, and only when not local;
     - `tls.insecure_skip_verify: InsecureTLS`, `compression: gzip`;
     - `retry_on_failure: {enabled: true, initial_interval: 5s, max_interval: 30s, max_elapsed_time: 0}`;
-    - `sending_queue: {enabled: true, storage: file_storage, sizer: bytes, queue_size: SendingQueueMib·2²⁰}`. Check that the pinned collector supports the `bytes` sizer; if it doesn't, use `sizer: requests` with `queue_size: 5000`, and record the choice.
+    - `sending_queue: {enabled: true, storage: file_storage, sizer: bytes, queue_size: SendingQueueMib·2²⁰}`. Check that the pinned collector supports the `bytes` sizer; if it doesn't, use `sizer: requests` with `queue_size: SendingQueueMib / 8` (128 at the default), because each request holds up to 8 MiB, and record the choice.
   - **`extensions.file_storage`:** `directory: <DataDir>/storage`, `create_directory: true`, `compaction.on_start: true`.
   - **`service.telemetry.metrics`:** a pull reader on `127.0.0.1:<TelemetryPort>`.
   - **No `receivers.otlp`.**
@@ -471,59 +471,35 @@ The roadmap's **Shared contract** and **Global constraints** apply. In addition:
   git commit -s -m "PMM-15572 Render collector config on pmm-agent"
   ```
 
-### Task 7: Run the collector as `pmm-agent`
+### Task 7: Run the collector under pmm-agent's user
 
 **Files:**
 - Create:
-  - `agent/agents/otelcollector/credential.go`
-  - `agent/agents/otelcollector/credential_test.go`
   - `agent/agents/otelcollector/readable.go`
+  - `agent/agents/otelcollector/readable_test.go`
 - Modify:
-  - `agent/agents/process/process.go`:
-    - a `Credential *syscall.Credential` field in `Params` (:75-87);
-    - in `toStarting` (:150-178), set `p.cmd.SysProcAttr.Credential` **after** `pdeathsig.Set`, so `Pdeathsig` is kept.
   - `agent/agents/supervisor/supervisor.go`:
-    - a `case inventoryv1.AgentType_AGENT_TYPE_OTEL_COLLECTOR` in `processParams` (:1118-1219). It creates each missing directory down to `OtelCollectorDataDir` with mode 0755, then `<agentID>` with mode 0700, owned by the credential. Not one `os.MkdirAll` with 0700: it gives every level it creates the same mode, so a root pmm-agent would leave `data/otelcol` as root:root 0700, and the collector, running as `pmm-agent`, couldn't reach its config. The packages don't create `/usr/local/percona/pmm/data`. If an existing parent isn't searchable by the credential, the agent status is `INITIALIZATION_ERROR`, naming that directory. Then it calls `Render`, writes the YAML to `config.yaml` there with mode 0600, chowns that directory tree to the credential, and sets `Path = cfg.Paths.OtelCollector`, `Args = ["--config=<file>"]`, `Env = ["PATH=/usr/bin:/bin"]` and `Credential`;
+    - a `case inventoryv1.AgentType_AGENT_TYPE_OTEL_COLLECTOR` in `processParams` (:1118-1219). It creates `<OtelCollectorDataDir>/<agentID>` with mode 0700, calls `Render`, writes the YAML to `config.yaml` there with mode 0600, and sets `Path = cfg.Paths.OtelCollector`, `Args = ["--config=<file>"]` and `Env = ["PATH=/usr/bin:/bin"]`. The process runs under pmm-agent's own user, as the exporters do (D35, ADR-26): no credential switch;
     - it assigns `RenderInput.TelemetryPort` from the supervisor's port range, the way exporters get theirs, and reports it as the agent's `listen_port` (Task 9 scrapes it);
     - `version()` (:1262-1283) with a regex for `otelcol version`, in `deps.go:26`.
-  - `build/packages/rpm/client/pmm-client.spec` and `build/packages/deb/postinst`: after the user is created, `usermod -aG systemd-journal pmm-agent` when `getent group systemd-journal` succeeds, and `-aG adm` on Debian/Ubuntu when `adm` exists.
+  - `build/packages/rpm/client/pmm-client.spec` and `build/packages/deb/postinst`: after the user is created, `usermod -aG systemd-journal pmm-agent` when `getent group systemd-journal` succeeds, and `-aG adm` on Debian/Ubuntu when `adm` exists, for when pmm-agent runs as that user. A root pmm-agent doesn't need them.
 
 **Interfaces:**
 - Consumes `Render` (Task 6) and `config.Paths` and `LogSources` (Task 5).
-- Produces:
-  - `func CollectorCredential(euid int, lookup func(string) (*user.User, error), groupIDs func(*user.User) ([]string, error)) (*syscall.Credential, error)`. It returns `nil, nil` when `euid != 0`. As root, it returns the `pmm-agent` uid, gid and supplementary groups. If the user is missing, it returns an error, which becomes the agent status `INITIALIZATION_ERROR` with the message "user pmm-agent not found; the collector does not run as root".
-  - `func ReadableAs(cred *syscall.Credential) func(path string) error`. It checks the owner, group and other read bits on the file (or, for a glob, its directory), and the execute bit on each parent directory. When the file or a parent has a `system.posix_acl_access` xattr, the check is skipped.
+- Produces `func Readable(path string) error`. It opens the file read-only and closes it; for a pattern, it opens the pattern's directory. pmm-agent and the collector share a user, so the answer is what the collector can read. A missing file gives an error that wraps `fs.ErrNotExist`, which `Render` reports as `NOT_FOUND`; any other error is `NOT_READABLE`. It fills `RenderInput.Readable`, and plan 04's discovery uses it.
 
 - [ ] **Step 1: Write the failing tests.**
-  ```go
-  func TestCollectorCredential(t *testing.T) {
-      lookup := func(string) (*user.User, error) { return &user.User{Uid: "998", Gid: "997", Username: "pmm-agent"}, nil }
-      groups := func(*user.User) ([]string, error) { return []string{"997", "4", "190"}, nil }
-      c, err := CollectorCredential(0, lookup, groups)
-      require.NoError(t, err)
-      assert.Equal(t, &syscall.Credential{Uid: 998, Gid: 997, Groups: []uint32{997, 4, 190}}, c)
-
-      c, err = CollectorCredential(1002, lookup, groups)
-      require.NoError(t, err)
-      assert.Nil(t, c)
-
-      _, err = CollectorCredential(0, func(string) (*user.User, error) { return nil, user.UnknownUserError("pmm-agent") }, groups)
-      require.ErrorContains(t, err, "does not run as root")
-  }
-  ```
-  Also write:
-  - `TestReadableAs`, on temp files with modes 0600, 0640 and 0644 and a fake credential.
-  - `TestProcessParamsOtelCollectorUnsearchableParent`: an existing `OtelCollectorDataDir` with mode 0700, owned by another user, gives `INITIALIZATION_ERROR` naming it.
-  - In the supervisor tests, `TestProcessParamsOtelCollector`: the data directory is created, every directory above the config file has mode 0755 (searchable by the collector's uid) and the `<agentID>` directory 0700, the config file exists with mode 0600, `Args[0]` starts with `--config=`, `Env` is `["PATH=/usr/bin:/bin"]`, and the rendered config's telemetry endpoint uses the assigned port.
-- [ ] **Step 2: Run them.** `cd agent && go test ./agents/otelcollector/ ./agents/supervisor/ ./agents/process/`. Expected: FAIL.
+  - `TestReadable`: a readable file gives nil; a missing file wraps `fs.ErrNotExist`; a file with mode 0000 gives an error (skipped when the test runs as root); a pattern whose directory exists gives nil.
+  - In the supervisor tests, `TestProcessParamsOtelCollector`: the `<agentID>` directory has mode 0700, the config file exists with mode 0600, `Args[0]` starts with `--config=`, `Env` is `["PATH=/usr/bin:/bin"]`, and the rendered config's telemetry endpoint uses the assigned port.
+- [ ] **Step 2: Run them.** `cd agent && go test ./agents/otelcollector/ ./agents/supervisor/`. Expected: FAIL.
 - [ ] **Step 3: Implement** everything listed above, including the package scripts.
 - [ ] **Step 4: Run them again.** Same command, then `make prepare-pr`. Expected: PASS. Then on a CHAOS VM with a Feature Build (`pmm-qa:chaos-docker-provisioning`):
-  - `ps -o user= -C otelcol` prints `pmm-agent`.
+  - `ps -o user= -C otelcol` prints the same user as `ps -o user= -C pmm-agent` (`root` on a packaged install).
   - `ss -ltnp | grep otelcol` shows only `127.0.0.1:<listen_port>`.
 - [ ] **Step 5: Commit.**
   ```bash
   git add agent build/packages
-  git commit -s -m "PMM-15572 Run the collector as pmm-agent"
+  git commit -s -m "PMM-15572 Run the collector under pmm-agent"
   ```
 
 ### Task 7b: Report a state for each log source

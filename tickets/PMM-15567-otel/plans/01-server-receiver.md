@@ -77,7 +77,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
     1. `go install go.opentelemetry.io/collector/cmd/builder@v${otelcol_builder_version}`
     2. `builder --config build/otelcol/manifest.yaml`
   - Copy `_build/otelcol` into the tarball's `tools/`. Add `otelcol` to the `pt-*|nomad` case in `install_tarball`, and to the RPM and DEB file lists.
-- [ ] **Step 4: Add CI.** `.github/workflows/otelcol.yml`, on changes to `build/otelcol/**`, builds the binary for amd64 and runs `check-components.sh`. Expected: PASS. Record the binary size in the PR description (PMM-15577 AC).
+- [ ] **Step 4: Add CI.** `.github/workflows/otelcol.yml`, on changes to `build/otelcol/**`, builds the binary for amd64 and runs `check-components.sh`. Expected: PASS. Record the binary size in the PR description (PMM-15577 AC). It also runs `otelcol validate` on a config whose exporter `sending_queue` uses `sizer: bytes`: the server queue needs it (Task 5), so a release without it isn't pinned.
 - [ ] **Step 5: Commit.**
   ```bash
   git add build/otelcol build/scripts build/packages .github/workflows/otelcol.yml
@@ -197,7 +197,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 
 **Files:**
 - Modify:
-  - `api/server/v1/server.proto` (`OtelSettings` as `Settings.otel = 23`; `ChangeOtelSettings` as `ChangeSettingsRequest.otel = 17`. Field 22 is `om_enabled` and 16 is `enable_om` (PMM-15299); 15 is reserved)
+  - `api/server/v1/server.proto` (`OtelSettings` as `Settings.otel` and `ChangeOtelSettings` as `ChangeSettingsRequest.otel`, at the next free numbers at merge time: 27 and 21 on `main` at `ba6b74a41c`, where `Settings` uses up to 26 and `ChangeSettingsRequest` up to 20)
   - `managed/models/settings.go` (defaults consts ~:26-37, struct ~:63-126, `IsOtelCollectorEnabled`, `fillDefaults` ~:219-251)
   - `managed/models/database.go` (`SetupDB`, ~:1600-1660): when the database started at schema version 0, store `otel.collector_enabled = OtelOnForNewInstalls` (ADR-25)
   - `managed/models/settings_helpers.go` (`ChangeSettingsParams` ~:54-108, `UpdateSettings`, `ValidateSettings`)
@@ -277,7 +277,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
 
 **Interfaces:**
 - Produces:
-  - `type ServerConfigParams struct { ClickHouseAddr, Database, Username, Password string; ReceiverEndpoint, TelemetryEndpoint string; QueueDir string }`. `QueueDir` is `/srv/otelcol/server-queue` in production; tests use a temp directory.
+  - `type ServerConfigParams struct { ClickHouseAddr, Database, Username, Password string; ReceiverEndpoint, TelemetryEndpoint string; QueueDir string; QueueBytes int64 }`. `QueueDir` is `/srv/otelcol/server-queue` in production; tests use a temp directory. `QueueBytes` is a tenth of `max_disk_gb` (1 GiB at the default 10 GB), provisional until PMM-15592; a change of `max_disk_gb` re-renders the config.
   - `func ServerCollectorConfig(p ServerConfigParams) ([]byte, error)`, which marshals typed structs with `gopkg.in/yaml.v3`. Keys are sorted, so the output is deterministic.
   - `func escapeConfmap(s string) string`, which replaces `$` with `$$`. It is applied to every string that comes from env or settings.
 - Config content:
@@ -291,9 +291,10 @@ These inputs and conditions are implied by the spec but no task naturally tests 
     - `replace_pattern(body, "(?i)(\"?(?:password|passwd|pwd|secret|token|api_key)\"?\\s*[:=]\\s*\"?)[^\\s\",&;]+", "$$1[REDACTED]")`, for key/value secrets, JSON included;
     - `replace_pattern(body, "(://[^:/@\\s]+:)[^@/\\s]+@", "$$1[REDACTED]@")`, for credentials in URLs and connection strings;
     - `replace_pattern(body, "(?i)(identified\\s+(?:with\\s+\\S+\\s+)?by\\s+')[^']*", "$$1[REDACTED]")`, for MySQL `IDENTIFIED BY '…'`;
-    - the same seven as `replace_all_patterns(attributes, "value", …)` and `replace_all_patterns(resource.attributes, "value", …)`.
+    - `replace_pattern(body, "(?i)(\\bpassword\\s+')[^']*", "$$1[REDACTED]")`, for PostgreSQL `CREATE ROLE` and `ALTER ROLE … PASSWORD '…'`, which the default `log_min_error_statement = error` writes to the log when the statement fails [I];
+    - the same eight as `replace_all_patterns(attributes, "value", …)` and `replace_all_patterns(resource.attributes, "value", …)`.
     - The regexes above are a starting point; Task 8's corpus decides them.
-  - `exporters.clickhouse`: `endpoint: tcp://<addr>?dial_timeout=10s`, `database: otel`, `username`, `password`, `logs_table_name: logs`, `create_schema: false`, `timeout: 10s`, `retry_on_failure` (5s/30s/300s), `sending_queue: {enabled: true, queue_size: 1000, storage: file_storage}`. The queue is on disk, so a restart of the collector or of PMM Server keeps what it holds (D31).
+  - `exporters.clickhouse`: `endpoint: tcp://<addr>?dial_timeout=10s`, `database: otel`, `username`, `password`, `logs_table_name: logs`, `create_schema: false`, `timeout: 10s`, `retry_on_failure` (5s/30s/300s), `sending_queue: {enabled: true, storage: file_storage, sizer: bytes, queue_size: QueueBytes}`. The queue is on disk, so a restart of the collector or of PMM Server keeps what it holds (D31). It is sized in bytes: counted in requests, 1000 requests of up to 10,000 records each would have no byte limit, on the volume PostgreSQL, VictoriaMetrics and ClickHouse share, exactly when every node's backlog drains here.
   - `extensions.file_storage`: `directory: QueueDir`, `create_directory: true`, `compaction.on_start: true`; listed in `service.extensions`. In HA each replica has its own, on its `/srv` volume.
   - `service.telemetry.metrics`: a pull reader on `TelemetryEndpoint` (`127.0.0.1:4319`), level `normal`.
   - `service.pipelines.logs: [otlp] → [memory_limiter, transform/redact, batch] → [clickhouse]`.
@@ -509,7 +510,7 @@ These inputs and conditions are implied by the spec but no task naturally tests 
   }
   ```
   Also send every line of `testdata/redaction-corpus.txt`. It has two sections:
-  - `# must-mask`: JSON `"password": "…"`, MySQL, PostgreSQL and MongoDB connection strings with credentials, `https://user:pass@host`, `PGPASSWORD=…`, `--password=…`, `IDENTIFIED BY '…'`, bearer and `glsa_` tokens. Each line names its secret; the test fails if any secret is stored.
+  - `# must-mask`: JSON `"password": "…"`, MySQL, PostgreSQL and MongoDB connection strings with credentials, `https://user:pass@host`, `PGPASSWORD=…`, `--password=…`, `IDENTIFIED BY '…'`, PostgreSQL `ALTER ROLE … PASSWORD '…'` and `CREATE ROLE … ENCRYPTED PASSWORD '…'`, bearer and `glsa_` tokens. Each line names its secret; the test fails if any secret is stored.
   - `# known-gaps`: personal data and free-text secrets that the patterns don't cover. The test asserts they pass through unmasked, so the docs can list exactly what redaction misses.
 
 - [ ] **Step 2: Run it locally against a collector without the redaction processor**: temporarily drop `transform/redact` from the pipeline in a scratch copy of the config. Expected: FAIL on `NotContains`. This proves the test can catch a missing redaction.

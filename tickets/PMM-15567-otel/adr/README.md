@@ -49,3 +49,4 @@ ADR-01 to ADR-14 record the OpenTelemetry decisions of the 24 Sep 2026 architect
 | [23](ADR-23-explorer-only-read-path.md) | Logs are read through the PMM explorer only | Proposed |
 | [24](ADR-24-otel-api-domain.md) | One API domain for OpenTelemetry management | Proposed |
 | [25](ADR-25-default-fallback.md) | Default state in 3.12.0 | Proposed |
+| [26](ADR-26-collector-user.md) | The collector's user | Proposed; supersedes ADR-08 once accepted |

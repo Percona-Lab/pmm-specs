@@ -6,8 +6,8 @@
 
 | Path | Content |
 |---|---|
-| [spec.md](spec.md) | Analysis and design, decisions D1–D34 |
+| [spec.md](spec.md) | Analysis and design, decisions D1–D35 |
 | [plans/00-roadmap.md](plans/00-roadmap.md) | Roadmap and shared contract for plans 01–08 |
-| [adr/](adr/README.md) | ADR-01..14, ADR-17..25 |
+| [adr/](adr/README.md) | ADR-01..14, ADR-17..26 |
 
 Moved from percona/pmm branches `PMM-15567-otel-implementation-plan` (`4efccf65c`) and `PMM-15590-otel-adrs` (`5dacf6703`); earlier history is there.

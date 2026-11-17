@@ -4,7 +4,7 @@
 
 **Goal:** Collect database, OS, application and PMM Server logs, and later traces, through OpenTelemetry Collectors, and store them in ClickHouse next to QAN. The work follows epic [PMM-15567](https://perconadev.atlassian.net/browse/PMM-15567).
 
-**Spec:** [`spec.md`](../spec.md), together with PMM-15567 and its child tickets. The analysis records decisions D1–D34: D1–D17 were decided in the interview on 2026-10-10, D18–D24 in the review on 2026-10-11, D25–D28 on 2026-11-05, D29 on 2026-11-09 and D30–D34 on 2026-11-10. If the epic owner or the architects overturn one when reviewing ADR-19, ADR-20 or ADR-24 (the D12 API path), re-plan the tasks that decision lists under "Blocks".
+**Spec:** [`spec.md`](../spec.md), together with PMM-15567 and its child tickets. The analysis records decisions D1–D35: D1–D17 were decided in the interview on 2026-10-10, D18–D24 in the review on 2026-10-11, D25–D28 on 2026-11-05, D29 on 2026-11-09, D30–D34 on 2026-11-10 and D35 on 2026-11-17. If the epic owner or the architects overturn one when reviewing ADR-19, ADR-20 or ADR-24 (the D12 API path), re-plan the tasks that decision lists under "Blocks".
 
 ---
 
@@ -12,9 +12,9 @@
 
 | Plan | Scope | Tickets | Repos | Depends on |
 |---|---|---|---|---|
-| (Phase 0) | ADRs in [`adr/`](../adr/), threat model, capacity harness. These are not code plans; they run alongside plan 01. The ADRs are drafted there: ADR-01..14, plus ADR-17..25. Merge the ADRs and get the threat-model sign-off before plans 01 and 02 merge. | PMM-15590, 15591, 15592 | pmm | — |
+| (Phase 0) | ADRs in [`adr/`](../adr/), threat model, capacity harness. These are not code plans; they run alongside plan 01. The ADRs are drafted there: ADR-01..14, plus ADR-17..26. Merge the ADRs and get the threat-model sign-off before plans 01 and 02 merge. | PMM-15590, 15591, 15592 | pmm | — |
 | [01](01-server-receiver.md) | OCB collector build; server receiver; `otel` schema; ClickHouse users; settings and `PMM_ENABLE_OTEL`; `/otlp/`; redaction; retention, size cap and watermark; status and purge; HA server bits | PMM-15571, 15577 (build, server image), 15594 (server side) | pmm, percona-helm-charts | D1, D4, D5, D6, D14 decided |
-| [02](02-node-collector.md) | `OTEL_COLLECTOR` agent type; `log_sources`; parser presets (backend, built-ins); config params and agent-side rendering; privilege drop; status per source; PMM Server's own logs (all 14 files in `/srv/logs`); self-metrics scrape; telemetry | PMM-15572, 15574 (backend), 15575, 15577 (client packaging), 15593 (scrape) | pmm, grafana (Inventory types) | 01 Tasks 1–4 and 9 |
+| [02](02-node-collector.md) | `OTEL_COLLECTOR` agent type; `log_sources`; parser presets (backend, built-ins); config params and agent-side rendering; the collector under pmm-agent's user (ADR-26); status per source; PMM Server's own logs (all 14 files in `/srv/logs`); self-metrics scrape; telemetry | PMM-15572, 15574 (backend), 15575, 15577 (client packaging), 15593 (scrape) | pmm, grafana (Inventory types) | 01 Tasks 1–4 and 9 |
 | [03](03-ui-and-grafana.md) | Settings → OTEL tab (settings, presets, log sources); collector health dashboard and alerts. No Grafana OTEL datasource or Logs dashboard (ADR-23) | PMM-15574 (UI), 15593 (dashboard, alerts) | pmm | 01, 02 |
 | [04](04-database-logs.md) | Tasks 2–5 in 3.12.0 (D29): log discovery on the agent and in pmm-managed, `--collect-logs` on `add mysql/postgresql/mongodb`, on by default, database presets. Phase 1b: Task 1 (`pmm-admin add/remove logs`), Task 6 (Valkey, including its `--collect-logs` and preset) and Task 7 (the `auto` preset and preset suggestions for unknown formats) | PMM-15573, 15584, 15585, 15586, 15587, 15723 (auto-detection), 15724 (Valkey) | pmm | 02; Task 7 also needs 08, Task 1 |
 | [05](05-traces.md) | Trace schema; server traces pipeline; node traces receiver and sampling; `pmm-admin add/remove traces`; trace view (re-plan: ADR-23); correlation | PMM-15579, 15580, 15582 | pmm | 01–03. Re-plan with writing-plans once 02 has merged |
@@ -24,7 +24,7 @@
 
 **Release gating** (D25, D29, D30 and D32, decided on 2026-11-05, 2026-11-09 and 2026-11-10):
 - Phase 0, plans 01, 02, 03 and 08 (Tasks 1–6), and plan 04 Tasks 2–5 make up the **3.12.0** Technical Preview (3.12.0 is due on 14 January 2027). Plan 08 is required: the native explorer is the only log UI (D26, ADR-23).
-- **Release criterion** (D29, D30): Add a MySQL, PostgreSQL or MongoDB service with `pmm-admin add` on the same host as its database; within a few minutes its log shows in the explorer, filtered to that service, with no log source configured by hand. It must also hold when the database is down at add time: once it is back, its log appears within one discovery-retry interval (plan 04, Task 3). On RHEL-family systems, where the collector can't read database logs by default (ADR-08), it passes when the request's reason and `pmm-admin` give the exact command, and the log appears within one retry interval after the user runs it.
+- **Release criterion** (D29, D30): Add a MySQL, PostgreSQL or MongoDB service with `pmm-admin add` on the same host as its database; within a few minutes its log shows in the explorer, filtered to that service, with no log source configured by hand. It must also hold when the database is down at add time: once it is back, its log appears within one discovery-retry interval (plan 04, Task 3). Packaged pmm-agent runs as root, and so does the collector (D35), so it reads every database log. When pmm-agent runs as a non-root user and can't read a log (D30), it passes when the request's reason and `pmm-admin` give the exact command, and the log appears within one retry interval after the user runs it.
 - **Release condition** (D32): QA (PMM-15578) runs that workflow on a Feature Build, on Ubuntu 24.04 and on one RHEL 9-family OS, with MySQL 8.4, PostgreSQL 17 and MongoDB 7 in their default configuration, and records the packages used. Numbered marker lines are written through each database while ClickHouse is stopped for 10 minutes, and while pmm-agent, the server collector and PMM Server are each restarted. It passes when every marker is in `otel.logs` at least once; duplicates are allowed (D31).
 - **Default** (ADR-25): upgraded installs stay off until an Admin turns OTEL on. New installs are on only if the capacity test (PMM-15592) has passed by 3.12.0 code freeze; the build-time constant `OtelOnForNewInstalls` records the result.
 - Plan 04 Tasks 1, 6 and 7 are Phase 1b. Plan 08 Task 7 (the Patterns view) follows in the next release (D27).
@@ -46,7 +46,7 @@ The QA automation ticket (PMM-15578) adds its tests in percona/pmm-qa against ea
 - the sizing guide;
 - log collection across collector restarts is best-effort: what survives a rotation while the collector is down, and what doesn't (plan 02, Task 6);
 - where database log discovery works: native installs, and pmm-agent sharing the database's filesystem; what `not_local` means (plan 04, Task 2);
-- the non-root read requirements: the `adm` and `systemd-journal` groups, and on RHEL-family systems the one command per database that `pmm-admin` prints (plan 04, Task 2; D30);
+- the collector runs under pmm-agent's user, root on packaged installs (ADR-26); with a non-root pmm-agent, the `adm` and `systemd-journal` groups, and the one command per database that `pmm-admin` prints: MongoDB on every OS, all three on RHEL (plan 04, Task 2; D30);
 - delivery is at least once: nothing is lost across restarts and ClickHouse outages while the queues have room, and a retry can store a line twice (D31);
 - the `docker run` mounts for journald and database logs;
 - a correction of the 3.8.0/3.8.1 statement that PMM accepts no inbound OTel traffic;
@@ -130,8 +130,8 @@ Plan 05 adds `OtelTracesReceiver traces_receiver = 5` to `OtelCollectorParams`. 
 Plan 08, Task 7 adds `uint64 pattern_hash = 9` and `repeated uint64 exclude_pattern_hashes = 10` to `Filters`.
 
 **Settings**
-- **Proto:** `server.v1.OtelSettings { bool collector_enabled = 1; uint32 logs_retention_days = 2; uint32 traces_retention_days = 3; uint32 max_disk_gb = 4; uint32 disk_watermark_percent = 5; }` as `Settings.otel = 23` (22 is `om_enabled`).
-- **Partial updates:** `server.v1.ChangeOtelSettings` holds the same fields, each `optional`, as `ChangeSettingsRequest.otel = 17` (15 is reserved, 16 is `enable_om`).
+- **Proto:** `server.v1.OtelSettings { bool collector_enabled = 1; uint32 logs_retention_days = 2; uint32 traces_retention_days = 3; uint32 max_disk_gb = 4; uint32 disk_watermark_percent = 5; }` as `Settings.otel`, at the next free number at merge time (27 on `main` at `ba6b74a41c`).
+- **Partial updates:** `server.v1.ChangeOtelSettings` holds the same fields, each `optional`, as `ChangeSettingsRequest.otel`, at the next free number at merge time (21 on `main` at `ba6b74a41c`).
 - **Model:** `models.OtelSettings` (JSON key `otel`), with `(*Settings).IsOtelCollectorEnabled() bool`.
 
 | Default | Value |
@@ -169,7 +169,7 @@ Plan 08, Task 7 adds `uint64 pattern_hash = 9` and `repeated uint64 exclude_patt
 | `managed/services/otel` | server config, `Service` (reconcile loop), `Cleaner` (leader job), the `OtelService` gRPC server |
 | `managed/services/otel/presets` | built-in YAML, loader, validator |
 | `managed/services/agents/otelcollector.go` | builds `OtelCollectorParams` |
-| `agent/agents/otelcollector` | YAML rendering, allow-list, privilege drop |
+| `agent/agents/otelcollector` | YAML rendering, allow-list, readability check |
 | `utils/logpatterns` | log-pattern masking rules and their ClickHouse expressions (D27), used by qan-api2's migration test and pmm-managed |
 
 **pmm-agent config** (`agent/config/config.go`)
@@ -200,14 +200,14 @@ Every task follows `AGENTS.md`; the rules agents most often miss are repeated he
   - no OTLP port on a non-loopback address unless an admin sets one;
   - no gRPC on the server;
   - `/otlp/` needs Admin;
-  - the collector runs as non-root `pmm-agent`;
+  - the collector runs under pmm-agent's user (ADR-26);
   - files that hold credentials are 0600;
   - no user string passes through `text/template`;
   - `$` in user strings is escaped as `$$`;
   - logs are readable by Admins only until plan 06.
 - **Limits:**
   - nginx body limit 10 MB;
-  - server batches of at least 5 s or 10,000 records and under 10 MB;
+  - server batches of at least 5 s or 10,000 records; the server's export queue on disk, sized in bytes at a tenth of `max_disk_gb`;
   - client sending queue on disk, 1024 MiB by default;
   - retention 7 d; watermark 80 %.
 - **Supply chain:** the collector is built with OCB from pinned versions, with only these components:

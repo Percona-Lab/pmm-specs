@@ -1,7 +1,7 @@
 # OpenTelemetry in PMM: analysis and design (PMM-15567)
 
 - **Date:** 2026-10-10
-- **Updated:** 2026-11-05, 2026-11-09 and 2026-11-10 (D25–D34, ADR-23 to ADR-25)
+- **Updated:** 2026-11-05, 2026-11-09, 2026-11-10 and 2026-11-17 (D25–D35, ADR-23 to ADR-26)
 - **Epic:** [PMM-15567](https://perconadev.atlassian.net/browse/PMM-15567), with 21 child tickets when it was read, plus the tickets filed from this analysis (both listed in [§2](#2-sources)).
 - **Prototype:** [percona/pmm#5118](https://github.com/percona/pmm/pull/5118), branch `tibi-holmes`. It is a reference only.
 - **Code base:** percona/pmm `main` at `3c6cba77c` (percona/grafana `4a94c794`, percona-helm-charts `9dffe16`), rebased on 2026-11-05 from `285cefaf8`. Line numbers below refer to those commits; re-check them before you edit, because `main` moves.
@@ -36,7 +36,7 @@ Marks used below:
 | Our own UI for reading logs, built with `@percona/peak-ui`, not only Grafana | Grafana datasource and Logs dashboard only (PMM-15576). | Build a native Logs explorer in the PMM UI, on a new `LogsService` API in pmm-managed: search, histogram, facets, surrounding lines, live tail, deep links. It is Admin-only now, and plan 06 adds LBAC to the same API ([plan 08](plans/08-log-explorer.md)). It is the only log UI: no Grafana datasource or Logs dashboard. It also groups lines into patterns (D27). **Decided: D20, D26 (ADR-23), D27.** |
 | How LBAC works with this | Admins only, until LBAC covers logs. | Phase 1: Admin-only, enforced by the `"/v1/logs": admin` rule on the explorer's API (ADR-23); PMM-15576's approach can't work ([§5](#5-findings-on-main-that-change-the-tickets)). Later: a PMM logs query API that turns the user's LBAC selectors into an allow-list of service and node IDs and fails closed ([§7](#7-lbac)). |
 
-**Decisions:** [§8](#8-decisions). D1–D17 were decided in the interview on 2026-10-10, D18–D24 in the review on 2026-10-11, D25–D28 on 2026-11-05, D29 on 2026-11-09 and D30–D34 on 2026-11-10. D2, D11 and D12 change the epic or its tickets, so they go to the epic owner and the architects as Proposed ADRs (ADR-19, ADR-20 and ADR-24) before coding.
+**Decisions:** [§8](#8-decisions). D1–D17 were decided in the interview on 2026-10-10, D18–D24 in the review on 2026-10-11, D25–D28 on 2026-11-05, D29 on 2026-11-09, D30–D34 on 2026-11-10 and D35 on 2026-11-17. D2, D11 and D12 change the epic or its tickets, so they go to the epic owner and the architects as Proposed ADRs (ADR-19, ADR-20 and ADR-24) before coding.
 
 ---
 
@@ -68,7 +68,7 @@ PMM Client node                                          PMM Server
 ───────────────                                          ──────────
 pmm-agent (root in packages, uid 1002 in Docker)         nginx :443
  └─ otel-collector  (agent type OTEL_COLLECTOR,           └─ /otlp/  auth_request → rule "/otlp": admin
-    runs as user pmm-agent, see §6.1)                          │ proxy_pass http://127.0.0.1:4318/
+    runs as pmm-agent's user, §6.1)                            │ proxy_pass http://127.0.0.1:4318/
      receivers: filelog/<source-id> per file source            ▼
                 journald/<source-id> per journald src    otel-collector (supervisord program, user pmm)
                 otlp (only after `add traces`, Phase 2)    receivers: otlp http 127.0.0.1:4318 (no gRPC)
@@ -137,7 +137,7 @@ PMM Server node (its own pmm-agent):                                 otel.otel_t
 
 | # | Finding [V] | Where | Consequence |
 |---|---|---|---|
-| F1 | Packaged pmm-agent runs as **root**: the unit has no `User=`. Child processes inherit its uid, because `exec.Cmd` gets no `SysProcAttr.Credential`. | `build/packages/config/pmm-agent.service`; `agent/agents/process/process.go:150-178` | "Run as `pmm-agent`" (PMM-15572) needs a new privilege drop in pmm-agent, for this one process type, chosen on the client ([§6.1](#61-running-the-collector-as-pmm-agent)). |
+| F1 | Packaged pmm-agent runs as **root**: the unit has no `User=`. Child processes inherit its uid, because `exec.Cmd` gets no `SysProcAttr.Credential`. | `build/packages/config/pmm-agent.service`; `agent/agents/process/process.go:150-178` | "Run as `pmm-agent`" (PMM-15572) would need a new privilege drop in pmm-agent. D35 runs the collector under pmm-agent's own user instead ([§6.1](#61-the-collectors-user)). |
 | F2 | The pmm-agent temp dir is **wiped** on every start and on every re-render. | `agent/commands/run.go:101,156`; `agent/utils/templates/template.go:65-74` | Checkpoints and the disk queue need a persistent `paths.otelcol_data_dir`, like `paths.nomad_data_dir` (`agent/config/config.go:128,304-306`). |
 | F3 | Child processes get an **empty environment**, and `Dir` is `/`. | `process.go:160-164` | The journald receiver must be given an absolute `journalctl` path, or a `PATH`. |
 | F4 | An older pmm-agent **silently ignores** unknown agent types. | `supervisor.go:1022-1023,1164-1165` | The server must withhold the type and reject `add` (`models.PMMAgentSupported`, `managed/models/agentversion.go:48`; `managed/services/agents/state.go:304-309`). |
@@ -166,14 +166,15 @@ PMM Server node (its own pmm-agent):                                 otel.otel_t
 
 ## 6. Design details that the tickets leave open
 
-### 6.1 Running the collector as `pmm-agent`
+### 6.1 The collector's user
 
-pmm-agent decides this locally; the server never chooses a uid:
-- If pmm-agent's effective uid is 0 and a user named `pmm-agent` exists, start the `OTEL_COLLECTOR` process with `SysProcAttr.Credential{Uid, Gid, Groups}`. The groups are `pmm-agent`'s supplementary groups as read from the OS, so packaging adds `adm` and `systemd-journal` (PMM-15577).
-- If pmm-agent is not root (Docker image, uid 1002), run the collector as pmm-agent's own user.
-- If pmm-agent is root and the user doesn't exist, refuse to start the collector, and report the reason in its status.
+The collector runs under pmm-agent's own user, as the exporters do (D35, ADR-26, which supersedes ADR-08's choice of user):
+- Packaged pmm-agent runs as root (F1), so today the collector runs as root. When pmm-agent moves to a non-root user, the collector follows with no change.
+- In the Docker image pmm-agent runs as uid 1002, and so does the collector.
+- A separate `pmm-agent` user would not be a boundary: the packages give it the whole install tree (`chown -R pmm-agent:pmm-agent /usr/local/percona/pmm`), which root runs, so a collector running as that user could replace `bin/pmm-agent`.
+- What the collector reads is bounded by the allow-list (§6.2), checked when the config is rendered, and by the read-time guard on files opened later. While it runs as root, file permissions add nothing.
 
-Other agent types keep their current behaviour. The collector reaches the network only through `otlphttp`. The OCB build includes no `file` exporter and no other component that writes files, so a compromised config can't write files outside `file_storage`.
+The collector reaches the network only through `otlphttp`. The OCB build includes no `file` exporter and no other component that writes files, so a compromised config can't write files outside `file_storage`.
 
 ### 6.2 Log sources
 
@@ -189,7 +190,7 @@ Other agent types keep their current behaviour. The collector reaches the networ
 - **One collector per pmm-agent:** a partial unique index on `agents(pmm_agent_id) WHERE agent_type = 'otel-collector'`, not a check-then-insert as in the prototype.
 - **State flow:** pmm-agent reports a `state` and `state_reason` for each source in a new repeated field on `StateChangedRequest`. For example: a path outside the allow-list, a file it can't read, or `journalctl` missing.
 - **Allow-list:** pmm-agent checks paths before rendering. It drops sources that fail, and keeps the collector running for the rest.
-- **Files opened later:** a glob or a rotation pattern can match a file after the check, for example a symlink created in the log directory. The node collector records each file's resolved path, and a record from a file that resolves outside the source's directory and the allow-list keeps only a fixed "blocked" body (plan 02, Task 6). This applies ADR-08's rule that symlinks are resolved before the check. It stops content leaving the node, not the read itself: the `pmm-agent` user's file permissions stay the boundary for reads, and no preset may write to resource attributes.
+- **Files opened later:** a glob or a rotation pattern can match a file after the check, for example a symlink created in the log directory. The node collector records each file's resolved path, and a record from a file that resolves outside the source's directory and the allow-list keeps only a fixed "blocked" body (plan 02, Task 6). This applies ADR-08's rule, which ADR-26 keeps, that symlinks are resolved before the check. It stops content leaving the node, not the read itself: while the collector runs as root (D35), file permissions don't limit the read. No preset may write to resource attributes.
 
 ### 6.3 Default log collection on `pmm-admin add`
 
@@ -351,7 +352,7 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 |---|---|---|---|
 | D1 | Retention mechanism (ADR-05) | Daily partitions dropped by a pmm-managed job on the leader, every 2 minutes, reading every replica on a cluster. The same job enforces the cap and the watermark. | Plan 01 |
 | D2 | `--collect-logs` default | On for local services (MySQL: `error`; PostgreSQL and MongoDB: their one log), with `none` to opt out. Slow and general logs stay opt-in. This changes the epic, so the epic owner must agree. | Plan 04 |
-| D3 | Collector uid when pmm-agent is root | pmm-agent drops to user `pmm-agent` for this process type only ([§6.1](#61-running-the-collector-as-pmm-agent)). | Plan 02 |
+| D3 | Collector uid when pmm-agent is root | pmm-agent drops to user `pmm-agent` for this process type only. Superseded by D35 ([§6.1](#61-the-collectors-user)). | Plan 02 |
 | D4 | Columns and sort key (ADR-04; it can't change after release) | Keep `ServiceName` = `service.name`. Add `PmmNodeId` and `PmmServiceId` as materialized columns. `ORDER BY (PmmNodeId, PmmServiceId, ServiceName, TimestampTime)`. Database sources set `service.name` to the program (`mysqld`, `postgres`, `mongod`). | Plan 01 |
 | D5 | Where the cleanup job runs | pmm-managed, leader only, using the existing ClickHouse client (F10, F11). | Plan 01 |
 | D6 | A single day larger than the cap | Stop `otel-collector` and raise a health warning; clients buffer. | Plan 01 |
@@ -378,11 +379,12 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 | D27 | Log patterns in the explorer | In 3.12.0. `otel.logs` stores `PatternHash`, a hash of the line with its variable parts masked. The masking rules live in `utils/logpatterns`, shared by the qan-api2 migration test and pmm-managed. A rules change ships as a new migration with `MODIFY COLUMN` only; old rows keep their old hash until retention drops them (ADR-04). Amended 2026-11-09: the column and the package ship in 3.12.0; the Patterns API and view (plan 08, Task 7) follow in the next release. | Plans 01, 08 |
 | D28 | Open a log line's query in QAN (`findQuery`) | A follow-up, not planned. Two options are recorded: a new qan-api2 RPC that matches a statement or a MongoDB query ID against `pmm.metrics` (preferred, because qan-api2 owns that table and its LBAC), or pmm-managed reading `pmm.metrics` directly, as the prototype does. | Follow-up |
 | D29 | What the 3.12.0 Technical Preview is | A usable database-logs preview, not only the pipeline. Release criterion: Add a MySQL, PostgreSQL or MongoDB service with `pmm-admin add` on the same host as its database; within a few minutes its log shows in the explorer, filtered to that service, with no log source configured by hand. So plan 04 Tasks 2–5 (discovery on pmm-agent and in pmm-managed, `--collect-logs` on `pmm-admin add mysql\|postgresql\|mongodb`, the database presets) ship in 3.12.0; Tasks 1, 6 and 7 (`pmm-admin add/remove logs`, Valkey, the `auto` preset and suggestions) stay in Phase 1b. | Roadmap, plan 04 |
-| D30 | The release criterion per OS family | Hands-off on Debian and Ubuntu, including PostgreSQL's default `logging_collector=off`, whose log path pmm-agent derives from `cluster_name`. On RHEL-family systems the collector's `pmm-agent` user can't read database logs by default (ADR-08). There the criterion passes when the collection request's reason and `pmm-admin` give the exact command for that database, and the log appears within one retry interval after the user runs it. The collector gets no broader file-read rights. | Roadmap, plan 04 |
+| D30 | The release criterion per OS family | Packaged pmm-agent runs as root, and so does the collector (D35), so it reads the log every database reports: hands-off on every OS, including PostgreSQL's default `logging_collector=off` on Debian and Ubuntu, whose log path pmm-agent derives from `cluster_name`. When pmm-agent runs as a non-root user, a log its groups can't read needs one documented command per database and OS: MongoDB on every OS, because it creates its logs with mode 0600 by default [I], and all three databases on RHEL-family systems. There the criterion passes when the collection request's reason and `pmm-admin` give that command, and the log appears within one retry interval after the user runs it. Revised on 2026-11-17 for MongoDB and D35. | Roadmap, plan 04 |
 | D31 | Delivery guarantee | At least once. No gaps across collector restarts, PMM Server restarts and ClickHouse outages while the queues have room; a retry can store a record twice. The server collector's export queue is on disk (`file_storage`), like the node collector's. | Plan 01, docs |
-| D32 | Release condition for the 3.12.0 preview | QA (PMM-15578) runs the D29 workflow on a Feature Build, on Ubuntu 24.04 and on one RHEL 9-family OS, with MySQL 8.4, PostgreSQL 17 and MongoDB 7 in their default configuration, and records the packages used. Numbered marker lines are written through each database while ClickHouse is stopped for 10 minutes, and while pmm-agent, the server collector and PMM Server are each restarted. It passes when every marker is in `otel.logs` at least once; duplicates are allowed (D31). On RHEL it runs after the one documented command (D30). | Roadmap, PMM-15578 |
+| D32 | Release condition for the 3.12.0 preview | QA (PMM-15578) runs the D29 workflow on a Feature Build, on Ubuntu 24.04 and on one RHEL 9-family OS, with MySQL 8.4, PostgreSQL 17 and MongoDB 7 in their default configuration, and records the packages used. Numbered marker lines are written through each database while ClickHouse is stopped for 10 minutes, and while pmm-agent, the server collector and PMM Server are each restarted. It passes when every marker is in `otel.logs` at least once; duplicates are allowed (D31). It runs with the packaged pmm-agent, as root (D35); plan 04, Task 2 checks the commands for a non-root pmm-agent (D30). | Roadmap, PMM-15578 |
 | D33 | When pmm-agent can't confirm the database instance | Fail closed: the request is `not_local`, with a reason that suggests the Unix socket (`--socket`) or adding the log by hand. A loopback address alone is never enough, because a container can publish its port there. Plan 04, Task 2 starts with a spike that checks the markers on every supported version, and falls back to the process start time in `/proc` before giving up. | Plan 04 |
 | D34 | Passwords of the OTel ClickHouse users | Keep password = user name, localhost only, as for the existing `grafana` user. The built-in `default` user's password is well known (`clickhouse`) and it owns the `otel` schema, so new passwords for the OTel users alone would protect nothing. Generated passwords for every built-in ClickHouse user, kept across upgrades, are a follow-up; the threat model (PMM-15591) records it. | Follow-up |
+| D35 | The collector's user | The collector runs under pmm-agent's own user, as the exporters do: root in today's packages, uid 1002 in Docker, and non-root once pmm-agent moves to a non-root user. The packages give the `pmm-agent` user the whole install tree, which root runs, so dropping to that user would let a compromised collector get root. The allow-list and the read-time guard bound what it reads. Recorded as ADR-26, which supersedes ADR-08 once accepted. Amends PMM-15572's "never as root". Supersedes D3. | Plan 02, ADR-26 |
 
 **Interview of 2026-10-10:**
 - Every recommendation above was accepted: D1–D14, and D15–D17 as written.
@@ -404,6 +406,10 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 **Review of 2026-11-10:**
 - D30–D32 were decided: the release criterion per OS family, at-least-once delivery, and the release condition.
 - After a fourth review, D33 (fail closed when the instance can't be confirmed) and D34 (ClickHouse passwords as a follow-up) were decided.
+
+**Review of 2026-11-17:**
+- D35 was decided after JiriCtvrtka's second review: the collector runs under pmm-agent's own user (ADR-26), because the packages give the `pmm-agent` user the whole install tree.
+- D30 was revised: MongoDB needs one command on every OS when pmm-agent isn't root, and packaged (root) installs need none.
 - ADR-04 gained a `minmax` index on `TimestampTime`, because the explorer opens across all nodes and services.
 
 ---
@@ -413,7 +419,8 @@ Plan 06 holds the task list. It is a design-level plan, to be re-planned once Ph
 - **Log volume shares ClickHouse and its disk with QAN on the 8 GB profile.** The cap, the watermark and the separate ClickHouse users with resource limits are release blockers (PMM-15571, PMM-15592). The capacity test includes the `PatternHash` insert cost, and measures QAN, not only the logs pipeline: QAN query latency and ingest under a log burst, under disk pressure up to the watermark, with one ClickHouse replica down (HA), and after a long collector outage drains its queues. It also runs the explorer's opening queries, which span all nodes and services: search, histogram and facets over the last hour and the last 24 hours (ADR-04).
 - **On for new installs** (ADR-25) means a fresh install starts a new process, creates a schema and collects the server's own logs from the start. Upgrades stay off. The capacity test (PMM-15592) decides whether new installs are on.
 - **Discovery doesn't work in Kubernetes sidecars:** the uid is 1002, there is no `journalctl`, and database log directories are not mounted. The operators must mount them (PMM-15577). Until they do, document that `--collect-logs` reports "file not visible" there.
-- **Non-root reads:** on RHEL, MySQL, PostgreSQL and MongoDB logs are not readable by the `pmm-agent` user [I, distro defaults]. Users run one command per database, which the collection request's reason and `pmm-admin` print, and the docs list (D30). PostgreSQL keeps its logs inside the data directory (mode 0700) and creates them with mode 0600, so an ACL on the directory alone gives no access; its command also sets `log_file_mode` [I]. Plan 04, Task 2 writes and verifies the commands on RHEL 9.
+- **A root collector.** While pmm-agent runs as root, so does the collector (D35, ADR-26). It parses log content that database users can influence with full privileges, and the allow-list and the read-time guard are the only limits on what it reads and ships. The threat model (PMM-15591) records it; it goes away when pmm-agent moves to a non-root user.
+- **Non-root reads:** when pmm-agent runs as a non-root user, MongoDB's logs (mode 0600 by default [I]) and, on RHEL, all three databases' logs [I, distro defaults] are not readable by it. Users run one command per database, which the collection request's reason and `pmm-admin` print, and the docs list (D30). PostgreSQL keeps its logs inside the data directory (mode 0700) and creates them with mode 0600, so an ACL on the directory alone gives no access; its command also sets `log_file_mode` [I]. Plan 04, Task 2 writes and verifies the commands.
 - **Well-known ClickHouse passwords.** PMM's built-in ClickHouse users have well-known passwords: `default` (`clickhouse`), which pmm-managed and qan-api2 use and which owns the `otel` schema, and `grafana`. `otel_writer` and `otel_reader` follow the same pattern, limited to localhost. A process inside PMM Server can read `otel.logs` as `default` whatever the OTel users' passwords are, so generating only those two would protect nothing. Generated passwords for every built-in user, kept across upgrades, are a follow-up (D34); the threat model (PMM-15591) records the gap.
 - **A schema written by qan-api2 and a collector built from a pinned version can drift.** A CI contract test runs the pinned collector against the migrated schema (PMM-15571).
 - **The work is large.** 21 tickets, plus the three filed under the epic on 2026-10-11, across pmm, grafana, the helm charts and the build. The prototype took 265 commits without review. Follow the roadmap's order, and merge ADRs and the threat model first.
