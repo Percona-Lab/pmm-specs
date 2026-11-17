@@ -2,7 +2,7 @@
 
 > Execution: see [00](00-roadmap.md#how-to-execute-these-plans).
 
-**Goal:** `pmm_alerts` returns the caller's firing alerts from Grafana's folder-scoped rules API, narrowed by MCP to the caller's service list (plan 06). `pmm_advisors` is out of the Tech Preview ([ADR-18](../adr/ADR-18-advisors.md)); this plan doesn't build it.
+**Goal:** `pmm_alerts` returns the caller's firing and pending alerts from Grafana's folder-scoped rules API, narrowed by MCP to the caller's service list (plan 06). `pmm_advisors` is out of the Tech Preview ([ADR-18](../adr/ADR-18-advisors.md)); this plan doesn't build it.
 
 **Architecture:** The tool reads Grafana's rules API through nginx on loopback with the caller's credentials, like every other tool (ADR-03). That API is folder-scoped, so the tool shows a Viewer what PMM's own alert page shows; Grafana's alert list endpoints are not, and never supply the list. Silence state comes from the Alertmanager, joined by rule UID and label set (ADR-17). MCP then keeps the alerts that belong to the caller's service list, filters, sorts and pages them, and returns plan 03's typed results. No new pmm-managed API, no `lbacPrefixes` change, no Grafana fork change.
 
@@ -25,7 +25,7 @@
   - annotations and labels other than these four, `pmm_provisioned` included, are never used for narrowing.
 - **Source of the list:** the rules API only. An Alertmanager alert adds silence state to an alert of a rule the rules API returned, joined by rule UID and label set: the rules API alert's labels plus `__alert_rule_uid__` set to the rule's `uid` equal the Alertmanager alert's `labels`. It never adds an alert. Silenced means a non-empty `status.silencedBy`; the silence end is the latest `endsAt` of those silences, from `/api/v2/silences` (ADR-17).
 - A failing service list fails the tool call; the tool never returns un-narrowed results.
-- Firing alerts only, silenced or not, with the silence's end time; current state, no history. The tool description and every result, an empty one included, carry the note "Currently firing alerts only; resolved alerts are not shown." (ADR-17). Read only: no silencing or acknowledging (ADR-05).
+- Firing and pending alerts only (pending ones since 2026-11-17, [ADR-17](../adr/ADR-17-alerts.md#pending-alerts-2026-11-17); the steps below describe the firing-only first version), silenced or not, with the silence's end time; current state, no history. The tool description and every result, an empty one included, carry the note "Firing and pending alerts only; resolved alerts are not shown. A rule fires only after its pending period, so a problem that began minutes ago may be pending or not listed yet." (ADR-17). Read only: no silencing or acknowledging (ADR-05).
 - Caps (spec §8): `pmm_alerts` 50/200 (default/maximum), paged with `limit` and `offset`. Each call takes a metric-call slot and a metric token, as the metric tools do, since it reads the 7-day service list (plan 05's per-caller limits). Each of the three Grafana alerting reads stops at 16 MiB; a longer answer is `pmm_unavailable`, with a message naming the limit. Task 5b's numbers may revise the value.
 - A `service_id`, `service_name` or `node_name` filter outside `L` answers plan 06's `not_found` (`errNotInList`), which names the 7 days searched and never echoes the value the caller sent.
 - Untrusted fields: an alert's name, severity, labels, summary and description.

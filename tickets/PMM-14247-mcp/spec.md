@@ -41,7 +41,7 @@ PMM users want to ask an AI client about their databases: which queries are slow
 - An AI client reads PMM data through MCP with the caller's own PMM credentials, and never gets more than those credentials give through PMM's API.
 - Metrics and QAN data are filtered by the caller's Access Roles, for interactive users and service-account tokens alike; MCP narrows its other results to the services those roles allow (not a security boundary, ADR-03).
 - A slow-query triage (inventory, top queries, detail, EXPLAIN, schema, configuration) works on MySQL, PostgreSQL and MongoDB, with bounded responses and bounded load on the monitored databases and on VictoriaMetrics.
-- Metrics and firing alerts are readable the same way.
+- Metrics and firing and pending alerts are readable the same way.
 - The release ships off by default, as a Tech Preview; tool-usage telemetry informs when the label drops ([ADR-14](adr/ADR-14-default-state.md)).
 
 ### 1.3 Non-goals
@@ -323,10 +323,10 @@ Decision: [ADR-15](adr/ADR-15-metrics-tools.md); the caps are in [§8](#8-phase-
 
 Decision: [ADR-17](adr/ADR-17-alerts.md).
 
-- `pmm_alerts` reads the firing alerts from Grafana's rules API through nginx with the caller's credentials. That API is folder-scoped, so `pmm_alerts` shows a Viewer what PMM's own alert page shows; Grafana's alert list endpoints are not folder-scoped and never supply the list. Silence state comes from the Alertmanager, joined by rule UID and label set. No Grafana alerting API carries an Access Role filter [V]. Plan 07 Task 1 checked this on a live server and recorded it in ADR-17.
+- `pmm_alerts` reads the firing and pending alerts from Grafana's rules API through nginx with the caller's credentials. That API is folder-scoped, so `pmm_alerts` shows a Viewer what PMM's own alert page shows; Grafana's alert list endpoints are not folder-scoped and never supply the list. Silence state comes from the Alertmanager, joined by rule UID and label set. No Grafana alerting API carries an Access Role filter [V]. Plan 07 Task 1 checked this on a live server and recorded it in ADR-17.
 - MCP keeps an alert that names a service when every service label it carries is in the caller's list, whatever node it names, since PMM's down templates name the pmm-agent's node (`pmm-server` for RDS and Azure services); an alert that names only nodes when they are in the list, which holds services and nodes of every type (ADR-08); and, as Grafana's UI shows them to the same caller, an alert with no service or node label and every alert of PMM's own HA and PMM Server component rules, identified by provenance `file` together with a UID from PMM's catalog, never by a label. A service or node label whose value is `[no value]`, which rules made from PMM templates carry when the series lacks the label, counts as absent. The list used for alerts covers 7 days of `up` samples, not 1 hour, so a service whose pmm-agent went silent keeps its firing alerts, its down alert included, for 7 days ([§13](#13-risks-and-mitigations)). Narrowed, not filtered (ADR-03).
-- It returns firing alerts, silenced or not (and until when), with name, severity, labels, summary, description, start time and a link, and filters by service, node and severity. Summaries and descriptions are untrusted text (ADR-11) and never used for narrowing.
-- The tool description and every result say "Currently firing alerts only; resolved alerts are not shown." Alert history is a follow-up (ADR-17).
+- It returns firing and pending alerts, firing ones first, silenced or not (and until when), with name, severity, labels, summary, description, state, start time and a link, and filters by service, node and severity. Summaries and descriptions are untrusted text (ADR-11) and never used for narrowing.
+- The tool description and every result say "Firing and pending alerts only; resolved alerts are not shown. A rule fires only after its pending period, so a problem that began minutes ago may be pending or not listed yet." Alert history is a follow-up (ADR-17).
 
 ### 7.3 Advisors
 

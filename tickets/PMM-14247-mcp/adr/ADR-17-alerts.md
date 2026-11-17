@@ -1,7 +1,7 @@
 # ADR-17: Alerts
 
 - Status: Proposed
-- Date: 2026-10-24, revised 2026-10-26, 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-06 and 2026-11-10 (the live check of plan 07 Task 1, [below](#live-check-plan-07-task-1))
+- Date: 2026-10-24, revised 2026-10-26, 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-06, 2026-11-10 (the live check of plan 07 Task 1, [below](#live-check-plan-07-task-1)) and 2026-11-17 (pending alerts, [below](#pending-alerts-2026-11-17))
 - Tickets: PMM-14247, PMM-15790
 - Implemented: not yet (plan 07)
 
@@ -18,7 +18,7 @@ PMM alerting is Grafana's alerting; PMM adds rule templates (`/v1/alerting`). Fi
 ## Decision
 
 Option 1.
-- **Source.** `pmm_alerts` reads the firing alerts from Grafana's rules API (`/graph/api/prometheus/grafana/api/v1/rules`) through nginx on loopback, with the caller's `Authorization` and `Cookie`, like every backing call (ADR-03). That API is folder-scoped, so `pmm_alerts` shows a Viewer what PMM's own alert page shows. The alert list endpoints (`/graph/api/alertmanager/grafana/api/v2/alerts`, `/graph/api/prometheus/grafana/api/v1/alerts`) are not folder-scoped, and never supply the list.
+- **Source.** `pmm_alerts` reads the firing and pending alerts (`state=firing&state=pending`) from Grafana's rules API (`/graph/api/prometheus/grafana/api/v1/rules`) through nginx on loopback, with the caller's `Authorization` and `Cookie`, like every backing call (ADR-03). That API is folder-scoped, so `pmm_alerts` shows a Viewer what PMM's own alert page shows. The alert list endpoints (`/graph/api/alertmanager/grafana/api/v2/alerts`, `/graph/api/prometheus/grafana/api/v1/alerts`) are not folder-scoped, and never supply the list.
 - **Silence state** comes from Grafana's Alertmanager (its alerts and silences) and is joined by rule UID and label set: an Alertmanager alert marks the alert of a rule the rules API returned when its `labels` equal that alert's `labels` plus `__alert_rule_uid__` set to the rule's `uid`, compared as whole maps. An Alertmanager alert that matches no such alert adds nothing. The rule UID alone isn't enough: one rule fires one alert per label set, and a silence can cover some of them (the [live check](#join-key) silenced one of a rule's two alerts). Labels never join without the rule UID. MCP reads the silence state from the Alertmanager alert (`status.silencedBy`) and never evaluates silence matchers itself.
 - Plan 07 Task 1 checked both on a live server, with what a Viewer, an Editor and a Viewer service account get; the [live check](#live-check-plan-07-task-1) records the field mapping and the evidence. No pmm-managed API and no Grafana fork change.
 - **Narrowing.** Against the caller's list (ADR-08), which holds services and nodes of every type:
@@ -29,18 +29,18 @@ Option 1.
   - So is every alert of PMM's own rules, whatever it names: the HA and PMM Server component rules PMM provisions (`managed/services/alerting/provisioning_catalog.go`), whose `node_id`, `node_name` and `service_name` name PMM Server replicas (`PMM_HA_NODE_ID`) and components (a scrape job such as `clickhouse`), not services or nodes in the list. A rule is PMM's own when the rules API returns it with `provenance` `file` and a `uid` from PMM's catalog (`catalogUIDs()`, `managed/services/alerting/provisioning_catalog.go:136`), both at once; the rules API carries both for each rule, to a Viewer too [V]. The UID alone isn't enough: a UID PMM doesn't provision on a deployment, such as the HA UIDs on a standalone server, can be taken by an Editor's rule, which then has no provenance [V]. Provenance alone isn't enough either: it marks any rule provisioned from a file, not only PMM's [I]. Never by a label, since a rule's author sets its labels, `pmm_provisioned` included ([live check](#pmms-own-rules)).
 - **Look-back for alerts.** The list used to narrow alerts covers 7 days of `up` samples, not the 1 hour of the other tools (ADR-08). A service whose pmm-agent went silent sends no `up` samples, yet its alerts, the one saying it is down included, are what a triage needs; with the 7-day list they stay for 7 days.
 - Narrowed, not filtered: not a security boundary (ADR-03). Filtering alerts by Access Role is PMM-wide work (ADR-16, deferred).
-- **Tool.** `pmm_alerts` returns firing alerts, silenced or not, with name, severity, labels, summary and description, start time, whether it is silenced and until when, and a link to it in PMM. It filters by service, node and severity, and pages (ADR-11). The tool description and every result, an empty one included, say "Currently firing alerts only; resolved alerts are not shown."
+- **Tool.** `pmm_alerts` returns firing and pending alerts, firing ones first, silenced or not, with name, severity, labels, summary and description, state (`firing` or `pending`), start time, whether it is silenced and until when, and a link to it in PMM. A pending alert's start time is when it went pending, and it is never silenced: the Alertmanager doesn't have it until it fires. It filters by service, node and severity, and pages (ADR-11). The tool description and every result, an empty one included, say "Firing and pending alerts only; resolved alerts are not shown. A rule fires only after its pending period, so a problem that began minutes ago may be pending or not listed yet."
 - **Untrusted text.** Summaries and descriptions are written by rule authors and may name other services. They are returned as written, marked untrusted in the contract (ADR-11), and never used for narrowing.
 - **Read only.** Silencing, acknowledging and editing rules stay out (ADR-05).
 
 ## Consequences
 
-- An AI client sees the firing alerts of its services, and the server-level ones, with no new PMM API.
+- An AI client sees the firing and pending alerts of its services, and the server-level ones, with no new PMM API.
 - A restricted caller still reads every alert of the folders it can read through Grafana's API and UI, as today. An alert of a rule in a folder it can't read doesn't reach it through MCP either.
 - MCP doesn't drop server-level alerts.
 - A service that sent no `up` sample for 7 days leaves the list used for alerts, so its alerts are dropped after 7 days of silence, including the one saying it is down. The 7-day list query reads more than the 1-hour one; plan 06 measures both.
 - Alerts evaluated by VMAlert from PMM's rule files, visible only to Admins, are out of scope.
-- Currently firing alerts only, and every result says so, so an empty list is never read as "nothing happened". Reading Grafana's alert state history for a time window, narrowed the same way, is a follow-up ticket outside this epic.
+- Firing and pending alerts only, and every result says so, so an empty list is never read as "nothing happened". The note also says that a rule fires only after its pending period: a problem that began minutes ago can be pending, or not listed before its rule's next evaluation. Reading Grafana's alert state history for a time window, narrowed the same way, is a follow-up ticket outside this epic.
 - Tests: a restricted caller, with a positive and with a negative filter, against alerts with the service's labels, another service's labels, node labels only, and none; and the `mysql_down` template, which aggregates `by (service_id, service_name, node_name)`, under a role on `environment`, a label the alert doesn't carry, for a service whose pmm-agent runs on another node (an RDS service, `node_name="pmm-server"`): kept, because the service it names is in the list; and, for a restricted caller, `pmm_ha_node_unreachable` (`node_id` = `PMM_HA_NODE_ID`) and `pmm_clickhouse_down` (`service_name="clickhouse"`) on HA, and `pmm_grafana_down` on a standalone server: kept, as alerts of PMM's own rules; a user's rule labelled `pmm_provisioned="1"` that names a service outside the list: dropped; an Editor's rule that takes a catalog UID PMM doesn't provision here, with no provenance: narrowed like any user rule; a node-level and a server-level alert of a rule made from a PMM template, whose `service_name`, and for the server-level one `node_name`, is `[no value]`: kept as a node-only alert when its node is in the list, and as an alert with no service or node label; two alerts of one rule with a silence on one of them: only that one is silenced, until the silence's end; and, for a Viewer, a rule in a folder without Viewer access, silenced or not: absent.
 - An alert that starts firing between the read of the rules API and the read of the Alertmanager has no Alertmanager match yet, and is returned as not silenced until the next call [I].
 
@@ -139,3 +139,21 @@ They are in folder `PMM Server`, whose UID is generated on each server, and grou
 - The provisioning API refuses a rule with the UID of a rule PMM provisioned (`pmm-grafana-down`: 409, a unique-constraint conflict). A rule it creates gets `provenance` `api`, or none with `X-Disable-Provenance`.
 - An Editor created a rule with the UID `pmm-ha-no-leader`, free on a standalone server, and the label `pmm_provisioned="1"`, through the ruler API. The rules API returned it to the Viewer with no provenance. The rule was deleted after the check.
 - So the catalog UID needs `provenance` `file` with it, and neither the folder nor a label identifies PMM's rules.
+
+## Pending alerts (2026-11-17)
+
+Firing alerts only (the decision of 2026-11-10) missed the first minutes of an incident. On the MCP lab's fault runs, Claude Code called `pmm_alerts` 60 to 90 seconds after each fault started. The lab's rules evaluate every minute and wait a 60 s pending period, so they fired 2 to 3 minutes after the fault [V]:
+
+| Fault | Rule state when the client read the alerts | Fired at |
+|---|---|---|
+| MySQL frozen at 19:39:36 | Normal (pending from 19:41:30) | 19:42:30 |
+| MongoDB secondary restarted at 19:49 | Pending since 19:49:30 | 19:50:30 |
+| MySQL at 5.5% of `max_connections` | Pending since 19:52:30 | 19:53:30 |
+
+In the second and third runs the matching alert was pending and `pmm_alerts` didn't list it. In the first, the client concluded that no MySQL-down rule existed. The decision now lists pending alerts too, and the note says that a rule fires only after its pending period.
+
+Checked on the lab's PMM Server (Grafana 12) [V]:
+
+- `state=firing&state=pending` returns the rules with firing or pending alerts and only those alerts. A pending instance has `state` `Pending`; `state=pending` alone returns only the pending ones.
+- `activeAt` is reset when an alert starts firing: a rule that went pending at 20:30:30 and fired at 20:31:30 had `activeAt` 20:31:30. So a firing alert's `activeAt` is when it started firing, and a pending alert's, by the same reset, when it went pending [I].
+

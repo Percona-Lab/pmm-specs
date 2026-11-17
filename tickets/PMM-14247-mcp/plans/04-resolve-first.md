@@ -39,7 +39,7 @@
 - The explained statement in the action output is used only to build the alias map: never rendered, never logged. With a stored example it is the example itself, literals included (`qan-api2/models/metrics.go:1165-1167`).
 - A live plan is labelled as the plan the database would choose now, in the text and in structured content (`note`), since some clients pass only one of the two to the model.
 - One `pmm_get_schema` call holds one live slot (plan 02), whether it runs EXPLAIN, the DDL actions, or both.
-- **One live call per service.** MCP enforces its own limit of one live-inspection call per `service_id` on each replica, beside plan 02's caps; it doesn't rely on pmm-agent's own concurrency limits (Task 4).
+- **One live call per service.** MCP enforces its own limit of one live-inspection call per `service_id` on each replica, beside plan 02's caps; it doesn't rely on pmm-agent's own concurrency limits (Task 4). Amended 2026-11-17: a second call on the service waits up to 10 s for the slot, then answers `rate_limited`, since MCP clients call `pmm_get_explain` and `pmm_get_schema` in parallel and the immediate refusal left them without one of the two; and `pmm_query_detail` takes a `query_ref` too (pmm-specs #17).
 - **No credentials in MCP's logs.** No log entry MCP writes, at any level, carries the caller's `Authorization` or `Cookie`, and the go-openapi transport's debug output stays off whatever the environment says; a test enforces both (Task 5).
 - **`Instructions` length.** This plan's lines take `Instructions` past plan 03's limit: `TestInitializeAndListTools`' newline cap rises from `< 25` to `< 28` (Task 7).
 
