@@ -11,3 +11,4 @@ Layout and rules: [AGENTS.md](AGENTS.md).
 | [PMM-14247-mcp](tickets/PMM-14247-mcp/) | MCP endpoint in PMM Server | Phases 0–1 merged into `PMM-MCP-GA`; design for phases 2–5; ADR-05, 10, 17 and 18 proposed, ADR-16 deferred, the rest accepted |
 | [PMM-15567-otel](tickets/PMM-15567-otel/) | OpenTelemetry logs and traces | Design; ADRs partly accepted |
 | [PMM-15785-qan-clickhouse-db](tickets/PMM-15785-qan-clickhouse-db/) | QAN database consistency across ClickHouse replicas (PMM HA) | Design, in review |
+| [PMM-15868-aurora-monitoring](tickets/PMM-15868-aurora-monitoring/) | Aurora and RDS monitoring: Amazon RDS overview page, fixed Aurora dashboard, rds_exporter cluster data | Release 1 implemented, in review |
