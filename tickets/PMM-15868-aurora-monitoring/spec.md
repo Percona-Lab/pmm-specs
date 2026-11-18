@@ -288,7 +288,7 @@ The same files loaded on PMM Server's own PostgreSQL sent no SQL there and logge
 Two blocks are added to `queries-hr.yml`, which already ships in pmm-client and PMM Server under `collectors/custom-queries/postgresql/high-resolution/`.
 Each has `master: true` and only `query_aurora`, no plain `query`, and follows the file's `pg_custom_*` names:
 
-*   **`pg_custom_aurora_replica_status`** reads `aurora_replica_status()`: labels `server_id` (instance identifier) and `role` (`writer` or `reader`), gauge `replica_lag_seconds` (`replica_lag_in_msec / 1000`, 0 for the writer).
+*   **`pg_custom_aurora_replica_status`** reads `aurora_replica_status()`: labels `server_id` (instance identifier) and `aurora_role` (`writer` or `reader`; not `role`, which a custom service label of that name would rename to `exported_role`), gauge `replica_lag_seconds` (`replica_lag_in_msec / 1000`, 0 for the writer).
 *   **`pg_custom_aurora_dml_activity`** joins `pg_database` (databases that allow connections, no templates, no `rdsadmin`) with `aurora_stat_dml_activity(oid)`: label `datname`, counters `{select,insert,update,delete}_count` and `{select,insert,update,delete}_latency_seconds` (microseconds / 1e6).
 
 How it behaves:
@@ -311,7 +311,7 @@ No Go code changes (Alternative P).
 
 New file `dashboards/dashboards/PostgreSQL/PostgreSQL_Amazon_Aurora_Details.json`, uid `postgresql-amazonaurora`, tags `Percona` and `PostgreSQL`, made from a copy of MySQL Amazon Aurora Details so that styling, time range and the Amazon RDS Overview link match.
 
-*   **Variables:** `interval` as in MySQL; `service_name` from `{__name__=~"pg_custom_aurora_replica_status_replica_lag_seconds|pg_settings_aurora_compute_plan_id"}`; `node_name` hidden, from the same metrics. Both exist on Aurora only, and the `pg_settings` one also lists services monitored by an older pmm-client (seen on Aurora PostgreSQL 15 and 17, absent on PMM Server's own PostgreSQL).
+*   **Variables:** `interval` as in MySQL; `service_name` from `{__name__=~"pg_custom_aurora_replica_status_replica_lag_seconds|pg_settings_aurora_compute_plan_id"}`; `node_name` hidden, from the same metrics. Both exist on Aurora only, and the `pg_settings` one also lists services monitored by an older pmm-client on Aurora PostgreSQL 14.10, 15.5 and later, the versions AWS documents `aurora_compute_plan_id` for (seen on 15 and 17, absent on PMM Server's own PostgreSQL).
 
 **Top panels:**
 
@@ -326,7 +326,7 @@ New file `dashboards/dashboards/PostgreSQL/PostgreSQL_Amazon_Aurora_Details.json
 
 The last metric's name says seconds, but its value is a transaction ID age, so the panel uses a plain number unit and its description gives AWS's read-only limit of about 2.1 billion.
 
-*   **Rows:** "Cache and local storage" and "Instance resources (CloudWatch)", expanded and identical to MySQL; "Replication (needs a reader)", collapsed, with Replica Lag (`pg_custom_aurora_replica_status_replica_lag_seconds{role="reader"}`, one line per `server_id`) and Aurora Replica Lag (CloudWatch `aws_rds_aurora_replica_lag_average` and `aws_rds_aurora_replica_lag_maximum_average`).
+*   **Rows:** "Cache and local storage" and "Instance resources (CloudWatch)", expanded and identical to MySQL; "Replication (needs a reader)", collapsed, with Replica Lag (`pg_custom_aurora_replica_status_replica_lag_seconds{aurora_role="reader"}`, one line per `server_id`) and Aurora Replica Lag (CloudWatch `aws_rds_aurora_replica_lag_average` and `aws_rds_aurora_replica_lag_maximum_average`).
 *   Write activity on Aurora comes from the IOPS and Throughput panels of the CloudWatch row (decision 12).
 
 #### 7.4 Amazon RDS page

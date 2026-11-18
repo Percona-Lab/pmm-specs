@@ -15,7 +15,7 @@
 - Branch `PMM-15868-aurora-postgres-details` in every repo: cut from `origin/main` in percona/postgres_exporter, from `origin/PMM-15868-aurora-cluster-info` in percona/rds_exporter, from `origin/PMM-15868-rds-overview-page` in percona/pmm, from `origin/PMM-15868-aurora-tests` in percona/pmm-qa. Push with `git push -u origin HEAD`.
 - Commits: `PMM-15868 <summary>` (≤50 characters), `git commit -s`, one `git add` call and one `git commit` call each (a hook blocks both in one command), `git -C` with a literal absolute path.
 - No Docker, PMM, databases or frontend builds on the runner host: UI lint and tests, docs preview and Playwright run on CHAOS VMs (chaos-docker-provisioning skill). Go builds, tests and lint run on the host.
-- Metric and label names, verbatim: `pg_custom_aurora_replica_status_replica_lag_seconds{server_id, role}` with `role` `writer` or `reader`; `pg_custom_aurora_dml_activity_{select,insert,update,delete}_{count,latency_seconds}{datname}`.
+- Metric and label names, verbatim: `pg_custom_aurora_replica_status_replica_lag_seconds{server_id, aurora_role}` with `aurora_role` `writer` or `reader`; `pg_custom_aurora_dml_activity_{select,insert,update,delete}_{count,latency_seconds}{datname}`.
 - Dashboard: file `dashboards/dashboards/PostgreSQL/PostgreSQL_Amazon_Aurora_Details.json`, title `PostgreSQL Amazon Aurora Details`, uid `postgresql-amazonaurora`, tags `Percona`, `PostgreSQL`.
 - No new AWS permission, no new CloudWatch metric, no change to WAL panels (decisions 12, 13).
 
@@ -78,10 +78,10 @@ pg_custom_aurora_replica_status:
   # Aurora only: no plain query, so other PostgreSQL servers skip it
   query_aurora: |
     SELECT server_id,
-      CASE WHEN session_id = 'MASTER_SESSION_ID' THEN 'writer' ELSE 'reader' END AS role,
+      CASE WHEN session_id = 'MASTER_SESSION_ID' THEN 'writer' ELSE 'reader' END AS aurora_role,
       COALESCE(replica_lag_in_msec, 0) / 1000.0 AS replica_lag_seconds
     FROM aurora_replica_status();
-  metrics: server_id LABEL, role LABEL, replica_lag_seconds GAUGE
+  metrics: server_id LABEL, aurora_role LABEL, replica_lag_seconds GAUGE
 
 pg_custom_aurora_dml_activity:
   master: true
@@ -164,7 +164,7 @@ Repo `/srv/runner/7/percona/pmm`.
 | Problems | ops | `sum by (service_name) (rate(pg_stat_database_deadlocks S[$interval]))` (Deadlocks); same with `pg_stat_database_conflicts` (Conflicts) |
 | Oldest Transaction ID Age | short | `max by (service_name) (pg_database_wraparound_age_datfrozenxid_seconds S)` (Oldest XID age); description: transaction ID age of the oldest database; Aurora turns read-only near 2.1 billion |
 
-- [ ] **Step 4: Rows.** Keep "Cache and local storage" and "Instance resources (CloudWatch)" unchanged. Keep "Replication (needs a reader)" collapsed with two panels: **Replica Lag** (unit s, `max by (server_id) (pg_custom_aurora_replica_status_replica_lag_seconds{service_name=~"$service_name",role="reader"})`, legend `{{server_id}}`) and **Aurora Replica Lag (CloudWatch)** (unit ms, `avg by (node_name) (aws_rds_aurora_replica_lag_average N)` and `avg by (node_name) (aws_rds_aurora_replica_lag_maximum_average N)`, legends `Replica lag` and `Maximum replica lag`). Delete the Write forwarding, Parallel query and Serverless rows. Every panel id stays unique.
+- [ ] **Step 4: Rows.** Keep "Cache and local storage" and "Instance resources (CloudWatch)" unchanged. Keep "Replication (needs a reader)" collapsed with two panels: **Replica Lag** (unit s, `max by (server_id) (pg_custom_aurora_replica_status_replica_lag_seconds{service_name=~"$service_name",aurora_role="reader"})`, legend `{{server_id}}`) and **Aurora Replica Lag (CloudWatch)** (unit ms, `avg by (node_name) (aws_rds_aurora_replica_lag_average N)` and `avg by (node_name) (aws_rds_aurora_replica_lag_maximum_average N)`, legends `Replica lag` and `Maximum replica lag`). Delete the Write forwarding, Parallel query and Serverless rows. Every panel id stays unique.
 
 - [ ] **Step 5: Check**
 
