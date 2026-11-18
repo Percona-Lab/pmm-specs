@@ -100,6 +100,8 @@
 
 ### Task 5: Telemetry and operator metrics
 
+Built on 2026-11-18, with the fixes from the review of `PMM-MCP-GA` (branch `PMM-14247-review-fixes`), as specified below.
+
 **Files:**
 - Modify: `managed/services/mcp/` (`Params`, metrics around `addTool`), `managed/cmd/pmm-managed/main.go` (`mcp.New`, `:1268` on `PMM-MCP-GA`), `managed/services/telemetry/config.default.yml`
 - Test: `managed/services/mcp/` (metrics test), `managed/services/telemetry/config_test.go`
