@@ -33,6 +33,8 @@
   | `pmm_get_schema` by `queryid`, MySQL | the EXPLAIN's error, with the hint: pass `placeholders`, or `database` and `tables` |
   | `pmm_get_schema` by `queryid`, PostgreSQL | `no_query_source` when QAN has no `tables` for the query: pass `database` and `tables` |
 
+  Amended 2026-11-18: a MySQL query with a stored example in the window can still be explained without one, because qan-api2 reads any one stored row of the query and only some rows carry the example. When the call passed no `placeholders`, that 1064 or placeholders-count error answers `pmm_unavailable`, retryable, and says to call again (percona/pmm, PMM-15529). qan-api2's row choice stays as is: the QAN UI's EXPLAIN reads the same rows.
+
 - `pmm_get_schema` supports MySQL and PostgreSQL. A MongoDB service answers `invalid_input` in every input form, before any action.
 - MySQL table discovery is best effort. Base tables in the plan are returned. Format 1 names are mapped through a best-effort alias map (Task 2); derived tables, CTEs, materialized subqueries and names the map doesn't resolve are listed in `unresolved`, never guessed.
 - **Names come from the plan.** The alias map reads code only: a quoted string or a comment in the statement never yields an entry (`sqlMarks`, `redact.go`). A name is rendered only when the plan's table list leads to it, so a name the plan doesn't list is never in `tables`, `unresolved`, `not_fetched` or any message (Task 2).
