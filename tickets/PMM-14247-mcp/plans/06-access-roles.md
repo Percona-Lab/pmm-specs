@@ -404,7 +404,7 @@ Settled here, with the reason:
 - **Nodes** move to plan 07 (Global Constraints).
 - **`pmm_service_health` for another service type** answers `invalid_input` (Global Constraints).
 - **Two services with one name** within the look-back: lookups by name take the one with the newest `last_seen`. The older one is the removed service, and list order can't decide it, because the two can have different engines.
-- **A large fleet:** a list row is about 300 bytes [I], so the 4 MiB read cap holds about 14,000 rows over the look-back (Global Constraints). Above that, every tool answers `pmm_unavailable`. The supported fleet size that plan 05 states is far below this, so there is no paging of the list.
+- **A large fleet:** a list row is about 300 bytes [I], so the 4 MiB read cap holds about 14,000 rows over the look-back (Global Constraints). Above that, every tool answers `pmm_unavailable`. PMM's sizing guide calls 200 nodes and up a large deployment, and a fleet near 14,000 services is not expected [I], so there is no paging of the list.
 - **Caps per principal** (spec §13, "revisit with plan 06"): unchanged, per caller key. Even with PMM-15534, MCP never learns the principal's user ID: `auth_request` resolves it, and MCP authorizes nothing itself (ADR-03). The per-replica and per-service caps still bound the total.
 - **The matrix's Admin** is an org Admin created for the test. PMM filters Grafana server admins the same way, by user ID (Review Focus), and changing the package's `admin` would touch every other api-test.
 - **PostgreSQL stored plans** are asserted like the other rows: the qan-api2 fix is in this branch (Review Focus). PMM-15697's Jira status was not checked [I].
