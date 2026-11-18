@@ -305,6 +305,8 @@
   | mongodb | `replset_state` | `mongodb-instance-summary`: Current ReplSet State, A | none |
   | mongodb | `replication_lag` | `mongodb-replicaset-summary`: Replication Lag, A | s |
 
+  Amended 2026-11-18, after the review of `PMM-MCP-GA`: MySQL `replication_lag` takes the maximum over replication channels, so a multi-source replica shows its most lagging channel; MongoDB `queued_operations` reads only `type="total"`, which is already readers plus writers; MongoDB `query_efficiency` uses the panel's Document target, documents returned per document scanned; per-second rates (`qps` for MySQL, `tmp_disk_tables`, `asserts`, `page_faults`) have the unit `ops`.
+
 - **One call.** A `service_id` not in the caller's service list is `not_found`. The call holds one slot on `s.metrics` and runs its signal queries at most 4 at a time, each holding a slot of the VictoriaMetrics request limit (Task 1), so its fan-out counts per query; each a range query over the window, with `chooseStep` for the window's length. Each query passes `checkExpr` with the window's length as span; a window too long for that is `invalid_input` before any query.
 - Each signal reports min, avg, max and last over its finite points, through `nullable`, and `last_at`, the newest sample time; or `no_data` when the query returns no series. When a node signal is `no_data`, `note` says that an Access Role that filters on service labels hides node series, so `no_data` can mean "hidden" as well as "not sent".
 - A signal whose query fails has `error` (`partErrorOf`), and the result is `partial`. When every signal fails, the call fails with the first error (ADR-11).
