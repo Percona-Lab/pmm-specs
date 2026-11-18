@@ -292,7 +292,7 @@
   | postgresql | `commits` | `postgresql-instance-summary`: Transactions, A | ops |
   | postgresql | `rollbacks` | `postgresql-instance-summary`: Transactions, B | ops |
   | postgresql | `deadlocks` | `postgresql-instance-summary`: Conflicts/Deadlocks, A | ops |
-  | postgresql | `max_tx_duration` | `postgresql-instance-summary`: Duration of Transactions, A, `max by (service_name)` | s |
+  | postgresql | `max_tx_duration` | `postgresql-overview-extended`'s longest transaction, `max by (service_name)` (amended 2026-11-17: Instance Summary's target averaged over databases and hid the longest transaction) | s |
   | postgresql | `replication_lag` | `postgresql-replication-overview`: Max Replication Lag, A | s |
   | postgresql | `cache_hit_ratio` | `postgresql-overview-extended`: Min Cache Hit Ratio, A | percentunit |
   | mongodb | `qps` | `mongodb-instance-summary`: QPS, A | ops |
