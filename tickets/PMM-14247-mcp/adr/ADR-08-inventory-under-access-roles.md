@@ -27,7 +27,7 @@ The Viewer rules from #5942 for `GET /v1/inventory/services` and `/nodes` are re
 
 ## Consequences
 
-- A Viewer service-account token covers every tool; `pmm_advisors` is out of the Tech Preview (ADR-18).
+- A Viewer service-account token covers every tool; `pmm_advisors` is out of the Tech Preview (ADR-18). Amended 2026-11-20: with Access Control on, only once PMM-15534 is merged in. Until then PMM refuses tokens on QAN and the metrics datasource under Access Control (#5771), so for a token the service list fails, and every tool but `pmm_version` and `pmm_catalog` answers `unauthorized` (ADR-12).
 - No PMM-wide permission change: the inventory API keeps its Admin rule. PMM-15536 is not needed by MCP.
 - `pmm_inventory` reports no address or port. A target scraped with `up=0` stays listed with a current `last_seen`. A service leaves the list only when no `up` sample arrived in the look-back window, for example when its pmm-agent stopped; a removed service leaves it the same way. Alerts are narrowed with a 7-day list instead (ADR-17). A longer look-back would keep it, at the cost of a larger query behind every tool call; plan 06 measures it, and the value lives in spec §8.
 - The list query's cost, measured by plan 06 as Admin through the datasource proxy on plan 05's load-test server (4 cores, 53 MySQL services plus PMM's own PostgreSQL: 54 services, 59 rows), 20 runs per look-back:

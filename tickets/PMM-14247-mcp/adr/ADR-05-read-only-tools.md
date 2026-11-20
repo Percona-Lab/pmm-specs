@@ -37,7 +37,7 @@ Live inspection is bounded (values in [spec §8](../spec.md#8-phase-3-output-con
 
 ## Consequences
 
-- No tool can change PMM or a monitored database.
+- No tool can change PMM or a monitored database. Amended 2026-11-20: no tool asks PMM or a monitored database to change anything, but planning a MySQL query for EXPLAIN can evaluate a stored function that the query calls, as with QAN's Explain tab, which starts the same action. `mcp.md` says so, and the pmm-agent side is tracked as PMM-15950 (#6376).
 - Live inspection needs the same Grafana role as EXPLAIN in QAN's UI; MCP adds call volume, not a new capability, and starts actions only on services in the caller's list (ADR-03). The caps bound that volume.
 - `rate_limited` joins the error codes of the contract (ADR-11).
 - Who may start live inspection is part of the security review ([spec §10](../spec.md#10-phase-5-release), item 2).
