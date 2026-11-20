@@ -35,3 +35,4 @@ Turning off query examples in PMM removes one more source of literals. DDL and t
 - Triage still works on masked plans: access type, key and rows survive.
 - Some useful detail is lost by default; `PMM_MCP_RAW_SQL=true` brings it back.
 - Masking happens on the result value, before rendering, so structured content (ADR-11) can't carry what the text withholds.
+- Amended 2026-11-20: in a MongoDB plan, the `comment` of a `command` or `originatingCommand` is masked whole, keys included, since an application can put anything there. A traditional MySQL plan whose lines have fewer `|`-separated cells than its header is withheld, as a plan that can't be parsed, and a one-column MySQL plan, such as the tree format, is masked as one text, so a literal across lines stays one literal (#6376).

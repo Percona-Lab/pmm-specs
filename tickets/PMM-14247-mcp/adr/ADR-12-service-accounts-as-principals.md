@@ -9,6 +9,8 @@
 
 The MCP documentation tells users to connect with a service-account token. PMM Access Roles, which carry LBAC filters, are assigned to user IDs. Today a service token resolves to user ID 0 (`getAuthUser` in `managed/services/grafana/client.go`), so no Access Role applies to it and its data is unfiltered (PMM-15534). For a token to be governed by Access Roles, the auth path has to know which account it belongs to.
 
+Amended 2026-11-20: "unfiltered" holds only with Access Control off, where nothing is filtered for anyone. With it on, PMM refuses a token with 403 on the routes Access Roles filter, QAN and the metrics datasource, since #5771 (`maybeAddLBACFilters`, `auth_server.go`). Every MCP tool but `pmm_version` and `pmm_catalog` then answers `unauthorized` to a token, and `mcp.md` says to connect with a PMM user's credentials until this decision lands (#6376).
+
 ## Options
 
 1. Resolve the account ID from the response pmm-managed already fetches when it authenticates a token.
@@ -27,7 +29,7 @@ Out of scope: a role picker on Grafana's service-account page; a machine princip
 
 - Access Roles govern every token-based integration, not only MCP.
 - No Grafana fork change and no extra call per request.
-- A token is governed by the default role from its first request. Since tokens get no filter today, this can only narrow what a token sees, on metrics and QAN. Admins who restricted the default role should check the tokens they created before upgrading; the release notes say so.
+- A token is governed by the default role from its first request. Since tokens get no filter today, this can only narrow what a token sees, on metrics and QAN. Admins who restricted the default role should check the tokens they created before upgrading; the release notes say so. Amended 2026-11-20: under Access Control a token is refused today (Context), so the default role gives it filtered access it lacks, rather than narrowing what it sees; with Access Control off nothing changes.
 - That includes the Admin service accounts PMM creates for every registered node (`CreateServiceAccount`, `managed/services/grafana/client.go:668`) [V]. pmm-agent and pmm-admin use them to read the inventory and to send metrics and QAN data, and Access Roles filter none of those paths (`lbacPrefixes`, `auth_server.go:181`) [V], so a restricted default role doesn't change what they do. PMM-15534's PR tests it, and plan 06 repeats the test after merging `main`.
 - It is PMM-wide, so it lands on `main` through PMM-15534's own PR and doesn't wait for the MCP release; `main` is then merged into `PMM-MCP-GA`. It is a release prerequisite for MCP: without it, a token's MCP results are not scoped by Access Roles.
 - The access-control docs describe role assignment for service accounts in PMM-15534's change; `mcp.md` points to them.

@@ -170,7 +170,7 @@
   - PostgreSQL calls `GetQueryPlan` with the resolved `service_id`;
   - the golden file shows no `query` property. A call that still sends it is refused by the SDK, outside the envelope (plan 03 pins that shape); this plan asserts no code for it;
   - `query_ref` together with `queryid` → `invalid_input`;
-  - a MySQL and a MongoDB plan carry the live-plan text in structured content's `note` as well as in the text; a PostgreSQL plan has no `note`.
+  - a MySQL and a MongoDB plan carry the live-plan text in structured content's `note` as well as in the text; a PostgreSQL plan has no `note`. Amended 2026-11-20: a PostgreSQL plan carries a `note` too, in both: QAN keeps no time for a stored plan, so it can come from outside the window (#6376).
 - [ ] **Step 2: Run, see FAIL; route the `queryid`/`query_ref` forms through `refFromInput` and `resolveQuery`; update the tool description (no `query`; `query_ref` or `queryid`); run the package, see PASS.**
 - [ ] **Step 3: Commit** `PMM-15529 Explain a query from its reference`.
 
