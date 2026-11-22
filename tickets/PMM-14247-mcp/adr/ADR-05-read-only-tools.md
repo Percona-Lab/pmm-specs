@@ -37,8 +37,9 @@ Live inspection is bounded (values in [spec §8](../spec.md#8-phase-3-output-con
 
 ## Consequences
 
-- No tool can change PMM or a monitored database.
+- No tool can change PMM or a monitored database. Amended 2026-11-20: no tool asks PMM or a monitored database to change anything, but planning a MySQL query for EXPLAIN can evaluate a stored function that the query calls, as with QAN's Explain tab, which starts the same action. `mcp.md` says so, and the pmm-agent side is tracked as PMM-15950 (#6376).
 - Live inspection needs the same Grafana role as EXPLAIN in QAN's UI; MCP adds call volume, not a new capability, and starts actions only on services in the caller's list (ADR-03). The caps bound that volume.
 - `rate_limited` joins the error codes of the contract (ADR-11).
 - Who may start live inspection is part of the security review ([spec §10](../spec.md#10-phase-5-release), item 2).
 - Write tools, if ever wanted, need a new ADR.
+- Amended 2026-11-22: a client's disconnect cancels its call, and with it the call's unfinished actions, on every protocol version: a wrapper ends the tool call's context with its HTTP request, which a call never outlives in Stateless mode. Before, the SDK's `PropagateRequestCancellation` did so only for protocol 2026-07-28 and later; the option is no longer set. A `notifications/cancelled` still doesn't reach the handler, so a disconnect or the timeout is still what cancels. In one case an action stays running after its call ends: when the request that starts it is cut short, by the timeout or a disconnect, after pmm-managed has sent the action, MCP has no action ID to cancel, and the action runs until pmm-agent's own 10 s limit. A lookup gives back its metric-call slot on every path, a recovered panic included. A Basic-auth user is keyed by the name as typed, lower-cased, and Grafana accepts a login or an email, so one user can hold two caller keys: one more case of a principal holding several keys, accepted like the others (percona/pmm#6381).
