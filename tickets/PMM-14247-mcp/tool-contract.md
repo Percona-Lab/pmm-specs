@@ -106,7 +106,7 @@ A listing tool takes `limit` and `offset` and returns `page`:
 Defaults and maximums are in [spec §8](spec.md#8-phase-3-output-contract). Bounded the other way:
 - `pmm_get_schema` takes 1 to 10 tables in its input.
 - `pmm_query_metrics` returns the top `limit` series by maximum value, with `total_series`, `truncated` and a hint for a narrower query, and has no `offset` (plan 05).
-- A plan body and one table's DDL are cut at their caps on a UTF-8 boundary (plan 03's `capText`), with `truncated: true`.
+- A plan body and one table's DDL are cut at their caps on a UTF-8 boundary (plan 03's `capText`), with `truncated: true`. A live plan whose action output is over 4 MiB, and with `PMM_MCP_RAW_SQL` off a stored plan over 4 MiB, is withheld with a fixed text before it is parsed and masked.
 - `pmm_catalog` returns a fixed catalogue, unpaged.
 
 ## 5. Provenance
@@ -144,7 +144,7 @@ A row of `pmm_top_queries` carries no `pmm_url` of its own: the result's link co
 
 - **A part** is a backing call whose data the result exists to return.
 - **`partial: true`** means at least one part failed and at least one succeeded. When every part fails, the call is an error result ([§3](#3-errors)). Each failed part's error sits next to that part's data as a `partError`, `{"code": "<code>", "message": "<message>"}`, built through `mapError` (`partErrorOf`); its retryability is its code's ([§3.2](#32-codes)).
-- **Best-effort enrichment is not a part:** a service's `version` (`serviceVersion`, `enrichVersions`), and `pmm_top_queries`' engine lookup for quoting (`reportEngines`). When enrichment fails, its field is left out, or the fail-closed rule withholds the fingerprint (ADR-07), and `partial` doesn't change. Plan 03's list names only these two. This document reads `pmm_inventory`'s node names the same way [I]: they come from a call of their own that is best effort today, and when it fails, the node names are empty (`nodeNames`, `tools_inventory.go:185-193`) [V]. Plan 06 takes them from the same series as the services (ADR-08).
+- **Best-effort enrichment is not a part:** a service's `version` (`serviceVersion`, `enrichVersions`), and `pmm_top_queries`' engine lookup for quoting (`reportEngines`). When enrichment fails, its field is left out, or the fail-closed rule withholds the fingerprint (ADR-07), and `partial` doesn't change. A queryid that holds a quote or a backslash isn't sent to the engine lookup: its row stays of unknown engine, so its fingerprint is withheld when it holds quoted text. Plan 03's list names only these two. This document reads `pmm_inventory`'s node names the same way [I]: they come from a call of their own that is best effort today, and when it fails, the node names are empty (`nodeNames`, `tools_inventory.go:185-193`) [V]. Plan 06 takes them from the same series as the services (ADR-08).
 
 | Tool | Parts | Each part's error | Today [V] |
 |---|---|---|---|
@@ -301,7 +301,7 @@ As [§4](#4-paging): `showing <offset+1>–<offset+n> of <total>; pass offset=<o
 
 - **`queryRow.rank`** is the row's position in the whole report, 1-based, offset included: the number the text shows (`tools_qan.go:144`) [V]. It is not qan-api2's `rank` (`deps.go:122`).
 - **`query_ref.service_id` in `pmm_top_queries`.** `query_ref` is set on `group_by=queryid` rows, with the request's window. Its `service_id` is set when the request pins one service: by `service_id`, by one `labels.service_id` value, or by one `service_name` (or `labels.service_name`) value, looked up in the caller's service list with one `listServices` call, made only then, and among the request's `service_id` values when it also filters on several. Otherwise `service_id` is omitted, and plan 04 resolves the `queryid` from QAN's candidates: one is used; several answer `invalid_input` listing them ([spec §6.6](spec.md#66-acceptance)).
-- **`query_ref.service_id` in `pmm_query_detail`** comes from the stored example's `service_id`, else from the `qan:getMetrics` metadata.
+- **`query_ref.service_id` in `pmm_query_detail`** is the request's `service_id`; else the one service in the caller's list that the `qan:getMetrics` metadata names, an empty name matching none; else, when `qan:getMetrics` failed, the stored example's `service_id`, if it is in the caller's list. Otherwise it is omitted.
 - **`page` in `pmm_top_queries`.** `total` is the report's `total_rows`; `offset` and `limit` are the request's; `truncated` is `offset + len(rows) < total`. The text keeps its `Rows a-b of n` header (`tools_qan.go:153-154`) and ends with the marker when truncated. Paging stays qan-api2's: MCP doesn't page the rows again.
 - **`tableResult`'s per-part errors.** A table's DDL action and index action fail independently, and each failure goes in its own field, `definition_error` or `indexes_error`, omitted otherwise. `truncated` is true when either text was cut. `schemaResult.partial` follows [§6](#6-partial-results), over all the actions of the call.
 

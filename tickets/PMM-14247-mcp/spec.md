@@ -366,7 +366,7 @@ Decision: [ADR-11](adr/ADR-11-output-contract.md).
    | `pmm_top_queries` rows | 10 | 100 (unchanged) |
    | `pmm_get_schema` tables | — | 10 (unchanged) |
    | `pmm_get_config` variables | 200 | 1000 |
-   | Plan body | — | 64 KiB, with a truncation marker |
+   | Plan body | — | 64 KiB, with a truncation marker; a live plan whose action output is over 4 MiB, and with `PMM_MCP_RAW_SQL` off a stored plan over 4 MiB, is withheld before it is parsed and masked |
    | One table's DDL | — | 32 KiB, with a truncation marker |
    | `pmm_query_metrics` series shown (top N by max) | 20 | 100 |
    | `pmm_query_metrics` points per response | — | 2,000; the step grows to fit, else summaries |
