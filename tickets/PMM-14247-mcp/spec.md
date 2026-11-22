@@ -194,7 +194,7 @@ MCP client ──HTTPS──▶ nginx  location /mcp
 | `PMM_ENABLE_MCP` | `false` | Also settable through the settings API (`enable_mcp`); read per request. |
 | `PMM_MCP_RAW_SQL` | `false` | Environment only; no API setting. |
 | `PMM_MCP_ACTION_TIMEOUT` | `15s` | Bounds the actions of one `pmm_get_explain` or `pmm_get_schema` call; the whole call is bounded by it plus 45 s (`toolTimeoutSlack`, `tools.go:27`). |
-| `PMM_DEV_MCP_LOOPBACK_URL` | `http://127.0.0.1:8080/` | Development only. |
+| `PMM_DEV_MCP_LOOPBACK_URL` | `http://127.0.0.1:8080/` | Development only. The host must be a loopback address or `localhost`; pmm-managed refuses any other. |
 
 ---
 
@@ -378,6 +378,7 @@ Decision: [ADR-11](adr/ADR-11-output-contract.md).
    | `pmm_query_metrics` series one selector matches over the time read, counted before the query | — | 2,000 |
    | A VictoriaMetrics response, as MCP reads it | — | 4 MiB |
    | A Grafana alerting response (rules API, Alertmanager alerts, silences), as `pmm_alerts` reads it | — | 16 MiB; a longer one is `pmm_unavailable`, and the message names the limit |
+   | A QAN report or query-metrics response (`metrics:getReport`, `qan:getMetrics`), as MCP reads it | — | 16 MiB; a longer one is `pmm_unavailable`, and the message names the limit |
    | `pmm_list_metrics` names, labels, values or series | 100 | 1000; names over the limit grouped by prefix with counts; series also within 16 KiB |
    | `pmm_list_metrics` look-back | 1 h | 7 days, every `kind` |
    | The caller's service list: look-back of the `up` series (ADR-08) | the call's window, at most 7 days, ending at its end; 1 h without a window | 7 days: a longer window reads its last 7 days, and a `not_found` says so |

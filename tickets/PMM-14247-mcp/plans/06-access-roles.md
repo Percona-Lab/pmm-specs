@@ -6,7 +6,7 @@
 
 **Architecture:** MCP first forwards the caller's credentials in ADR-10's canonical form. `listServices` then stops calling the inventory API: it runs one instant query through the Grafana datasource proxy (ADR-09), which vmproxy filters by the caller's Access Roles, and builds one row per `service_id` from the `up` series of the call's window, at most its last 7 days, or of the last hour for a call without a window. `pmm_inventory`, `engineOf`, `serviceEngine`, `pinnedServiceID`, the resolve-first candidates, the `pmm_query_detail` narrowing, `pmm_get_config` and `pmm_service_health` all read that list. pmm-managed's APIs, nginx, the gRPC gateway and `lbacPrefixes` don't change: ADR-16 is deferred.
 
-**Tech Stack:** Go 1.27, go-sdk v1.8.0, MetricsQL `tlast_over_time` through the datasource proxy (VictoriaMetrics v1.154.0 behind vmproxy; metricsql v0.87.5 lists the function in `rollup.go:87` [V]), api-tests.
+**Tech Stack:** Go 1.27, go-sdk v1.8.0, MetricsQL `tlast_over_time` through the datasource proxy (VictoriaMetrics v1.154.0 behind vmproxy; metricsql v0.87.5 lists the function in `rollup.go:87` [V]), api-tests. Amended 2026-11-22: PMM ships VictoriaMetrics `pmm-6401-v1.156.0`, and `metricsql` is v0.87.6, which lists the function on the same line [V] (percona/pmm#6381).
 
 **Spec:** [ADR-08](../adr/ADR-08-inventory-under-access-roles.md), [ADR-12](../adr/ADR-12-service-accounts-as-principals.md), [ADR-03](../adr/ADR-03-api-only-data-path.md), [ADR-09](../adr/ADR-09-metrics-via-datasource-proxy.md), [ADR-10](../adr/ADR-10-nginx-only.md), [spec §9](../spec.md#9-phase-4-identity-and-access-roles), [tool-contract §3.2, §7, §8](../tool-contract.md#8-tools). Ticket PMM-15531. PMM-15534 is its own ticket on `main`.
 
