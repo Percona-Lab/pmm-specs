@@ -30,7 +30,7 @@ MCP here is the [Model Context Protocol](https://modelcontextprotocol.io).
 - Access-Role permissions (ADR-13) move to PMM-15791, after the MCP release. Access Roles on PMM's own service-scoped APIs (ADR-16) are deferred to a PMM ticket, not yet filed, whose work lands on `main`.
 - It corrects the phase tickets where they are wrong or outdated ([§12](#12-corrections-to-the-tickets)).
 
-**Where the design material lives.** This folder is the design record. `DECISIONS.md` and `dev/docs/managed/mcp-access-roles-proposal.md` move from `PMM-MCP-GA` into the ADRs; a later `PMM-MCP-GA` pull request replaces them with a pointer to this folder. The tool contract (phase 3) and the identity design (phase 4), which the tickets place in percona/pmm `dev/docs/managed/`, are written here instead.
+**Where the design material lives.** This folder is the design record. `DECISIONS.md` and `dev/docs/managed/mcp-access-roles-proposal.md` move from `PMM-MCP-GA` into the ADRs; a later `PMM-MCP-GA` pull request replaces them with a pointer to this folder. Amended 2026-11-24: percona/pmm#6404 removes that pointer, so this folder is the only design record. The tool contract (phase 3) and the identity design (phase 4), which the tickets place in percona/pmm `dev/docs/managed/`, are written here instead.
 
 ### 1.1 Problem
 
@@ -437,7 +437,7 @@ Decision: [ADR-12](adr/ADR-12-service-accounts-as-principals.md). PMM-wide, so i
 
 Decisions: [ADR-08](adr/ADR-08-inventory-under-access-roles.md), [ADR-03](adr/ADR-03-api-only-data-path.md).
 
-- `pmm_inventory` and every service lookup in MCP (`listServices`, `engineOf`, `serviceEngine`, resolve-first) use the services in the metric series of the call's window, at most its last 7 days, or of the last hour for a call without a window (§8), read through the Grafana datasource proxy, which vmproxy filters by the caller's Access Roles: `up` grouped by `service_id`, `service_name`, `service_type`, `node_id`, `node_name`, `environment` and `cluster`, with the newest sample time as `last_seen`. Scrape targets carry these labels (`MergeLabels`, `scrape_configs.go:160`) [V].
+- `pmm_inventory` and every service lookup in MCP (`listServices`, `findService`, resolve-first) use the services in the metric series of the call's window, at most its last 7 days, or of the last hour for a call without a window (§8), read through the Grafana datasource proxy, which vmproxy filters by the caller's Access Roles: `up` grouped by `service_id`, `service_name`, `service_type`, `node_id`, `node_name`, `environment` and `cluster`, with the newest sample time as `last_seen`. Scrape targets carry these labels (`MergeLabels`, `scrape_configs.go:160`) [V].
 - The Viewer rules for `GET /v1/inventory/services` and `/nodes` that #5942 added (`auth_server.go:161-167`) [V] are removed; the inventory API stays Admin-only, as on `main`.
 - MCP narrows to this list: live actions, resolve-first candidates, `pmm_query_detail` and `pmm_get_config`. A `service_id` or name outside it answers `not_found` with a fixed text that echoes nothing the caller sent ([§8](#8-phase-3-output-contract) item 4).
 - `pmm_inventory` reports each service's `last_seen`, the newest `up` sample time, whatever its value. A target scraped with `up=0` stays listed with a current `last_seen`; a service leaves the list only when no `up` sample at all arrived in the look-back: `pmm_inventory`, which has no window, drops it after an hour, and a call with a window finds it while its window covers the service's samples. MCP derives no health state of its own, so it never disagrees with PMM's own service status, which uses other metrics and rules (`managed/services/management/service.go:61-76`) [V].
@@ -561,7 +561,7 @@ Additionally:
 - **QAN and ClickHouse load.** Settled by the security design review: the QAN tools share the metric-call caps, with a 30-day window (plan 05).
 - **MetricsQL `WITH` templates.** Settled by the security design review: refused (plan 05).
 - **The Editor token** `pmm_advisors` would need. Settled by the security design review: `pmm_advisors` is out of the Tech Preview (ADR-18).
-- **Comments in SQL fingerprints.** Settled: with raw SQL off, fail-closed masking masks the text of comments in fingerprints (`maskSQLLiterals`, `redact.go`) [V]. `pmm_query_detail`'s `example` isn't masked the same way yet: see the follow-ups below.
+- **Comments in SQL fingerprints.** Settled: with raw SQL off, fail-closed masking masks the text of comments in fingerprints (`maskSQL`, `redact.go`) [V]. `pmm_query_detail`'s `example` isn't masked the same way yet: see the follow-ups below.
 - **Clients that need OAuth.** `/mcp` takes static tokens only; MCP's OAuth flow and protected-resource metadata are not supported, and `mcp.md` recommends token expiry (plan 08).
 
 **Follow-ups from the security design review.** Each is built in a plan before the implementation review, or accepted in writing by it:
