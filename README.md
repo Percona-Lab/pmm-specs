@@ -11,3 +11,4 @@ Layout and rules: [AGENTS.md](AGENTS.md).
 | [PMM-14247-mcp](tickets/PMM-14247-mcp/) | MCP endpoint in PMM Server | Phases 0–1 merged into `PMM-MCP-GA`; design for phases 2–5; ADR-05, 10, 17 and 18 proposed, ADR-16 deferred, the rest accepted |
 | [PMM-15567-otel](tickets/PMM-15567-otel/) | OpenTelemetry logs and traces | Design; refresh for 3.12.0 in review; ADRs partly accepted |
 | [PMM-15785-qan-clickhouse-db](tickets/PMM-15785-qan-clickhouse-db/) | QAN database consistency across ClickHouse replicas (PMM HA) | Design, in review |
+| [PMM-15976-script-runs](tickets/PMM-15976-script-runs/) | Script runs in pmm-agent for PMM Extensions tasks, and the removal of Nomad | Design, in review; ADR-01 accepted, ADR-02 to ADR-14 proposed |
