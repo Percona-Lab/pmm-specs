@@ -2,12 +2,12 @@
 
 - Status: Proposed
 - Date: 2026-11-18
-- Tickets: PMM-15976
-- Planned in: plan 02; plan 03 for the host switch; plan 04 for PMM Extensions
+- Tickets: [PMM-15976](https://perconadev.atlassian.net/browse/PMM-15976)
+- Planned in: [plan 02](../plans/02-managed-runs-api.md); [plan 03](../plans/03-containment.md) for the host switch; [plan 04](../plans/04-extensions-executor.md) for PMM Extensions
 
 ## Context
 
-Starting a run executes a program on a database host, as root where pmm-agent is root (ADR-07). Who may do that is the most sensitive decision in this epic.
+Starting a run executes a program on a database host, as root where pmm-agent is root ([ADR-07](ADR-07-run-as-user.md)). Who may do that is the most sensitive decision in this epic.
 
 What PMM offers [V]:
 - Authorization is by Grafana role, by URL prefix and for some paths by HTTP method, in two tables (`managed/services/grafana/auth_server.go:54-149`, `:153-177`). A path with no rule needs the Grafana server admin.
@@ -25,7 +25,7 @@ The prototype's rule is `/v1/scripts`: Admin, and nothing else.
 ## Options
 
 1. **The Admin role alone.** Rejected: a role is not an identity. Running programs on database hosts should need proof of which service is calling, and not only a role.
-2. **A new permission in PMM**, such as an Access Role that grants "may run scripts". Rejected for now: PMM has no permission model to add it to. PMM-15791 plans one for another feature; this decision can move onto it when it exists.
+2. **A new permission in PMM**, such as an Access Role that grants "may run scripts". Rejected for now: PMM has no permission model to add it to. [PMM-15791](https://perconadev.atlassian.net/browse/PMM-15791) plans one for another feature; this decision can move onto it when it exists.
 3. **An endpoint that is not reachable from outside PMM Server**: its own port, outside nginx. Rejected: PMM Extensions runs in its own container and may run on another host, so the port would have to be reachable anyway, with its own TLS and its own credential.
 4. **The Admin role, and proof that the caller is PMM Extensions.**
 
@@ -44,7 +44,7 @@ Option 4.
 - `pmm-agent.yaml` gains `scripts.disabled`, with a flag and an environment variable. When it is set, pmm-agent refuses every run and reports it; the host list shows the reason. The server cannot change it.
 
 **In the protocol:**
-- pmm-managed sends a run only to an agent at or above the version gate, and accepts a run's messages only from that agent (ADR-04).
+- pmm-managed sends a run only to an agent at or above the version gate, and accepts a run's messages only from that agent ([ADR-04](ADR-04-acknowledged-delivery.md)).
 
 ## Consequences
 
@@ -56,5 +56,5 @@ Option 4.
 - An operator who wants script runs off turns PMM Extensions off, or sets `scripts.disabled` on the hosts that must never run one.
 - The API is PMM Extensions' only. A person with the Admin role cannot call it with `curl`, by design. A user interface or a public API for running scripts would need its own decision.
 - The second token changes when the secret does. Both sides derive it at start-up, so a rotation needs a restart of both.
-- The token travels on PMM Extensions' connection to PMM, which can verify PMM Server's certificate through a setting; open question O5 of the spec.
-- This decision waits for the security design review before plan 02 builds it ([roadmap](../plans/00-roadmap.md#plans-and-order)).
+- The token travels on PMM Extensions' connection to PMM, which can verify PMM Server's certificate through a setting; open question [O5](../spec.md#13-risks-and-open-questions) of the spec.
+- This decision waits for the security design review before [plan 02](../plans/02-managed-runs-api.md) builds it ([roadmap](../plans/00-roadmap.md#plans-and-order)).

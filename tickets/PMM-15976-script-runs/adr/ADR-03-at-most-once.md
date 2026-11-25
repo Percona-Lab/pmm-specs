@@ -2,8 +2,8 @@
 
 - Status: Proposed
 - Date: 2026-11-18
-- Tickets: PMM-15976
-- Planned in: plans 01 and 02
+- Tickets: [PMM-15976](https://perconadev.atlassian.net/browse/PMM-15976)
+- Planned in: [plans 01](../plans/01-agent-run-script.md) and [02](../plans/02-managed-runs-api.md)
 
 ## Context
 

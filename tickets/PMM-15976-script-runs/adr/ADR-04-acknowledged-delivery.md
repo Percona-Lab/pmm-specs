@@ -2,8 +2,8 @@
 
 - Status: Proposed
 - Date: 2026-11-18
-- Tickets: PMM-15976
-- Planned in: plans 01 and 02
+- Tickets: [PMM-15976](https://perconadev.atlassian.net/browse/PMM-15976)
+- Planned in: [plans 01](../plans/01-agent-run-script.md) and [02](../plans/02-managed-runs-api.md)
 
 ## Context
 
@@ -49,4 +49,4 @@ The numbers are in [the roadmap's limits](../plans/00-roadmap.md#limits).
 - Output can be lost when a script prints more than 4 MiB while its host is cut off. The record says how much. Before this, the choice was between losing it silently and growing without limit.
 - A slow PostgreSQL slows delivery but loses nothing: pmm-agent re-sends what was not answered.
 - Output is text. Bytes that are not valid UTF-8, and NUL bytes, are replaced.
-- Backups keep today's delivery (ADR-02).
+- Backups keep today's delivery ([ADR-02](ADR-02-job-type-on-the-jobs-channel.md)).

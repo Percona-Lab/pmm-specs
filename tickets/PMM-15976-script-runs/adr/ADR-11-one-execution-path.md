@@ -2,8 +2,8 @@
 
 - Status: Proposed
 - Date: 2026-11-18
-- Tickets: PMM-15976
-- Planned in: plan 01 (by what it leaves out); plan 04 for the caller
+- Tickets: [PMM-15976](https://perconadev.atlassian.net/browse/PMM-15976)
+- Planned in: [plan 01](../plans/01-agent-run-script.md) (by what it leaves out); [plan 04](../plans/04-extensions-executor.md) for the caller
 
 ## Context
 
@@ -26,7 +26,7 @@ Where the 1.0 s goes: PMM Extensions notices that a run ended by checking once a
 Option 3.
 
 - Everything that executes on a host is a run, with a record.
-- `GetRun` and `ListRuns` can wait (ADR-10), so a caller hears of a run's end when it happens, without polling.
+- `GetRun` and `ListRuns` can wait ([ADR-10](ADR-10-api-shape.md)), so a caller hears of a run's end when it happens, without polling.
 - PMM Extensions keeps one `ListRuns` call open and updates each run it returns. That serves every run, including the ones a caller is waiting on: inventory and topology probes, and the connectivity check.
 
 ## Consequences
@@ -34,5 +34,5 @@ Option 3.
 - One set of rules for who may run what, what is recorded, and how it is stopped.
 - A small script takes about 0.07 s at the API, plus what PMM Extensions adds. The prototype has no figure for a read command: it did not carry that kind. Test T17 sets the bar at 0.5 s through PMM Extensions.
 - That is slower than the short call's few milliseconds. No caller needs those today; a pmm-agent Action, PMM's existing fast path, takes 122 ms for a MySQL read [V].
-- Every small call leaves a record for 7 days (ADR-05). At one a second that is about 600,000 rows; plan 02 sizes the tables and their indexes for it.
+- Every small call leaves a record for 7 days ([ADR-05](ADR-05-run-records-and-retention.md)). At one a second that is about 600,000 rows; [plan 02](../plans/02-managed-runs-api.md) sizes the tables and their indexes for it.
 - If a caller later needs answers in milliseconds, that is a new record, and the answer may be an Action rather than a script.

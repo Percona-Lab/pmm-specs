@@ -2,8 +2,8 @@
 
 - Status: Proposed
 - Date: 2026-11-18
-- Tickets: PMM-15976
-- Planned in: plan 02
+- Tickets: [PMM-15976](https://perconadev.atlassian.net/browse/PMM-15976)
+- Planned in: [plan 02](../plans/02-managed-runs-api.md)
 
 ## Context
 
@@ -34,7 +34,7 @@ Option 2, through one entry at the end of the migration list in `managed/models/
 - **Never stored:** the content of `files`, the values of `env`, and `stdin`.
 - **Retention:** a finished run and its output are deleted 7 days after its final state, by a leader service, as the existing cleaner does for Action results (`managed/cmd/pmm-managed/main.go:1366`).
 - One run's stored output is capped by `max_output_bytes`: 16 MiB by default, 100 MiB at most.
-- All stored output together is held to 1 GiB: beyond that the cleaner deletes the output of the oldest finished runs first. The output of open runs is never deleted, so the total can pass 1 GiB for as long as open runs alone hold more than that (open question O6 of the spec).
+- All stored output together is held to 1 GiB: beyond that the cleaner deletes the output of the oldest finished runs first. The output of open runs is never deleted, so the total can pass 1 GiB for as long as open runs alone hold more than that (open question [O6](../spec.md#13-risks-and-open-questions) of the spec).
 - A file can be marked sensitive. Its SHA-256 is then not stored either: the hash of a short secret can be guessed.
 
 ## Consequences

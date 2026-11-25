@@ -1,9 +1,9 @@
 # ADR-01: pmm-agent replaces Nomad
 
-- Status: Accepted (2026-11-17), at the review of the PMM-15696 spike results
+- Status: Accepted (2026-11-17), at the review of the [PMM-15696](https://perconadev.atlassian.net/browse/PMM-15696) spike results
 - Date: 2026-11-18
-- Tickets: PMM-15976, PMM-15696
-- Planned in: plans 01 to 07
+- Tickets: [PMM-15976](https://perconadev.atlassian.net/browse/PMM-15976), [PMM-15696](https://perconadev.atlassian.net/browse/PMM-15696)
+- Planned in: [plans 01](../plans/01-agent-run-script.md) to [07](../plans/07-remove-nomad.md)
 
 ## Context
 
@@ -11,7 +11,7 @@ PMM Extensions runs every task on PMM Client hosts through HashiCorp Nomad, whic
 
 Measured on PMM 3.10.0 as released, a script can run twice, or be cut short, while its record reads success: after a 20-minute network cut, after a restart of pmm-agent, and after a host is away for over an hour ([spec §3.3](../spec.md#33-what-today-gets-wrong)) [V].
 
-The spike PMM-15696 found 104 options, screened and graded them, and tested three beside Nomad on rented machines. Its figures are in [spec §4](../spec.md#4-what-the-spike-measured).
+The spike [PMM-15696](https://perconadev.atlassian.net/browse/PMM-15696) found 104 options, screened and graded them, and tested three beside Nomad on rented machines. Its figures are in [spec §4](../spec.md#4-what-the-spike-measured).
 
 ## Options
 
@@ -30,8 +30,8 @@ Option 5. PMM Extensions' tasks run through pmm-agent, and Nomad is removed from
 ## Consequences
 
 - PMM Client hosts lose a daemon, and PMM Server loses a service, a port and a certificate authority.
-- The license question ends when the removal ships (ADR-14).
-- The executor becomes PMM's own code. Its design, review, tests and upkeep are PMM's work; ADR-02 to ADR-14 and the plans are that work.
-- The monitoring agent now also runs customers' scripts. What a run can do to pmm-agent has to be bounded (ADR-04, ADR-06).
+- The license question ends when the removal ships ([ADR-14](ADR-14-mixed-versions-and-nomad-removal.md)).
+- The executor becomes PMM's own code. Its design, review, tests and upkeep are PMM's work; [ADR-02](ADR-02-job-type-on-the-jobs-channel.md) to [ADR-14](ADR-14-mixed-versions-and-nomad-removal.md) and the plans are that work.
+- The monitoring agent now also runs customers' scripts. What a run can do to pmm-agent has to be bounded ([ADR-04](ADR-04-acknowledged-delivery.md), [ADR-06](ADR-06-stop-and-containment.md)).
 - The prototype left open points: a memory kill that can stop the whole unit, a child that escapes a stop, a script that runs on after a restore, HA and upgrades untested, two of four task kinds not carried ([spec §4.5](../spec.md#45-what-the-spike-left-open-for-the-pmm-agent-job)). Each has a decision and a test in this folder.
-- Clients older than the release that ships the job cannot run tasks through pmm-agent (ADR-14).
+- Clients older than the release that ships the job cannot run tasks through pmm-agent ([ADR-14](ADR-14-mixed-versions-and-nomad-removal.md)).

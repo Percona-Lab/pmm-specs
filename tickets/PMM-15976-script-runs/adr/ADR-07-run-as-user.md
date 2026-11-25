@@ -2,8 +2,8 @@
 
 - Status: Proposed
 - Date: 2026-11-18
-- Tickets: PMM-15976
-- Planned in: plan 03; plan 01 Task 7 for the file read; plan 04 for PMM Extensions
+- Tickets: [PMM-15976](https://perconadev.atlassian.net/browse/PMM-15976)
+- Planned in: [plan 03](../plans/03-containment.md); [plan 01 Task 7](../plans/01-agent-run-script.md#task-7-readrunfile-confined) for the file read; [plan 04](../plans/04-extensions-executor.md) for PMM Extensions
 
 ## Context
 
@@ -36,7 +36,7 @@ Option 3.
 
 - Tasks that need root keep working on packaged installs, with nothing to configure. This is today's behavior.
 - How much less than root a named user is depends on the host. That is its owner's knowledge, and the reason the choice is per task.
-- PMM Extensions can ask for less than root, task by task. In the first release it does not: every task runs as it does today, and plan 04 adds the per-task setting. A task that does not ask for root is not moved to another user on its own, because it may depend on root today without saying so.
-- On a packaged install, whoever can start a run can run a program as root on that host. ADR-09 is what limits who that is, and `scripts.disabled` lets a host's owner refuse it.
+- PMM Extensions can ask for less than root, task by task. In the first release it does not: every task runs as it does today, and [plan 04](../plans/04-extensions-executor.md) adds the per-task setting. A task that does not ask for root is not moved to another user on its own, because it may depend on root today without saying so.
+- On a packaged install, whoever can start a run can run a program as root on that host. [ADR-09](ADR-09-who-may-start-a-run.md) is what limits who that is, and `scripts.disabled` lets a host's owner refuse it.
 - A script is not sandboxed beyond its user and its control group: it sees the host's file system and network as that user does. [Spec §14](../spec.md#14-not-in-scope) lists this as out of scope.
-- Open question O2 of the spec asks whether the default should be the non-root user instead.
+- Open question [O2](../spec.md#13-risks-and-open-questions) of the spec asks whether the default should be the non-root user instead.

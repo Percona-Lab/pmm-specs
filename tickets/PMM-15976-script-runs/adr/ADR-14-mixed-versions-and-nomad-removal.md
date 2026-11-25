@@ -2,8 +2,8 @@
 
 - Status: Proposed
 - Date: 2026-11-18
-- Tickets: PMM-15976, PMM-15696
-- Planned in: plans 05 and 07
+- Tickets: [PMM-15976](https://perconadev.atlassian.net/browse/PMM-15976), [PMM-15696](https://perconadev.atlassian.net/browse/PMM-15696)
+- Planned in: [plans 05](../plans/05-switch-over.md) and [07](../plans/07-remove-nomad.md)
 
 ## Context
 
@@ -60,10 +60,10 @@ Option 4.
 
 ## Consequences
 
-- One release of notice, where PMM's two precedents gave two. The reasons: Nomad is off by default, the people affected get the replacement in the same release as the notice, and the license is the reason to move. Open question O4 of the spec.
+- One release of notice, where PMM's two precedents gave two. The reasons: Nomad is off by default, the people affected get the replacement in the same release as the notice, and the license is the reason to move. Open question [O4](../spec.md#13-risks-and-open-questions) of the spec.
 - One release in which a problem with the new executor can be answered by a setting.
 - For that release PMM ships both, and both have to be tested.
 - After the removal, a task needs a client at or above the gate. An install that upgraded its server and not its clients loses tasks on those hosts, and sees the reason.
 - People who script against `/nomad/` lose it, with one release of notice.
 - The inventory API keeps an agent type that no longer exists. That is the price of an API that only takes additions.
-- If the first release shows that one release of overlap is not enough, the removal moves, and this record is superseded. Open question O4 of the spec.
+- If the first release shows that one release of overlap is not enough, the removal moves, and this record is superseded. Open question [O4](../spec.md#13-risks-and-open-questions) of the spec.

@@ -2,8 +2,8 @@
 
 - Status: Proposed
 - Date: 2026-11-18
-- Tickets: PMM-15976
-- Planned in: plan 02
+- Tickets: [PMM-15976](https://perconadev.atlassian.net/browse/PMM-15976)
+- Planned in: [plan 02](../plans/02-managed-runs-api.md)
 
 ## Context
 
@@ -13,7 +13,7 @@ The prototype's API is a tree of plain HTTP handlers on pmm-managed's second por
 
 No public RPC streams from the server. Logs of backups are read by offset: `GET /v1/backups/{artifact_id}/logs` with `offset` and `limit`, returning chunks and an `end` flag (`api/backup/v1/backup.proto:156-165`) [V].
 
-The API has one caller, PMM Extensions (ADR-09), and it will change as that caller's needs become clear.
+The API has one caller, PMM Extensions ([ADR-09](ADR-09-who-may-start-a-run.md)), and it will change as that caller's needs become clear.
 
 ## Options
 

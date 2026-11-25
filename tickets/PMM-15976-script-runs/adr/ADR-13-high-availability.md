@@ -2,8 +2,8 @@
 
 - Status: Proposed
 - Date: 2026-11-18
-- Tickets: PMM-15976
-- Planned in: plan 02; tested in plan 06
+- Tickets: [PMM-15976](https://perconadev.atlassian.net/browse/PMM-15976)
+- Planned in: [plan 02](../plans/02-managed-runs-api.md); tested in [plan 06](../plans/06-verification.md)
 
 ## Context
 
@@ -30,15 +30,15 @@ Option 3.
 
 - A run's record, its output and a held stop are rows in PostgreSQL.
 - A run executes on its host and does not depend on any replica being up.
-- After a change of leader, agents reconnect to the new leader. pmm-agent re-sends what was not acknowledged, and the check of ADR-03 runs there.
+- After a change of leader, agents reconnect to the new leader. pmm-agent re-sends what was not acknowledged, and the check of [ADR-03](ADR-03-at-most-once.md) runs there.
 - Retention is a leader service.
 - The host list reads the registry of the replica that answers, which is the leader.
 - A call that waits is answered by the replica that received it, and re-reads the database every second, so it returns whichever replica stored the result.
-- The internal token of ADR-09 is set with `PMM_EXTENSIONS_TOKEN`, to the same value on every replica. PMM Extensions is not part of the HA set-up today; that work is PMM-15287.
+- The internal token of [ADR-09](ADR-09-who-may-start-a-run.md) is set with `PMM_EXTENSIONS_TOKEN`, to the same value on every replica. PMM Extensions is not part of the HA set-up today; that work is [PMM-15287](https://perconadev.atlassian.net/browse/PMM-15287).
 
 ## Consequences
 
-- A change of leader loses no run and repeats none, as long as the hosts reach the new leader. The output written during the change arrives after the reconnect, up to the queue's bound (ADR-04).
+- A change of leader loses no run and repeats none, as long as the hosts reach the new leader. The output written during the change arrives after the reconnect, up to the queue's bound ([ADR-04](ADR-04-acknowledged-delivery.md)).
 - Two limits of PMM HA remain. While an agent's stream is still held by a demoted leader, a start for that host is `not_started` with "not connected", and a stop is held until the agent reconnects.
 - A `GetRun` that waits can return early when its replica stops being the leader. The caller asks again.
 - None of this is measured yet. Test T8 is a release gate: a change of leader with runs in flight, on the three-replica chart, driven through the API with the token set as above. Its bar includes a new run that starts after the change.

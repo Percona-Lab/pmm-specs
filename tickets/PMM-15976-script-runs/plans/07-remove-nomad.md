@@ -1,6 +1,6 @@
 # Plan 07: Remove Nomad (task level)
 
-> Execution: see [00](00-roadmap.md#how-to-execute-these-plans). This plan is expanded into a full-depth plan, and the expansion is reviewed in a pmm-specs PR, before it starts. It belongs to PMM 3.13.0, the release after 3.12.0, which ships plans 01 to 06.
+> Execution: see [00](00-roadmap.md#how-to-execute-these-plans). This plan is expanded into a full-depth plan, and the expansion is reviewed in a pmm-specs PR, before it starts. It belongs to PMM 3.13.0, the release after 3.12.0, which ships [plans 01](01-agent-run-script.md) to [06](06-verification.md).
 
 **Goal:** Nomad is gone from PMM Server, PMM Client, PMM Extensions and the docs: no Nomad process, binary, port, endpoint, setting or inventory row, while every old client, server, compose file, side-car setting and API client that still names Nomad keeps working or fails with a clear message.
 
@@ -14,29 +14,29 @@
 
 **Tech Stack:** Go (pmm-managed, pmm-agent, pmm-admin), protobuf with `buf breaking`, nginx, the client build scripts and rpm/deb packaging, React in `ui/` (pnpm workspace), MkDocs; Python, Alembic and Poetry in percona/pmm-extensions.
 
-**Spec:** [spec §10](../spec.md#10-removing-nomad), [§10.1](../spec.md#101-nomad-capabilities-and-what-replaces-each), [§10.2](../spec.md#102-two-releases), [§10.3](../spec.md#103-old-and-new-together), [§13 O4](../spec.md#13-risks-and-open-questions), [ADR-14](../adr/ADR-14-mixed-versions-and-nomad-removal.md), [ADR-01](../adr/ADR-01-pmm-agent-replaces-nomad.md). Ticket PMM-15983.
+**Spec:** [spec §10](../spec.md#10-removing-nomad), [§10.1](../spec.md#101-nomad-capabilities-and-what-replaces-each), [§10.2](../spec.md#102-two-releases), [§10.3](../spec.md#103-old-and-new-together), [§13 O4](../spec.md#13-risks-and-open-questions), [ADR-14](../adr/ADR-14-mixed-versions-and-nomad-removal.md), [ADR-01](../adr/ADR-01-pmm-agent-replaces-nomad.md). Ticket [PMM-15983](https://perconadev.atlassian.net/browse/PMM-15983).
 
 ## Global Constraints
 
-- **Needs:** PMM 3.12.0, which ships plans 01 to 06, is out; ADR-14 is Accepted, with O4 answered ([spec §13](../spec.md#13-risks-and-open-questions)).
-- **Code base:** percona/pmm `main` at `122590fc6` and percona/pmm-extensions `main` at `285f3c96dc`. Line numbers refer to those commits; the expansion re-checks them on the `main` it starts from, which by then carries plans 01 to 05.
-- **Paths:** a bare path is in percona/pmm, except in Task 15, whose paths are all in percona/pmm-extensions.
+- **Needs:** PMM 3.12.0, which ships [plans 01](01-agent-run-script.md) to [06](06-verification.md), is out; [ADR-14](../adr/ADR-14-mixed-versions-and-nomad-removal.md) is Accepted, with [O4](../spec.md#13-risks-and-open-questions) answered ([spec §13](../spec.md#13-risks-and-open-questions)).
+- **Code base:** percona/pmm `main` at `122590fc6` and percona/pmm-extensions `main` at `285f3c96dc`. Line numbers refer to those commits; the expansion re-checks them on the `main` it starts from, which by then carries [plans 01](01-agent-run-script.md) to [05](05-switch-over.md).
+- **Paths:** a bare path is in percona/pmm, except in [Task 15](#task-15-pmm-extensions), whose paths are all in percona/pmm-extensions.
 - **Scope:** Nomad is named in 146 files of percona/pmm (`git grep -il nomad` at `122590fc6`) [V]. Generated files are regenerated, never edited:
   - `*.pb.go`, `*.pb.validate.go`, `api/**/json/**`, `api/swagger/*.json` and `api/descriptor.bin` by `make gen`;
-  - `ui/packages/extensions/api/specs/*.json` and `ui/packages/extensions/api/src/generated/*` in two steps (`ui/packages/extensions/api/README.md:144-153`) [V]: after Task 15's PR is merged, `python scripts/dump_openapi.py` in percona/pmm-extensions, the four specs copied into `ui/packages/extensions/api/specs/`, then `pnpm --filter @pmm-extensions/api codegen` and `pnpm --filter @pmm-extensions/api exec oxfmt --write src/generated` in percona/pmm's PR.
+  - `ui/packages/extensions/api/specs/*.json` and `ui/packages/extensions/api/src/generated/*` in two steps (`ui/packages/extensions/api/README.md:144-153`) [V]: after [Task 15](#task-15-pmm-extensions)'s PR is merged, `python scripts/dump_openapi.py` in percona/pmm-extensions, the four specs copied into `ui/packages/extensions/api/specs/`, then `pnpm --filter @pmm-extensions/api codegen` and `pnpm --filter @pmm-extensions/api exec oxfmt --write src/generated` in percona/pmm's PR.
 - **Additive-only API:** no enum value, message, field or oneof number is removed or renumbered; `buf breaking` runs inside `make gen` (`api/Makefile:6`) [V]. Released release notes (`documentation/docs/release-notes/3.*.md`) and `CHANGELOG.md` history are not edited.
-- **pmm-agent's flags:** `--paths-nomad` and `--paths-nomad-data-dir` stay accepted in 3.13.0, hidden and ignored, so their users on PMM Server (`build/docker/server/entrypoint.sh:312`, `managed/services/supervisord/pmm_config.go:182`) [V] and any user's automation keep working whatever order they change in. They are deleted in 3.14.0 (Task 10).
+- **pmm-agent's flags:** `--paths-nomad` and `--paths-nomad-data-dir` stay accepted in 3.13.0, hidden and ignored, so their users on PMM Server (`build/docker/server/entrypoint.sh:312`, `managed/services/supervisord/pmm_config.go:182`) [V] and any user's automation keep working whatever order they change in. They are deleted in 3.14.0 ([Task 10](#task-10-pathsnomad-pathsnomaddatadir-and-their-flags-hidden-and-ignored)).
 - **Branches:** percona/pmm `PMM-15983-remove-nomad` from `main`, one PR, or one per task group if the expansion splits it; percona/pmm-extensions under its own rules, with a changelog fragment (percona/pmm-extensions `changelog.d/README.md`).
 
 ## Review Focus
 
-- **The converter panic.** A `nomad-agent` row that an older replica creates again during a rolling HA upgrade reaches `ToAPIAgent`, whose `default:` panics on an unknown type (`managed/services/converters.go:628-629`) [V], and `SetState`, whose `default:` fails the whole request for that pmm-agent (`managed/services/agents/state.go:388-389`) [V]. Expected: both skip the type, and the rows are deleted at every start (Task 6).
-- **The server's own pmm-agent.** It is started with `--paths-nomad-data-dir` [V]; a deleted flag would stop it on every PMM Server [I: kingpin refuses unknown flags]. Expected: the flag stays accepted and hidden in 3.13.0, and a Feature Build shows `supervisorctl status pmm-agent` RUNNING (Task 10).
-- **A new pmm-agent meeting an old server** that still sends the Nomad process. Expected: the stub reports `AGENT_STATUS_DONE`, logs why once, and every other agent process on the host is untouched (Task 9).
-- **Nomad's certificate material on the server volume** (`/srv/nomad/certs/`). Expected: pmm-managed deletes `/srv/nomad` at every start, after the `nomad-agent` rows (Task 12).
-- **A compose file that still sets `PMM_ENABLE_NOMAD=1`.** Expected: PMM Server starts, logs one warning naming the variable, and runs no Nomad (Task 4).
-- **A side-car that still has the 3.12.0 fallback values.** Expected: it starts, ignores them and logs a warning (Task 15).
-- **PMM Extensions rows that name the `nomad` backend.** Expected: no row is rewritten; every stored task still loads, lists, reads and deletes; running one is refused with the message, a 400 on the API and a FAILED history on the periodic path (Task 15).
+- **The converter panic.** A `nomad-agent` row that an older replica creates again during a rolling HA upgrade reaches `ToAPIAgent`, whose `default:` panics on an unknown type (`managed/services/converters.go:628-629`) [V], and `SetState`, whose `default:` fails the whole request for that pmm-agent (`managed/services/agents/state.go:388-389`) [V]. Expected: both skip the type, and the rows are deleted at every start ([Task 6](#task-6-nomad-agent-rows-no-new-ones-no-state-push-deleted-at-every-start-skipped-everywhere)).
+- **The server's own pmm-agent.** It is started with `--paths-nomad-data-dir` [V]; a deleted flag would stop it on every PMM Server [I: kingpin refuses unknown flags]. Expected: the flag stays accepted and hidden in 3.13.0, and a Feature Build shows `supervisorctl status pmm-agent` RUNNING ([Task 10](#task-10-pathsnomad-pathsnomaddatadir-and-their-flags-hidden-and-ignored)).
+- **A new pmm-agent meeting an old server** that still sends the Nomad process. Expected: the stub reports `AGENT_STATUS_DONE`, logs why once, and every other agent process on the host is untouched ([Task 9](#task-9-pmm-agents-supervisor-the-nomad-case-becomes-a-stub)).
+- **Nomad's certificate material on the server volume** (`/srv/nomad/certs/`). Expected: pmm-managed deletes `/srv/nomad` at every start, after the `nomad-agent` rows ([Task 12](#task-12-leftovers-on-disk)).
+- **A compose file that still sets `PMM_ENABLE_NOMAD=1`.** Expected: PMM Server starts, logs one warning naming the variable, and runs no Nomad ([Task 4](#task-4-pmm_enable_nomad-and-pmm_nomad_gc_-read-and-ignored-with-a-warning)).
+- **A side-car that still has the 3.12.0 fallback values.** Expected: it starts, ignores them and logs a warning ([Task 15](#task-15-pmm-extensions)).
+- **PMM Extensions rows that name the `nomad` backend.** Expected: no row is rewritten; every stored task still loads, lists, reads and deletes; running one is refused with the message, a 400 on the API and a FAILED history on the periodic path ([Task 15](#task-15-pmm-extensions)).
 
 ---
 
@@ -86,13 +86,13 @@
 
 **Steps:**
 - Write the failing test on `testdb.Open`: settings JSON with `{"Nomad":{"enabled":true}}` loses the key and keeps every other key.
-- Add the migration; remove `IsNomadEnabled` and its callers (Tasks 2, 6, 8).
+- Add the migration; remove `IsNomadEnabled` and its callers ([Tasks 2](#task-2-the-supervisord-program), [6](#task-6-nomad-agent-rows-no-new-ones-no-state-push-deleted-at-every-start-skipped-everywhere), [8](#task-8-pmm-admin-the-pmm-ui-and-victoriametrics)).
 
 ### Task 4: `PMM_ENABLE_NOMAD` and `PMM_NOMAD_GC_*` read and ignored, with a warning
 
 **Files:**
-- Modify: `managed/utils/envvars/parser.go` (the case at `:236-242`; the public-address warning at `:363-368`; plan 05's deprecation warning beside it)
-- Modify: `managed/cmd/pmm-managed/main.go` (the five kingpin flags at `:843-866`, with Task 1)
+- Modify: `managed/utils/envvars/parser.go` (the case at `:236-242`; the public-address warning at `:363-368`; [plan 05](05-switch-over.md)'s deprecation warning beside it)
+- Modify: `managed/cmd/pmm-managed/main.go` (the five kingpin flags at `:843-866`, with [Task 1](#task-1-the-nomad-server-service-and-its-wiring-in-pmm-managed))
 - Test: `managed/utils/envvars/parser_test.go`
 
 **Interfaces:**
@@ -101,7 +101,7 @@
 
 **Steps:**
 - Write the failing test: each variable, with any value, `PMM_ENABLE_NOMAD=1` included, gives its warning and no error, and no setting changes.
-- Add the case; remove the public-address warning and plan 05's deprecation warning.
+- Add the case; remove the public-address warning and [plan 05](05-switch-over.md)'s deprecation warning.
 
 ### Task 5: nginx `/nomad/` and its auth rule
 
@@ -110,7 +110,7 @@
 - Modify: `managed/services/grafana/auth_server.go` (`"/nomad": admin`, `:127`)
 - Test: `managed/services/grafana/auth_server_test.go`
 
-**Interfaces:** the `/nomad/` endpoint goes. It was documented for admins (`documentation/docs/reference/nomad.md:108-117`) [V] and announced in the release notes of 3.12.0 (plan 05 Task 7). An unmatched prefix falls back to `grafanaAdmin` with a warning (`resolveRule`, `auth_server.go:604-623`) [V].
+**Interfaces:** the `/nomad/` endpoint goes. It was documented for admins (`documentation/docs/reference/nomad.md:108-117`) [V] and announced in the release notes of 3.12.0 ([plan 05 Task 7](05-switch-over.md#task-7-release-notes-and-api-docs)). An unmatched prefix falls back to `grafanaAdmin` with a warning (`resolveRule`, `auth_server.go:604-623`) [V].
 
 **Steps:**
 - Remove both. Record in the test what `/nomad/v1/nodes` answers to an authenticated Admin.
@@ -202,7 +202,7 @@
 **Steps:**
 - Write the failing tests: `pmm-agent setup --paths-nomad-data-dir=/x`, and pmm-agent started with `PMM_AGENT_PATHS_NOMAD=/y`, both succeed; neither flag appears in `--help`; nothing is written for them to `pmm-agent.yaml`; a `pmm-agent.yaml` with both old keys loads.
 - Drop the flag from `entrypoint.sh:312` and `pmm_config.go:182`, with its testdata. Because pmm-agent still accepts it, the order of these changes does not matter.
-- Link PMM-15984, the follow-up for 3.14.0 that deletes the two flags, from PMM-15983.
+- Link [PMM-15984](https://perconadev.atlassian.net/browse/PMM-15984), the follow-up for 3.14.0 that deletes the two flags, from [PMM-15983](https://perconadev.atlassian.net/browse/PMM-15983).
 - Check on the Feature Build that `supervisorctl status pmm-agent` reads RUNNING on a fresh server and on one upgraded from 3.12.0.
 
 ### Task 11: Packaging
@@ -225,7 +225,7 @@
 ### Task 12: Leftovers on disk
 
 **Files:**
-- Modify: `managed/cmd/pmm-managed/main.go` (after Task 6's deletion of the rows): delete `/srv/nomad`
+- Modify: `managed/cmd/pmm-managed/main.go` (after [Task 6](#task-6-nomad-agent-rows-no-new-ones-no-state-push-deleted-at-every-start-skipped-everywhere)'s deletion of the rows): delete `/srv/nomad`
 - Modify: `build/packages/rpm/client/pmm-client.spec` (`%posttrans`, `:44`), `build/packages/deb/postinst` (`configure)`, `:11`): delete `/usr/local/percona/pmm/data/nomad`
 - Modify: `build/scripts/install_tarball`: delete `${PMM_DIR}/tools/nomad` and `${PMM_DIR}/data/nomad` (`PMM_DIR`, `:33`)
 - Test: a pmm-managed test of the deletion on a temporary directory; the package checks of the Feature Build
@@ -253,11 +253,11 @@
 ### Task 13: Docs and release notes
 
 **Files:**
-- Modify: `documentation/docs/reference/nomad.md` (to a short page: Nomad was removed in 3.13.0; what PMM deletes and what is left to remove by hand, Task 12; how PMM Extensions runs tasks now)
+- Modify: `documentation/docs/reference/nomad.md` (to a short page: Nomad was removed in 3.13.0; what PMM deletes and what is left to remove by hand, [Task 12](#task-12-leftovers-on-disk); how PMM Extensions runs tasks now)
 - Modify: `documentation/docs/install-pmm/install-pmm-server/deployment-options/docker/env_var.md` (the GC section, `:237-272`; `PMM_ENABLE_NOMAD` mentions)
-- Modify: `documentation/docs/apps/deploy-pmm-extensions.md` (the 3.12.0 fallback note, plan 05 Task 6), `documentation/docs/reference/index.md` (`:37`, `:64`, `:109`), `documentation/docs/reference/pmm_components_and_versions.md` (`:13`)
+- Modify: `documentation/docs/apps/deploy-pmm-extensions.md` (the 3.12.0 fallback note, [plan 05 Task 6](05-switch-over.md#task-6-user-documentation)), `documentation/docs/reference/index.md` (`:37`, `:64`, `:109`), `documentation/docs/reference/pmm_components_and_versions.md` (`:13`)
 - Modify: `documentation/AGENTS.md` (`:139`, `:189`: example links that point at `nomad.md`), `CONTRIBUTING.md` (`:54`), `agent/AGENTS.md` (`:16`)
-- Modify: `docker-compose.yml`, `.env.example`, `.env.dev.example` (the fallback comments plan 05 Task 3 left)
+- Modify: `docker-compose.yml`, `.env.example`, `.env.dev.example` (the fallback comments [plan 05 Task 3](05-switch-over.md#task-3-pmm-server-with-and-without-pmm_enable_nomad-in-3120) left)
 - Modify: `documentation/api/extensions-tasks/connectivity-check.md` (the `nomad` target goes)
 - Modify: `documentation/docs/release-notes/next.md`; Create: `documentation/api/release-notes/3.13.0.md`, in the form of `documentation/api/release-notes/3.11.0.md`
 - Modify, while `nomad.md` links Nomad's site: `documentation/.linkspector.yml` (`:14-15`)
@@ -281,7 +281,7 @@
 **Interfaces:** none. `managed/services/om/inventory_test.go` keeps its four assertions that a message does not mention Nomad (`:578`, `:918`, `:941`, `:964`) [V].
 
 **Steps:**
-- After all tasks, run `git grep -il nomad` and record the list: only generated files, the deprecated protocol type and its comments, the retired model constant, the pmm-agent stub, the ignored flags, Task 4's case, the removal docs, released release notes, history and the guard assertions above.
+- After all tasks, run `git grep -il nomad` and record the list: only generated files, the deprecated protocol type and its comments, the retired model constant, the pmm-agent stub, the ignored flags, [Task 4](#task-4-pmm_enable_nomad-and-pmm_nomad_gc_-read-and-ignored-with-a-warning)'s case, the removal docs, released release notes, history and the guard assertions above.
 - Run `make prepare-pr`; `make test` in `managed/`, `agent/` and `admin/`; `api-tests/` against the Feature Build.
 
 ### Task 15: PMM Extensions
@@ -293,21 +293,21 @@ All paths in this task are in percona/pmm-extensions.
 - Modify: `pyproject.toml` (`python-nomad`, `:46`), through Poetry's CLI (`poetry remove python-nomad`), never by hand
 - Modify: `app/tasks/config.py` (the import `:46-52`; `NOMAD: NomadExecutor` `:221`; the code default of `DEFAULT_BACKEND`), `app/tasks/models/enums.py` (`NOMAD`, `:32`, kept as a retired value), `app/tasks/deps.py` (`:44`; `get_executor` `:77-105`; `:124-134`; `get_request_executor` `:136-162`)
 - Modify: `app/tasks/main.py` (the import `:25`; `NomadLifecycle` import `:56` and lifespan `:132`; `_reconcile_nomad` `:64-84`; the 410 body `:194-234`; `nomad_exception_handler` `:237-243`), `app/tasks/celery.py` (`:45`, `:88-90`, `:240-245`, `:327-347`, `:350-386`; the finishing probe `:1091-1161`; `check_nomad_cert_expiry` `:1414-1510`), `app/tasks/crud.py` (`:41`), `app/tasks/db/seed.py` (`:43`, `:47`, `:835-866`), `app/tasks/models/constants.py` (`:67`)
-- Modify: `app/tasks/connectivity/service.py` (`:44`, `:62-64`), `app/extensions/api/routes/connectivity_check.py` (`ServiceEnum.NOMAD` `:69`), `frontend/packages/shell/src/components/settings/TestConnectionButton.tsx` (`:37`), `app/extensions/apps/framework/spec.py` (`:73`), `app/extensions/apps/om_bootstrap/reconcile.py` (`:92`), `app/extensions/apps/om_inventory/dispatch.py` (`:58`), wherever plan 04 left an import of the Nomad package; comments that name it: `app/extensions/config.py:93`, `app/extensions/apps/om_inventory/mapping.py:24`
+- Modify: `app/tasks/connectivity/service.py` (`:44`, `:62-64`), `app/extensions/api/routes/connectivity_check.py` (`ServiceEnum.NOMAD` `:69`), `frontend/packages/shell/src/components/settings/TestConnectionButton.tsx` (`:37`), `app/extensions/apps/framework/spec.py` (`:73`), `app/extensions/apps/om_bootstrap/reconcile.py` (`:92`), `app/extensions/apps/om_inventory/dispatch.py` (`:58`), wherever [plan 04](04-extensions-executor.md) left an import of the Nomad package; comments that name it: `app/extensions/config.py:93`, `app/extensions/apps/om_inventory/mapping.py:24`
 - Modify, the payloads' `NOMAD_*` fallback reads: `app/extensions/apps/backup_mongo/pbm_creds_common.py` (`:79`, `:189`, `:322`), then `make regen-pbm-payloads`, which rewrites the generated regions of the eleven payloads in `app/extensions/apps/backup_mongo/` and `restore/`; the hand-written reads outside those regions (`# --- BEGIN GENERATED …` / `# --- END GENERATED …`) in seven of them; `app/extensions/apps/om_inventory/payload/probe.py` (`:106`); `app/extensions/apps/backup_mongo/README.md` (`:102`); `tests/app/host_payloads.py` (`:465`)
 - Modify: `settings.yaml` (`:42`, `:409-411`, `:434`, `:455-467`, `:516-518`, `:619-639`), `sidecar/settings.yaml` (`:328-337`), `sidecar/settings-env.sh` (`:126`, `:151`, `:165-167`), `sidecar/README.md` (`:66-67`, `:188-190`, `:233`, `:357-393`, `:457`)
 - Modify: `.pre-commit-config.yaml` (`:48-51`), `Makefile` (`:254-259`, `:438`)
 - Modify: `docs/customer/pmm-extensions-task-execution-dfd/` (`README.md`, `security-review-checklist.md`, `data-capture-redaction-retention.md`, the two `.mmd` files), `docs/customer/pmm-extensions-user-guide/README.md`, `docs/development/ty-policy.md`, `README.md`
 - Create: `changelog.d/PMM-15983.breaking.md`
 - Delete: `tests/app/tasks/execution/executors/nomad/`, `tests/app/tasks/execution/test_nomad_lifecycle.py`, `tests/app/tasks/nomad_log_stub.py`
-- Test: `tests/app/tasks/conftest.py` (fixtures `nomad_stub` `:127`, `live_executor` `:139`, `live_route_overrides` `:179`), every other importer (`grep -rl NomadExecutor tests/`), `tests/app/tasks/test_routes.py`, `tests/app/tasks/test_celery.py`, `tests/sidecar/test_settings_env.py`, the payload tests plan 04 Task 5 names
+- Test: `tests/app/tasks/conftest.py` (fixtures `nomad_stub` `:127`, `live_executor` `:139`, `live_route_overrides` `:179`), every other importer (`grep -rl NomadExecutor tests/`), `tests/app/tasks/test_routes.py`, `tests/app/tasks/test_celery.py`, `tests/sidecar/test_settings_env.py`, the payload tests [plan 04 Task 5](04-extensions-executor.md#task-5-inputs-files-the-command-configuration-artifacts-and-the-payloads-that-read-nomad_) names
 
 **Interfaces:**
 - `TaskBackendEnum` keeps `NOMAD` as a retired value beside `PMM_AGENT`, `PROXY` and `CELERY`. No row of `task` is rewritten: `task.backend` is stored as text (`EnumField(TaskBackendEnum, native_enum=False)`, `app/tasks/models/bases.py:77-79`) [V], and a stored task that names `nomad` still loads, lists, reads and deletes.
-- **Running a `nomad` task is refused**, the same refusal plan 04 gives in 3.12.0 when the default backend is not `nomad`, now unconditional: on the execute route a 400 with the message, raised as plan 04's `NomadNotInUseError`; on the periodic and chained paths a history saved FAILED with the message through `_persist_failed_dispatch` (`app/tasks/celery.py:389`) [V], with the task's failure alert. The message says that Nomad is no longer part of PMM.
+- **Running a `nomad` task is refused**, the same refusal [plan 04](04-extensions-executor.md) gives in 3.12.0 when the default backend is not `nomad`, now unconditional: on the execute route a 400 with the message, raised as [plan 04](04-extensions-executor.md)'s `NomadNotInUseError`; on the periodic and chained paths a history saved FAILED with the message through `_persist_failed_dispatch` (`app/tasks/celery.py:389`) [V], with the task's failure alert. The message says that Nomad is no longer part of PMM.
 - New tasks cannot be created or changed to `nomad`: the create and update routes (`app/tasks/routes.py:174`, `:194`) [V] answer 400.
 - The code default of `TASKS.DEFAULT_BACKEND` changes to `pmm_agent`, and the setting accepts `pmm_agent` only. The four seeded kinds are seeded with it at start-up (`app/tasks/db/seed.py:1115`) [V].
-- **A side-car that still has the 3.12.0 fallback values** starts, ignores them and logs one warning per value, for 3.13.0 only: `TASKS__DEFAULT_BACKEND=nomad` is read as `pmm_agent`; a `TASKS.NOMAD` value (from `TASKS__NOMAD__*` or a file) is accepted and ignored; `EXTENSIONS_NOMAD_ENDPOINT` is no longer expanded by `sidecar/settings-env.sh` (`:165-167`) and is reported instead. The acceptance goes in 3.14.0, with pmm-agent's flags (PMM-15984).
+- **A side-car that still has the 3.12.0 fallback values** starts, ignores them and logs one warning per value, for 3.13.0 only: `TASKS__DEFAULT_BACKEND=nomad` is read as `pmm_agent`; a `TASKS.NOMAD` value (from `TASKS__NOMAD__*` or a file) is accepted and ignored; `EXTENSIONS_NOMAD_ENDPOINT` is no longer expanded by `sidecar/settings-env.sh` (`:165-167`) and is reported instead. The acceptance goes in 3.14.0, with pmm-agent's flags ([PMM-15984](https://perconadev.atlassian.net/browse/PMM-15984)).
 - **History of Nomad-era runs:** stored rows and stored output in `taskhistory_log` stay readable. Live logs and files of such runs answer 410, as they do today once Nomad has collected them (`TaskDataNotFoundInExecutorError`, `app/tasks/execution/exceptions.py:19`) [V].
 - The certificate-expiry and finishing-probe periodic rows (`tasks__check_nomad_cert_expiry` and the finishing probe's) need no migration: seeding deletes every row with the system prefix that it no longer lists (`init_periodic_tasks_db`, `app/core/celery/utils.py:133-137`, called with `SYSTEM_PERIODIC_TASK_PREFIX = "tasks__"` at `app/tasks/db/seed.py:1112`, `:881`) [V].
 
@@ -318,7 +318,7 @@ All paths in this task are in percona/pmm-extensions.
 
 ### Task 16: Acceptance: old and new together
 
-**Files:** none; results on PMM-15983, on a Feature Build of this plan.
+**Files:** none; results on [PMM-15983](https://perconadev.atlassian.net/browse/PMM-15983), on a Feature Build of this plan.
 
 **Interfaces:** none.
 
@@ -329,13 +329,13 @@ All paths in this task are in percona/pmm-extensions.
   |---|---|---|
   | New server, old client | this plan's server; one host on PMM Client 3.11.0 | Monitoring works; the host list says too old; a run for it is `not_started`; no Nomad client runs on the host after the first `SetState` |
   | The server stops sending the Nomad client's config | an old pmm-agent that ran a Nomad client before the server upgrade | It stops its Nomad client and removes `<TempDir>/nomad_agent/<agent_id>` (`agent/agents/supervisor/supervisor.go:605-611`) [V]; every other agent process keeps running |
-  | New client, old server | this plan's PMM Client against PMM Server 3.12.0 with `PMM_ENABLE_NOMAD=1` | The Nomad agent reads `DONE`; pmm-agent logs the stub's line once; every exporter runs; nothing retries (Task 9) |
-  | `nomad-agent` rows in the inventory | a server upgraded from 3.12.0 with Nomad enabled and rows present; then a row inserted again while it runs | No `nomad-agent` row after the start; with the row inserted again, `ListAgents`, `GetAgent` of every remaining agent, `SetState`, `pmm-admin list` and the inventory page all work and never show it (Task 6) |
-  | `AGENT_TYPE_NOMAD_AGENT` and `NomadAgent` | the generated client of 3.12.0 | `ListAgents` parses and returns no `nomad_agent`; `buf breaking` passed (Task 7) |
-  | `PMM_ENABLE_NOMAD` in a compose file | `PMM_ENABLE_NOMAD=1` and `PMM_NOMAD_GC_INTERVAL=5m` set | PMM Server starts; one warning per variable; no Nomad process; nothing listens on 4646 or 4647 (Task 4) |
-  | `pmm-agent --paths-nomad` and `--paths-nomad-data-dir` | the server's own pmm-agent, fresh and upgraded; `pmm-agent setup --paths-nomad-data-dir=…` on a host | RUNNING under supervisord; `setup` succeeds and ignores the flag, which `--help` does not list (Task 10) |
-  | Leftovers on disk | a server, and an rpm, a deb and a tarball host, upgraded from 3.12.0 with Nomad enabled | No `/srv/nomad` after the first start; no `<base>/data/nomad` and no `tools/nomad` on the hosts (Task 12) |
-  | History of runs made under Nomad | a history from 3.12.0's fallback | Its stored output reads; live logs and files answer 410 (Task 15) |
-  | `pmm-admin inventory change agent nomad-agent` | the new pmm-admin | The command does not exist (Task 8) |
-  | A stored task that is a Nomad job | PMM Extensions upgraded from 3.12.0 | It lists, reads and deletes; running it answers 400 with the message, and a periodic run saves a FAILED history with it (Task 15) |
-  | The side-car's fallback values | the side-car upgraded from 3.12.0 with `TASKS__DEFAULT_BACKEND=nomad`, `TASKS__NOMAD__ENDPOINT` and `EXTENSIONS_NOMAD_ENDPOINT` set | It starts, logs one warning per value, and runs tasks through pmm-agent (Task 15) |
+  | New client, old server | this plan's PMM Client against PMM Server 3.12.0 with `PMM_ENABLE_NOMAD=1` | The Nomad agent reads `DONE`; pmm-agent logs the stub's line once; every exporter runs; nothing retries ([Task 9](#task-9-pmm-agents-supervisor-the-nomad-case-becomes-a-stub)) |
+  | `nomad-agent` rows in the inventory | a server upgraded from 3.12.0 with Nomad enabled and rows present; then a row inserted again while it runs | No `nomad-agent` row after the start; with the row inserted again, `ListAgents`, `GetAgent` of every remaining agent, `SetState`, `pmm-admin list` and the inventory page all work and never show it ([Task 6](#task-6-nomad-agent-rows-no-new-ones-no-state-push-deleted-at-every-start-skipped-everywhere)) |
+  | `AGENT_TYPE_NOMAD_AGENT` and `NomadAgent` | the generated client of 3.12.0 | `ListAgents` parses and returns no `nomad_agent`; `buf breaking` passed ([Task 7](#task-7-the-inventory-api-type-kept-deprecated-never-returned)) |
+  | `PMM_ENABLE_NOMAD` in a compose file | `PMM_ENABLE_NOMAD=1` and `PMM_NOMAD_GC_INTERVAL=5m` set | PMM Server starts; one warning per variable; no Nomad process; nothing listens on 4646 or 4647 ([Task 4](#task-4-pmm_enable_nomad-and-pmm_nomad_gc_-read-and-ignored-with-a-warning)) |
+  | `pmm-agent --paths-nomad` and `--paths-nomad-data-dir` | the server's own pmm-agent, fresh and upgraded; `pmm-agent setup --paths-nomad-data-dir=…` on a host | RUNNING under supervisord; `setup` succeeds and ignores the flag, which `--help` does not list ([Task 10](#task-10-pathsnomad-pathsnomaddatadir-and-their-flags-hidden-and-ignored)) |
+  | Leftovers on disk | a server, and an rpm, a deb and a tarball host, upgraded from 3.12.0 with Nomad enabled | No `/srv/nomad` after the first start; no `<base>/data/nomad` and no `tools/nomad` on the hosts ([Task 12](#task-12-leftovers-on-disk)) |
+  | History of runs made under Nomad | a history from 3.12.0's fallback | Its stored output reads; live logs and files answer 410 ([Task 15](#task-15-pmm-extensions)) |
+  | `pmm-admin inventory change agent nomad-agent` | the new pmm-admin | The command does not exist ([Task 8](#task-8-pmm-admin-the-pmm-ui-and-victoriametrics)) |
+  | A stored task that is a Nomad job | PMM Extensions upgraded from 3.12.0 | It lists, reads and deletes; running it answers 400 with the message, and a periodic run saves a FAILED history with it ([Task 15](#task-15-pmm-extensions)) |
+  | The side-car's fallback values | the side-car upgraded from 3.12.0 with `TASKS__DEFAULT_BACKEND=nomad`, `TASKS__NOMAD__ENDPOINT` and `EXTENSIONS_NOMAD_ENDPOINT` set | It starts, logs one warning per value, and runs tasks through pmm-agent ([Task 15](#task-15-pmm-extensions)) |

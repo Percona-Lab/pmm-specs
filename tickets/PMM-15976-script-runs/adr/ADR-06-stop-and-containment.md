@@ -2,8 +2,8 @@
 
 - Status: Proposed
 - Date: 2026-11-18
-- Tickets: PMM-15976
-- Planned in: plans 01 and 03
+- Tickets: [PMM-15976](https://perconadev.atlassian.net/browse/PMM-15976)
+- Planned in: [plans 01](../plans/01-agent-run-script.md) and [03](../plans/03-containment.md)
 
 ## Context
 
@@ -65,8 +65,8 @@ A stop itself is the same in both cases: SIGTERM to the process group, 5 s, then
 - A run cannot leave a process behind. A task that must start a long-lived process hands it to the service manager.
 - A run that fills its memory is killed alone, and pmm-agent, the exporters and the other runs go on. This needs the unit settings. The spike showed it for a kill by the run's own limit; test T5 runs 16 takes on each test host, 8 with a limit and 8 without.
 - Leftovers of a pmm-agent that was killed are gone when it starts again.
-- PMM Client's unit changes, for every install, on upgrade. `Delegate=` changes who owns the unit's control group and nothing else that a host's owner would see. It is the one change in this epic that touches every host whether or not it runs scripts; open question O1 of the spec asks for agreement.
+- PMM Client's unit changes, for every install, on upgrade. `Delegate=` changes who owns the unit's control group and nothing else that a host's owner would see. It is the one change in this epic that touches every host whether or not it runs scripts; open question [O1](../spec.md#13-risks-and-open-questions) of the spec asks for agreement.
 - Hosts that are not contained keep the prototype's limits, and say so.
-- The group is not a wall. A script that runs as pmm-agent's own user can move itself out of its group; one that runs as another user (ADR-07) cannot. Containment bounds accidents and ordinary children.
-- `cgroup.kill` needs Linux 5.14 or later, and `OOMPolicy=` systemd 243 or later [I]. Rocky 9 and Ubuntu 24.04 have both. RHEL-compatible 8 has neither and gets the fallback; plan 03 lists what each supported distribution has.
-- The code is not written. The spike estimated about 85 lines for creating the groups and setting a limit, across pmm-agent, pmm-managed and the executor. The stop, the sweep and the fallback are not in that figure; plan 03 is the plan.
+- The group is not a wall. A script that runs as pmm-agent's own user can move itself out of its group; one that runs as another user ([ADR-07](ADR-07-run-as-user.md)) cannot. Containment bounds accidents and ordinary children.
+- `cgroup.kill` needs Linux 5.14 or later, and `OOMPolicy=` systemd 243 or later [I]. Rocky 9 and Ubuntu 24.04 have both. RHEL-compatible 8 has neither and gets the fallback; [plan 03](../plans/03-containment.md) lists what each supported distribution has.
+- The code is not written. The spike estimated about 85 lines for creating the groups and setting a limit, across pmm-agent, pmm-managed and the executor. The stop, the sweep and the fallback are not in that figure; [plan 03](../plans/03-containment.md) is the plan.

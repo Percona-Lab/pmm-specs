@@ -4,7 +4,7 @@
 - **Epic:** [PMM-15976](https://perconadev.atlassian.net/browse/PMM-15976). It follows the spike [PMM-15696](https://perconadev.atlassian.net/browse/PMM-15696), "Choose a replacement for Nomad in PMM Extensions task execution".
 - **Code base:** percona/pmm `main` at `122590fc6` (2026-11-18, 3.11.0 in development) and percona/pmm-extensions `main` at `285f3c96dc`. Line numbers refer to those commits; re-check them before you edit, because both move.
 - **Prototype:** branch `PMM-15696-proto` in percona/pmm, three commits on `016153c7a` ([percona/pmm#6414](https://github.com/percona/pmm/pull/6414)). It is a reference only: [§7](#7-what-the-prototype-is-and-what-changes) lists what is kept and what is redesigned.
-- **Plans that implement this document:** [`plans/00-roadmap.md`](plans/00-roadmap.md) and plans 01 to 07 next to it.
+- **Plans that implement this document:** [`plans/00-roadmap.md`](plans/00-roadmap.md) and [plans 01](plans/01-agent-run-script.md) to [07](plans/07-remove-nomad.md) next to it.
 
 Marks used below:
 - **[V]** means verified by reading the code, or measured in the spike.
@@ -37,13 +37,13 @@ PMM Extensions runs its tasks (backups, MongoDB operations, diagnostics scripts)
 
 **Target release:** PMM 3.12.0, planned for January 2027, with every case T1 to T26 of [§11](#11-tests) passed. Nomad is removed in the release after it ([ADR-14](adr/ADR-14-mixed-versions-and-nomad-removal.md)).
 
-**Decisions:** [§12](#12-decisions). ADR-01 records the choice made on 2026-11-17. ADR-02 to ADR-14 are Proposed and wait for the review of this folder.
+**Decisions:** [§12](#12-decisions). [ADR-01](adr/ADR-01-pmm-agent-replaces-nomad.md) records the choice made on 2026-11-17. [ADR-02](adr/ADR-02-job-type-on-the-jobs-channel.md) to [ADR-14](adr/ADR-14-mixed-versions-and-nomad-removal.md) are Proposed and wait for the review of this folder.
 
 ---
 
 ## 2. Sources
 
-- **The spike** [V]. PMM-15696, in November 2026:
+- **The spike** [V]. [PMM-15696](https://perconadev.atlassian.net/browse/PMM-15696), in November 2026:
   - It found 104 options that can start a process on a remote Linux host.
   - 51 failed one of three rules fixed before any evidence: a license that allows shipping inside AGPL-3 PMM, no inbound connection to PMM Client hosts, and a release in the last 12 months. Nomad itself fails the first.
   - The other 53 were graded against nine needs ([§3.2](#32-what-a-replacement-has-to-do)).
@@ -54,7 +54,7 @@ PMM Extensions runs its tasks (backups, MongoDB operations, diagnostics scripts)
 - **`main` of percona/pmm-extensions** [V]: the tasks service, its Nomad executor, the seeded task kinds, and the app payloads.
 - **Decisions of other folders in this repository** that this design follows: the non-root collector and the allow-list in `pmm-agent.yaml` ([PMM-15567 ADR-08](../PMM-15567-otel/adr/ADR-08-file-read-trust.md)), typed parameters instead of rendered text ([PMM-15567 ADR-20](../PMM-15567-otel/adr/ADR-20-collector-config-rendered-by-agent.md)), and off by default for a new surface ([PMM-14247 ADR-06](../PMM-14247-mcp/adr/ADR-06-off-by-default.md)).
 
-**Machines of the final round** [V]: PMM Server 3.10.0 and PMM Extensions 3.10.0 from the released images on a 4-CPU Rocky 9 server. Two database hosts: Rocky 9 with SELinux enforcing (2 CPUs, 7.5 GiB) and stock Ubuntu 24.04 (1 CPU, 1.9 GiB), each with the `pmm-client` 3.10.0 package under systemd beside a Percona Server 8.4 under write load. Timed and compared-memory figures come from machines with dedicated CPUs and nothing else running, one option at a time. The behavior tests of §3.3 and §4.3 come from machines of the same types on shared CPUs.
+**Machines of the final round** [V]: PMM Server 3.10.0 and PMM Extensions 3.10.0 from the released images on a 4-CPU Rocky 9 server. Two database hosts: Rocky 9 with SELinux enforcing (2 CPUs, 7.5 GiB) and stock Ubuntu 24.04 (1 CPU, 1.9 GiB), each with the `pmm-client` 3.10.0 package under systemd beside a Percona Server 8.4 under write load. Timed and compared-memory figures come from machines with dedicated CPUs and nothing else running, one option at a time. The behavior tests of [§3.3](#33-what-today-gets-wrong) and [§4.3](#43-behavior) come from machines of the same types on shared CPUs.
 
 ---
 
@@ -176,15 +176,15 @@ These are the inputs of the design. Each has a section below.
 
 | Open point | Where it is settled |
 |---|---|
-| A run that fills the host's memory can stop the whole pmm-agent unit, and monitoring with it (6 of 15 takes, pmm-agent not root) | [§6.5](#65-containment), ADR-06 |
-| A child that leaves its session and clears its environment survives a stop | [§6.5](#65-containment), ADR-06 |
-| After a restore of PMM Server, a script runs on with no record | [§6.4](#64-reconnect-and-lost-runs), ADR-03 |
-| pmm-agent's shutdown blocked for about 90 s with a run in flight | [§6.3](#63-delivery-of-output-and-results), plan 01 |
-| Two of the four task kinds were not carried | [§8](#8-pmm-extensions), ADR-08 |
-| A change of leader in PMM HA was not tested | [§9.2](#92-high-availability), ADR-13, plan 06 |
-| A real upgrade with a schema migration was not tested | plan 06 |
-| Mixed old and new pmm-agent versions were not tested | [§10](#10-removing-nomad), ADR-14, plan 06 |
-| A script still running when a cut passes one hour was not tested | plan 06 |
+| A run that fills the host's memory can stop the whole pmm-agent unit, and monitoring with it (6 of 15 takes, pmm-agent not root) | [§6.5](#65-containment), [ADR-06](adr/ADR-06-stop-and-containment.md) |
+| A child that leaves its session and clears its environment survives a stop | [§6.5](#65-containment), [ADR-06](adr/ADR-06-stop-and-containment.md) |
+| After a restore of PMM Server, a script runs on with no record | [§6.4](#64-reconnect-and-lost-runs), [ADR-03](adr/ADR-03-at-most-once.md) |
+| pmm-agent's shutdown blocked for about 90 s with a run in flight | [§6.3](#63-delivery-of-output-and-results), [plan 01](plans/01-agent-run-script.md) |
+| Two of the four task kinds were not carried | [§8](#8-pmm-extensions), [ADR-08](adr/ADR-08-script-content-inline.md) |
+| A change of leader in PMM HA was not tested | [§9.2](#92-high-availability), [ADR-13](adr/ADR-13-high-availability.md), [plan 06](plans/06-verification.md) |
+| A real upgrade with a schema migration was not tested | [plan 06](plans/06-verification.md) |
+| Mixed old and new pmm-agent versions were not tested | [§10](#10-removing-nomad), [ADR-14](adr/ADR-14-mixed-versions-and-nomad-removal.md), [plan 06](plans/06-verification.md) |
+| A script still running when a cut passes one hour was not tested | [plan 06](plans/06-verification.md) |
 
 ---
 
@@ -333,7 +333,7 @@ Between host and server [V, prototype `agent/client/client.go:404-431`, unless m
 - **pmm-managed answers only for what it handled [D].** Each item gets `stored` or `discarded`, and pmm-agent re-sends an item that got neither. The prototype answers even when the database write failed (prototype `managed/services/agents/handler.go:173-185`), and the agent then forgets the message. An item is discarded when its run has no open record; pmm-managed then also stops that run. An item whose store fails for a reason that no retry can fix is discarded and counted too, so that one bad chunk cannot hold up a host's delivery.
 - **pmm-managed accepts a message for a run only from the agent the run was sent to [D].**
 - **Messages are batched [D].** The prototype sends one message per chunk and waits for each answer, for all runs of a host together. One `JobMessagesRequest` carries up to 256 KiB of chunks and results from any runs.
-- The final result is the last message of a run. A run stays "known" to pmm-agent until its result is acknowledged, which is what makes the check in §6.4 exact.
+- The final result is the last message of a run. A run stays "known" to pmm-agent until its result is acknowledged, which is what makes the check in [§6.4](#64-reconnect-and-lost-runs) exact.
 
 **Shutdown [D].** During the spike pmm-agent's shutdown blocked for about 90 s with a run in flight, until systemd killed it. On shutdown pmm-agent kills every run at once, waits at most 5 s for the acknowledgments, and exits. A run ended this way reports `lost`, with the reason; what was not acknowledged is recorded as lost by the reconnect check. `stopped` is kept for a stop that somebody asked for. Five seconds leaves room inside the 10 s that supervisord gives PMM Server's own pmm-agent.
 
@@ -348,7 +348,7 @@ Nothing about a run survives a restart of pmm-agent: the process dies with it an
 1. pmm-agent first re-sends any message that was not acknowledged.
 2. pmm-managed sends `ListRunsRequest`. pmm-agent answers with every run id it knows: waiting, running, or finished with its result not yet acknowledged.
 3. For each record of that agent that was `queued` or `running` before the question was sent, or is `pending` with its start deadline passed:
-   - in the answer: the record follows the run's phase, and a stop held for it (§6.5) is sent now;
+   - in the answer: the record follows the run's phase, and a stop held for it ([§6.5](#65-containment)) is sent now;
    - not in the answer: the record becomes `lost`, with the reason.
 4. For each id in the answer that has no open record (the record is final, or is gone after a restore of PMM Server): pmm-managed sends a stop. This ends the script that today runs on with no record.
 5. A question that gets no answer within 10 s is asked again on the same stream, with a growing pause, until it is answered or the stream ends. pmm-agent serves some requests one at a time (`agent/client/client.go:595-599`), so an answer can be late on a healthy connection. The same question is asked after any start that got no answer. A check that had to leave a `pending` record alone, because its start deadline had not passed, runs again once it has, so no record waits for the next reconnect.
@@ -397,7 +397,7 @@ The prototype keeps runs in the existing `jobs` and `job_logs` tables and change
 
 **Retention.** PMM Extensions keeps its own history, without limit, and its own copy of the output for 90 days (`app/tasks/config.py:234-236`, `app/tasks/celery.py:574-582`) [V]. pmm-managed's copy is a relay, so a short life is enough: finished runs and their output are deleted after 7 days, by the leader's cleaner. One run's stored output is capped by `max_output_bytes`. In the spike's first round 2,449 kept runs took 3.4 MB of tables, and a line a second cost 4.2 MB an hour [V].
 
-**A total bound [D].** One run may store at most 100 MiB, and 16 MiB by default. All stored output together is held to 1 GiB: beyond that the cleaner deletes the output of the oldest finished runs first. PMM Extensions copies output as it arrives, so it loses nothing. The output of open runs is never deleted, so the total can pass 1 GiB for as long as open runs alone hold more than that; each of them is bounded by its own `max_output_bytes` (O6, [§13](#13-risks-and-open-questions)). The bound matters most in PMM HA, where PostgreSQL's volume is 10 GB by default (`documentation/docs/install-pmm/HA-clustered.md:106`) [V].
+**A total bound [D].** One run may store at most 100 MiB, and 16 MiB by default. All stored output together is held to 1 GiB: beyond that the cleaner deletes the output of the oldest finished runs first. PMM Extensions copies output as it arrives, so it loses nothing. The output of open runs is never deleted, so the total can pass 1 GiB for as long as open runs alone hold more than that; each of them is bounded by its own `max_output_bytes` ([O6](#13-risks-and-open-questions), [§13](#13-risks-and-open-questions)). The bound matters most in PMM HA, where PostgreSQL's volume is 10 GB by default (`documentation/docs/install-pmm/HA-clustered.md:106`) [V].
 
 ### 6.7 The API
 
@@ -454,19 +454,19 @@ The prototype answered one question: can pmm-agent do this, and at what cost. It
 
 | Prototype [V] | This design |
 |---|---|
-| The host fetches the script from a URL the caller names, with an optional switch that skips TLS checks, and MD5 accepted as the checksum | Content travels in the request. The host fetches nothing (ADR-08) |
-| `interpreter` can be any program, `env` can set `PATH` or `LD_PRELOAD`, no time limit by default | A command list, a refused set of names, limits with defaults (§6.2) |
-| The output queue has no bound | Bounded, with a count of what was dropped (§6.3) |
-| Acknowledged even when the store failed | Acknowledged only when stored (§6.3) |
-| A run marked lost can turn into succeeded later; a waiting run can be marked lost by mistake | One list per connect; final states stay final (§6.4) |
-| No sweep of leftover processes after a restart | A control group per run, swept at start-up (§6.5) |
-| Runs in `jobs` and `job_logs`; schema changed at start-up, outside the migration list | Own tables, one migration (§6.6) |
-| Plain HTTP handlers; no validation | A gRPC service with validation (§6.7) |
-| A short call with no record | Not carried (ADR-11) |
-| File reads follow links | Confined (§6.7) |
-| Any admin credential can call the API | Only PMM Extensions (§9.1) |
-| A probe of every agent every 2 s; retention on every HA replica | The existing ping; the leader's cleaner (§6.8, §9.2) |
-| No tests | Plans 01 to 04 are test-first; plan 06 repeats the spike's bars |
+| The host fetches the script from a URL the caller names, with an optional switch that skips TLS checks, and MD5 accepted as the checksum | Content travels in the request. The host fetches nothing ([ADR-08](adr/ADR-08-script-content-inline.md)) |
+| `interpreter` can be any program, `env` can set `PATH` or `LD_PRELOAD`, no time limit by default | A command list, a refused set of names, limits with defaults ([§6.2](#62-what-a-run-is)) |
+| The output queue has no bound | Bounded, with a count of what was dropped ([§6.3](#63-delivery-of-output-and-results)) |
+| Acknowledged even when the store failed | Acknowledged only when stored ([§6.3](#63-delivery-of-output-and-results)) |
+| A run marked lost can turn into succeeded later; a waiting run can be marked lost by mistake | One list per connect; final states stay final ([§6.4](#64-reconnect-and-lost-runs)) |
+| No sweep of leftover processes after a restart | A control group per run, swept at start-up ([§6.5](#65-containment)) |
+| Runs in `jobs` and `job_logs`; schema changed at start-up, outside the migration list | Own tables, one migration ([§6.6](#66-records-and-retention)) |
+| Plain HTTP handlers; no validation | A gRPC service with validation ([§6.7](#67-the-api)) |
+| A short call with no record | Not carried ([ADR-11](adr/ADR-11-one-execution-path.md)) |
+| File reads follow links | Confined ([§6.7](#67-the-api)) |
+| Any admin credential can call the API | Only PMM Extensions ([§9.1](#91-who-can-start-a-run)) |
+| A probe of every agent every 2 s; retention on every HA replica | The existing ping; the leader's cleaner ([§6.8](#68-the-host-list), [§9.2](#92-high-availability)) |
+| No tests | [Plans 01](plans/01-agent-run-script.md) to [04](plans/04-extensions-executor.md) are test-first; [plan 06](plans/06-verification.md) repeats the spike's bars |
 
 The prototype's sizes are a floor, not an estimate: the spike's own note, written when the change was 1,742 lines, is that a contribution to percona/pmm is several times that.
 
@@ -481,7 +481,7 @@ PMM Extensions already separates what a task is from what runs it: `BaseExecutor
 - A new backend value, `pmm_agent`, with its own settings model. The prototype's executor took the Nomad slot and Nomad's settings; that is not kept.
 - A task row keeps its own backend. A new setting, the default backend, decides how the four seeded kinds are seeded and what a new task gets. `get_executor` (`app/tasks/deps.py:77-105`) and the two request dependencies (`deps.py:107-133`, `:136-162`) stop assuming `NOMAD`.
 - A run is followed to its end by the executor that dispatched it. The default applies to new runs.
-- The executor reaches pmm-managed with PMM Extensions' existing connection to PMM (`settings.PMM`, `app/core/pmm.py`). Plan 04 adds a setting for the certificate authority, so that this connection can verify PMM Server's certificate where the certificate names the address PMM Extensions dials. Which certificate the bundle uses is open question O5.
+- The executor reaches pmm-managed with PMM Extensions' existing connection to PMM (`settings.PMM`, `app/core/pmm.py`). [Plan 04](plans/04-extensions-executor.md) adds a setting for the certificate authority, so that this connection can verify PMM Server's certificate where the certificate names the address PMM Extensions dials. Which certificate the bundle uses is open question [O5](#13-risks-and-open-questions).
 
 ### 8.2 The four task kinds
 
@@ -516,7 +516,7 @@ Twelve payload files and the module they share read Nomad's environment variable
 
 Today a task asks for root by putting `sudo` in front of its interpreter (`app/extensions/apps/framework/script_helpers.py:116-119`), and it works because packaged pmm-agent, and so the Nomad client, runs as root [V]. With `run_script` the task runs as pmm-agent's user unless it names another. A task that needs root says nothing on a root pmm-agent; a task that should not have root names a user in `run_as` ([ADR-07](adr/ADR-07-run-as-user.md)). `sudo` in front of an interpreter keeps working where the host has it.
 
-In the first release PMM Extensions sends no `run_as`: every task runs as it does today. Plan 04 adds a per-task setting for it. A task that does not ask for root is not moved to another user on its own, because such a task may depend on root today without saying so.
+In the first release PMM Extensions sends no `run_as`: every task runs as it does today. [Plan 04](plans/04-extensions-executor.md) adds a per-task setting for it. A task that does not ask for root is not moved to another user on its own, because such a task may depend on root today without saying so.
 
 ### 8.5 Hosts, logs, files, stop
 
@@ -527,7 +527,7 @@ In the first release PMM Extensions sends no `run_as`: every task runs as it doe
 - **A start with no answer.** The executor has stored the run's id, so it sends the same start again. If no answer comes, the history stays running and the periodic check settles it: the run is followed if pmm-managed has it, and recorded as never started if it does not.
 - **Logs.** The executor copies chunks into PMM Extensions' own log store, as the prototype's does, and splits them into the two steps at the wrapper's marks. Where output was dropped, a mark can be gone with it, so after a gap the executor takes what follows as the script's own output, which is the part that is anonymized.
 - **Files.** `list_files` and `stream_file` read `ListRunFiles` and `ReadRunFile`. A task's result file is read right after the run ends, inside `keep_files_for`.
-- **Stop.** The shared stop path stores nothing of the output written before a stop: it syncs without a log writer (`app/tasks/execution/models.py:104`, with `app/tasks/execution/executors/nomad/models.py:2233-2240`). That is the 0 of 40 lines in §3.3. It is fixed in the base class, for every executor.
+- **Stop.** The shared stop path stores nothing of the output written before a stop: it syncs without a log writer (`app/tasks/execution/models.py:104`, with `app/tasks/execution/executors/nomad/models.py:2233-2240`). That is the 0 of 40 lines in [§3.3](#33-what-today-gets-wrong). It is fixed in the base class, for every executor.
 - **Events.** The step timeline that the history shows comes from Nomad's task states today (`executors/nomad/models.py:743-773`). Under the new executor it is built from the run's state times and the wrapper's step marks.
 - **`om`** in pmm-managed reads the executor host name from PMM Extensions (`api/om/v1/om.proto:536-538`). The name does not change; the texts that say "Nomad" do.
 
@@ -557,7 +557,7 @@ A run executes a program on a database host, as root where pmm-agent is root. Th
 
 **Default state** [D]: off. Script runs work when PMM Extensions is enabled (`PMM_ENABLE_EXTENSIONS`) and on no other install. There is no separate server switch to forget, and no public address to configure.
 
-**On the host** [D]: `pmm-agent.yaml` gains `scripts.disabled` (flag `--scripts-disabled`). When set, pmm-agent refuses every run and reports it in the host list. The server cannot change it. The precedent is the allow-list of PMM-15567 ADR-08.
+**On the host** [D]: `pmm-agent.yaml` gains `scripts.disabled` (flag `--scripts-disabled`). When set, pmm-agent refuses every run and reports it in the host list. The server cannot change it. The precedent is the allow-list of [PMM-15567 ADR-08](../PMM-15567-otel/adr/ADR-08-file-read-trust.md).
 
 **Secrets** [V, prototype]: in the first round a secret given on `stdin` was not found in the process list, the environment, the host's disk, either side's logs, the record, the output, or PMM's database. The second round checked the record, its data, its logs and the process's environment again. Log redaction on both sides covers fields that carry the `sensitive` option and are of a string kind (`utils/logger/protobuf.go:120-166`) [V], so `stdin`, the values of `env` and the content of `files` are both.
 
@@ -567,14 +567,14 @@ In PMM HA all traffic, from the API and from agents, goes to the leader (`docume
 
 - Records, logs and held stops are in PostgreSQL, which the replicas share.
 - A run lives on its host and does not depend on a replica.
-- After a change of leader, the agents that reach the new leader reconnect to it and re-send what was not acknowledged, and the check of §6.4 runs there.
+- After a change of leader, the agents that reach the new leader reconnect to it and re-send what was not acknowledged, and the check of [§6.4](#64-reconnect-and-lost-runs) runs there.
 - A call that waits re-reads the database every second, so it returns whichever replica stored the result.
-- In PMM HA the internal token is set with `PMM_EXTENSIONS_TOKEN`, to the same value on every replica (§9.1). PMM Extensions is not part of the HA set-up today; that work is PMM-15287.
+- In PMM HA the internal token is set with `PMM_EXTENSIONS_TOKEN`, to the same value on every replica ([§9.1](#91-who-can-start-a-run)). PMM Extensions is not part of the HA set-up today; that work is [PMM-15287](https://perconadev.atlassian.net/browse/PMM-15287).
 - Retention runs on the leader only (`haService.AddLeaderService`, as the existing `cleaner` does, `managed/cmd/pmm-managed/main.go:1366`).
 
 Two limits are PMM's own, and this design does not remove them [V]: a call that needs an agent works only on the replica that holds its stream (`managed/services/agents/registry.go:577-585`), and a demoted leader does not drop its agents (`main.go:1024-1029`, commented out). A stop that cannot reach its agent for either reason is held.
 
-A change of leader with runs in flight was not tested in the spike. It is a release gate in plan 06.
+A change of leader with runs in flight was not tested in the spike. It is a release gate in [plan 06](plans/06-verification.md).
 
 ### 9.3 Versions
 
@@ -607,11 +607,11 @@ Every Nomad capability that PMM Extensions calls [V, `app/tasks/execution/execut
 | An inline payload, at most 16 KiB once compressed | `seed.py:527`, `scripts/check_nomad_payload_size.py:30` | `files`, at most 1 MiB of text |
 | Pinning to a node by name | every job spec | `StartRun` names the host |
 | No restart, no reschedule | `seed.py:412-413`, `:469-471` | The only behavior there is |
-| Environment variables Nomad injects | twelve payload files and a shared module (§8.3) | Neutral names |
-| The connection to Nomad: its token, client certificates and the check of their expiry | `:938-939`, `:1019-1057`, `app/tasks/celery.py:1414-1510` | PMM Extensions' connection to PMM, and the second token (§9.1) |
+| Environment variables Nomad injects | twelve payload files and a shared module ([§8.3](#83-what-the-payloads-assume)) | Neutral names |
+| The connection to Nomad: its token, client certificates and the check of their expiry | `:938-939`, `:1019-1057`, `app/tasks/celery.py:1414-1510` | PMM Extensions' connection to PMM, and the second token ([§9.1](#91-who-can-start-a-run)) |
 | A "test connection" target | `app/extensions/api/routes/connectivity_check.py:69` | The same check against `ListHosts` |
 
-Inside PMM itself, Nomad is named in 146 files [V]. The groups: the server lifecycle and its certificates; the supervisord program; the setting and its environment variables; the nginx location and its auth rule; the `nomad-agent` inventory type across the API, pmm-admin and the UI; two VictoriaMetrics scrape configs; pmm-agent's supervisor and config; the build of the binary into every client package; the documentation. Plan 07 lists every item.
+Inside PMM itself, Nomad is named in 146 files [V]. The groups: the server lifecycle and its certificates; the supervisord program; the setting and its environment variables; the nginx location and its auth rule; the `nomad-agent` inventory type across the API, pmm-admin and the UI; two VictoriaMetrics scrape configs; pmm-agent's supervisor and config; the build of the binary into every client package; the documentation. [Plan 07](plans/07-remove-nomad.md) lists every item.
 
 ### 10.2 Two releases
 
@@ -649,7 +649,7 @@ Inside PMM itself, Nomad is named in 146 files [V]. The groups: the server lifec
 
 ## 11. Tests
 
-Each plan is test-first for its own code. Plan 06 repeats the spike's bars on released-style images before the release, with the bar written before the test, as in the spike.
+Each plan is test-first for its own code. [Plan 06](plans/06-verification.md) repeats the spike's bars on released-style images before the release, with the bar written before the test, as in the spike.
 
 | # | Case | Bar |
 |---|---|---|
@@ -686,20 +686,20 @@ Each plan is test-first for its own code. Plan 06 repeats the spike's bars on re
 
 | # | Decision | Record |
 |---|---|---|
-| D1 | pmm-agent runs PMM Extensions' tasks; Nomad leaves PMM | ADR-01, decided |
-| D2 | A `run_script` job type on the Jobs path, with its own rules | ADR-02 |
-| D3 | At most once. Final states stay final. Nothing is retried | ADR-03 |
-| D4 | Acknowledged delivery, a bounded queue, the script never blocks | ADR-04 |
-| D5 | Own tables; 7 days of retention on PMM Server | ADR-05 |
-| D6 | One control group per run; three lines in PMM Client's unit | ADR-06 |
-| D7 | A run uses pmm-agent's user unless it names another | ADR-07 |
-| D8 | Script content travels inline; the host fetches nothing | ADR-08 |
-| D9 | Only PMM Extensions can call the API; off unless PMM Extensions is enabled; a switch on the host | ADR-09 |
-| D10 | A beta gRPC service behind grpc-gateway | ADR-10 |
-| D11 | One execution path; no unrecorded short call | ADR-11 |
-| D12 | The host list comes from the registry and the existing ping | ADR-12 |
-| D13 | No run state in a replica's memory | ADR-13 |
-| D14 | Deprecate in 3.12.0, remove in the release after | ADR-14 |
+| D1 | pmm-agent runs PMM Extensions' tasks; Nomad leaves PMM | [ADR-01](adr/ADR-01-pmm-agent-replaces-nomad.md), decided |
+| D2 | A `run_script` job type on the Jobs path, with its own rules | [ADR-02](adr/ADR-02-job-type-on-the-jobs-channel.md) |
+| D3 | At most once. Final states stay final. Nothing is retried | [ADR-03](adr/ADR-03-at-most-once.md) |
+| D4 | Acknowledged delivery, a bounded queue, the script never blocks | [ADR-04](adr/ADR-04-acknowledged-delivery.md) |
+| D5 | Own tables; 7 days of retention on PMM Server | [ADR-05](adr/ADR-05-run-records-and-retention.md) |
+| D6 | One control group per run; three lines in PMM Client's unit | [ADR-06](adr/ADR-06-stop-and-containment.md) |
+| D7 | A run uses pmm-agent's user unless it names another | [ADR-07](adr/ADR-07-run-as-user.md) |
+| D8 | Script content travels inline; the host fetches nothing | [ADR-08](adr/ADR-08-script-content-inline.md) |
+| D9 | Only PMM Extensions can call the API; off unless PMM Extensions is enabled; a switch on the host | [ADR-09](adr/ADR-09-who-may-start-a-run.md) |
+| D10 | A beta gRPC service behind grpc-gateway | [ADR-10](adr/ADR-10-api-shape.md) |
+| D11 | One execution path; no unrecorded short call | [ADR-11](adr/ADR-11-one-execution-path.md) |
+| D12 | The host list comes from the registry and the existing ping | [ADR-12](adr/ADR-12-host-list.md) |
+| D13 | No run state in a replica's memory | [ADR-13](adr/ADR-13-high-availability.md) |
+| D14 | Deprecate in 3.12.0, remove in the release after | [ADR-14](adr/ADR-14-mixed-versions-and-nomad-removal.md) |
 
 ---
 
@@ -710,18 +710,18 @@ Each plan is test-first for its own code. Plan 06 repeats the spike's bars on re
 | # | Question | Default if nobody objects |
 |---|---|---|
 | O1 | Are three lines (`Delegate=memory pids`, `OOMPolicy=continue`, and a variable that tells pmm-agent its group is delegated) acceptable in PMM Client's packaged unit? | Yes. Without them a memory kill inside the unit can stop pmm-agent |
-| O2 | Should a root pmm-agent run scripts as the `pmm-agent` user by default, as PMM-15567 ADR-08 does for the collector? | No: backups and restores need root today. A task can ask for less (ADR-07) |
-| O3 | The limits of §6.2 and §6.3 are first values. Which need to be settings from the start? | The two per-host counts |
+| O2 | Should a root pmm-agent run scripts as the `pmm-agent` user by default, as [PMM-15567 ADR-08](../PMM-15567-otel/adr/ADR-08-file-read-trust.md) does for the collector? | No: backups and restores need root today. A task can ask for less ([ADR-07](adr/ADR-07-run-as-user.md)) |
+| O3 | The limits of [§6.2](#62-what-a-run-is) and [§6.3](#63-delivery-of-output-and-results) are first values. Which need to be settings from the start? | The two per-host counts |
 | O4 | PMM's two precedents, VMware deployments and upgrades from the UI, gave two releases of notice before a removal. Does Nomad get one or two? | One. Nomad is off by default, the people affected get the replacement in the same release as the notice, and the license is the reason to move |
-| O5 | Script content and the second token travel on PMM Extensions' connection to PMM. Plan 04 adds a CA setting for it. Which certificate does the bundle's default set-up use? | The CA setting ships in 3.12.0; the bundle's certificate is decided in this review |
-| O6 | The 1 GiB bound on stored output is kept by deleting finished runs' output. The output of open runs is never deleted, and PMM Extensions asks for 100 MiB a run (§6.6, §8.5). Should open runs have a budget of their own, applied when output is stored? | Not in the first release. Each open run is bounded by its own cap, and the total returns under 1 GiB when the runs end |
+| O5 | Script content and the second token travel on PMM Extensions' connection to PMM. [Plan 04](plans/04-extensions-executor.md) adds a CA setting for it. Which certificate does the bundle's default set-up use? | The CA setting ships in 3.12.0; the bundle's certificate is decided in this review |
+| O6 | The 1 GiB bound on stored output is kept by deleting finished runs' output. The output of open runs is never deleted, and PMM Extensions asks for 100 MiB a run ([§6.6](#66-records-and-retention), [§8.5](#85-hosts-logs-files-stop)). Should open runs have a budget of their own, applied when output is stored? | Not in the first release. Each open run is bounded by its own cap, and the total returns under 1 GiB when the runs end |
 
 **Risks.**
 
 | Risk | Mitigation |
 |---|---|
-| The design is larger than the prototype, and the parts marked [D] are untested | Plans 01 to 03 build them test-first; plan 06 repeats every spike bar before release |
-| Script runs make pmm-agent, which is the monitoring agent, the thing that runs customers' scripts. A bad run could take monitoring down | The control group per run, a high `oom_score_adj` on every run, separate slots (§6.2, §6.5); T5 and T14 |
+| The design is larger than the prototype, and the parts marked [D] are untested | [Plans 01](plans/01-agent-run-script.md) to [03](plans/03-containment.md) build them test-first; [plan 06](plans/06-verification.md) repeats every spike bar before release |
+| Script runs make pmm-agent, which is the monitoring agent, the thing that runs customers' scripts. A bad run could take monitoring down | The control group per run, a high `oom_score_adj` on every run, separate slots ([§6.2](#62-what-a-run-is), [§6.5](#65-containment)); T5 and T14 |
 | An install that upgrades the server and not the clients loses tasks on those hosts once Nomad is gone | The fallback setting in 3.12.0; the host list's reason; the deprecation notice one release ahead |
 | The Docker image of PMM Client has no control group to use | Stated in the host list; the fallback's limits are documented |
 | PMM HA: a demoted leader keeps its agents | Not this design's to fix; stops are held; T8 measures it |
