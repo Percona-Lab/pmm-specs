@@ -34,7 +34,7 @@ Option 4.
   - A record that is `queued` or `running` and is not in the answer becomes `lost`.
   - A run in the answer that has no open record is stopped.
   - A question that gets no answer within its deadline is asked again on the same stream until it is answered.
-  - A record whose start is still in flight is not judged. A start that got no answer within its deadline stays `pending` until the next check, and then becomes `lost` if pmm-agent does not know it: the script may have started.
+  - A record whose start is still in flight is not judged. A start that got no answer within its deadline stays `pending` until the first check after that deadline, which pmm-managed runs without waiting for a reconnect, and then becomes `lost` if pmm-agent does not know it: the script may have started.
 - A run stays in pmm-agent's answer until its result is acknowledged. So no run is marked lost while its result is on the way, and no result arrives after `lost`.
 - A host that does not come back leaves its runs `queued` or `running`, shown as not connected. PMM does not guess an outcome. The record becomes `lost` when the agent is removed from the inventory.
 

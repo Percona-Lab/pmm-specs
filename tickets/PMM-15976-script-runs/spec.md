@@ -259,7 +259,7 @@ One request starts one process. The request holds [D]:
 | Field | Meaning | Limit |
 |---|---|---|
 | `run_id` | The run's id, chosen by the caller. A second request with the same id returns the record of the first and starts nothing | A UUID |
-| `files` | Named files to place in the run directory before the start: the script, and any config or arguments file. Content travels in the request ([ADR-08](adr/ADR-08-script-content-inline.md)) | Text, 1 MiB in total; names without a path; a mode with owner bits only, 0600 by default. A file can be marked sensitive |
+| `files` | Named files to place in the run directory before the start: the script, and any config or arguments file. Content travels in the request ([ADR-08](adr/ADR-08-script-content-inline.md)) | Text, 1 MiB in total with the names; at most 64 files; names without a path; a mode with owner bits only, 0600 by default. A file can be marked sensitive |
 | `command` | The program and its arguments, as a list. Never passed through a shell by pmm-agent | The program must resolve on the host. With `env`, 64 KiB |
 | `env` | Extra environment variables | Names starting with `PMM_RUN_` or `LD_`, and `PATH`, are refused. That is hygiene, not a control: the command may be any program |
 | `stdin` | Text written to the process's standard input and then closed. For secrets | Text, 1 MiB |
@@ -270,12 +270,14 @@ One request starts one process. The request holds [D]:
 | `keep_files_for` | How long the run directory's `out/` stays readable after the end | Default 1 h, at most 24 h |
 | `memory_max` | A memory limit for the run's control group, in bytes | Optional; at least 16 MiB. A host that is not contained refuses the run |
 
+pmm-managed also refuses a request that would be above 3 MiB as one message to pmm-agent, whose stream takes messages of up to 4 MiB ([ADR-08](adr/ADR-08-script-content-inline.md)) [D].
+
 pmm-agent starts the process with [V, prototype `run_script_job.go:147-191`, unless marked]:
 - a run directory `<TempDir>/run-script/<run_id>/` with mode 0700, owned by the run's user, as the working directory, with the request's `files` in it and `out/` inside it for results. Its parent directories can be traversed by the run's user. The prototype starts the process in `out/` [D];
 - its own process group, and a kill signal when pmm-agent dies (`Pdeathsig`);
 - the environment `PATH` (a fixed system path), `HOME`, `LANG=C.UTF-8`, the run's id and its output directory, plus the request's `env`. Nothing else of pmm-agent's environment is passed. The names are `PMM_RUN_ID`, `PMM_RUN_DIR` and `PMM_RUN_OUTPUT_DIR` [D]; the prototype's are `PMM_JOB_ID` and `PMM_JOB_OUTPUT_DIR`;
 - its own control group, where the host allows it ([§6.5](#65-containment)) [D];
-- a high `oom_score_adj`, so that when the host runs out of memory the kernel takes the run before the database or pmm-agent [D].
+- a high `oom_score_adj`, set before the program's first instruction, so that when the host runs out of memory the kernel takes the run before the database or pmm-agent [D].
 
 **Setup, steps and cleanup (N2, N4).** pmm-agent runs one process and knows no steps. A caller that needs setup before the script sends a wrapper as the script ([§8.2](#82-the-four-task-kinds)). Cleanup that always runs is pmm-agent's part: when a run ends, however it ends, pmm-agent removes the run directory except `out/`, and removes `out/` when `keep_files_for` has passed. After a restart pmm-agent removes every run directory it finds.
 
@@ -311,18 +313,18 @@ stateDiagram-v2
 
 Every state in this table is final. A record that reached one never changes again ([ADR-03](adr/ADR-03-at-most-once.md)).
 
-A start that pmm-agent does not answer within 10 s leaves the record `pending`, and pmm-managed asks that pmm-agent which runs it knows ([§6.4](#64-reconnect-and-lost-runs)). In the answer, the record follows the run. Not in the answer, it becomes `lost`, because the script may have started. A request whose run id pmm-agent already knows is refused, and nothing starts.
+A start that pmm-agent does not answer within 10 s leaves the record `pending`. Once the start's deadline has passed, pmm-managed asks that pmm-agent which runs it knows ([§6.4](#64-reconnect-and-lost-runs)). In the answer, the record follows the run. Not in the answer, it becomes `lost`, because the script may have started. A request whose run id pmm-agent already knows is refused, and nothing starts.
 
 The reasons for `not_started` are checked in a fixed order: the pmm-agent is not connected, is too old, has script runs switched off, is not root and the run names a user, or is not contained and the run sets `memory_max`. An unknown pmm-agent is an error and not a record: a record needs a host.
 
-**Limits per host** [D]: 16 runs at once and 256 waiting. A run beyond that is `not_started` with the reason. Script runs have their own count, apart from the runner's slots, 32 by default (`agent/runner/runner.go:43`, `:86-90`), so that a burst of scripts cannot delay the Actions that QAN and Advisors use. Both numbers are flags of pmm-agent.
+**Limits per host** [D]: 16 runs at once and 256 waiting. A run holds its place until pmm-managed has acknowledged its result, so results that are not acknowledged cannot pile up. A run beyond that is `not_started` with the reason. Script runs have their own count, apart from the runner's slots, 32 by default (`agent/runner/runner.go:43`, `:86-90`), so that a burst of scripts cannot delay the Actions that QAN and Advisors use. Both numbers are flags of pmm-agent.
 
 ### 6.3 Delivery of output and results
 
 On the host [V, prototype, unless marked]:
 - Two readers take stdout and stderr in pieces of at most 32 KiB. Each piece becomes a log chunk with the run's id, a stream mark and a number that counts up from 0.
 - The chunks go into a queue in memory. The script never waits for the network: one script kept running through a 20-minute cut, another ended 20 minutes into a 75-minute cut, and all their output arrived afterward.
-- **The queue is bounded [D].** The prototype's has no limit, so a script that prints during a long cut grows pmm-agent without end. Each run may hold 4 MiB, and all runs on a host together 32 MiB. Beyond that output is dropped from the middle and counted: the start of a run's output and its last 64 KiB are kept, because a failing script prints its error last. The result says how many bytes were dropped. `max_output_bytes` counts in the same way.
+- **The queue is bounded [D].** The prototype's has no limit, so a script that prints during a long cut grows pmm-agent without end. Each run may hold 4 MiB, and all runs on a host together 32 MiB. Beyond that output is dropped from the middle and counted: the start of a run's output and its last 64 KiB are kept, because a failing script prints its error last. A run whose `max_output_bytes` is under 128 KiB keeps half of it as its end. The first chunk after a gap says how many bytes were dropped there, and the result says how many in all. `max_output_bytes` counts in the same way. The kept ends are held beside the 32 MiB, one for each run pmm-agent knows: 17 MiB at the default limits.
 - Output must be text. Bytes that are not valid UTF-8, and NUL bytes, are replaced: PostgreSQL does not store a NUL in a text column [I].
 
 Between host and server [V, prototype `agent/client/client.go:404-431`, unless marked]:
@@ -349,7 +351,7 @@ Nothing about a run survives a restart of pmm-agent: the process dies with it an
    - in the answer: the record follows the run's phase, and a stop held for it (§6.5) is sent now;
    - not in the answer: the record becomes `lost`, with the reason.
 4. For each id in the answer that has no open record (the record is final, or is gone after a restore of PMM Server): pmm-managed sends a stop. This ends the script that today runs on with no record.
-5. A question that gets no answer within 10 s is asked again on the same stream, with a growing pause, until it is answered or the stream ends. pmm-agent serves some requests one at a time (`agent/client/client.go:595-599`), so an answer can be late on a healthy connection. The same question is asked after any start that got no answer.
+5. A question that gets no answer within 10 s is asked again on the same stream, with a growing pause, until it is answered or the stream ends. pmm-agent serves some requests one at a time (`agent/client/client.go:595-599`), so an answer can be late on a healthy connection. The same question is asked after any start that got no answer. A check that had to leave a `pending` record alone, because its start deadline had not passed, runs again once it has, so no record waits for the next reconnect.
 
 Because a result stays in the answer until it is acknowledged, a run is never marked lost while its result is on the way, and no result can arrive after `lost`.
 
@@ -386,7 +388,7 @@ Three tables, added by one migration ([ADR-05](adr/ADR-05-run-records-and-retent
 | Table | Holds |
 |---|---|
 | `script_runs` | One row per run: id, agent, node, state, reason, exit code, the request without its secrets (file names, sizes and SHA-256; command; names of the environment variables; user; limits), times of each state, bytes stored and dropped |
-| `script_run_logs` | `(run_id, chunk_id)`, stream, data. Deleted with the run |
+| `script_run_logs` | `(run_id, chunk_id)`, stream, data, and the bytes dropped just before the chunk. Deleted with the run |
 | `script_stop_requests` | Stops not yet delivered |
 
 The prototype keeps runs in the existing `jobs` and `job_logs` tables and changes how every job type's log is stored [V]. Own tables keep backups untouched.
@@ -395,7 +397,7 @@ The prototype keeps runs in the existing `jobs` and `job_logs` tables and change
 
 **Retention.** PMM Extensions keeps its own history, without limit, and its own copy of the output for 90 days (`app/tasks/config.py:234-236`, `app/tasks/celery.py:574-582`) [V]. pmm-managed's copy is a relay, so a short life is enough: finished runs and their output are deleted after 7 days, by the leader's cleaner. One run's stored output is capped by `max_output_bytes`. In the spike's first round 2,449 kept runs took 3.4 MB of tables, and a line a second cost 4.2 MB an hour [V].
 
-**A total bound [D].** One run may store at most 100 MiB, and 16 MiB by default. All stored output together may take 1 GiB; beyond that the cleaner deletes the output of the oldest finished runs first. PMM Extensions copies output as it arrives, so it loses nothing. The bound matters most in PMM HA, where PostgreSQL's volume is 10 GB by default (`documentation/docs/install-pmm/HA-clustered.md:106`) [V].
+**A total bound [D].** One run may store at most 100 MiB, and 16 MiB by default. All stored output together is held to 1 GiB: beyond that the cleaner deletes the output of the oldest finished runs first. PMM Extensions copies output as it arrives, so it loses nothing. The output of open runs is never deleted, so the total can pass 1 GiB for as long as open runs alone hold more than that; each of them is bounded by its own `max_output_bytes` (O6, [§13](#13-risks-and-open-questions)). The bound matters most in PMM HA, where PostgreSQL's volume is 10 GB by default (`documentation/docs/install-pmm/HA-clustered.md:106`) [V].
 
 ### 6.7 The API
 
@@ -406,7 +408,7 @@ A beta gRPC service, `scripts.v1beta1.ScriptsService`, served through grpc-gatew
 | `StartRun` | `POST /v1/scripts/runs` | Returns the record. A run that cannot start is a record in state `not_started`, not an error |
 | `GetRun` | `GET /v1/scripts/runs/{run_id}` | With `wait`, the call returns when the run is final or the wait (at most 30 s) is over |
 | `ListRuns` | `GET /v1/scripts/runs` | By agent and by final or not; paged. With `final_after` and `wait`, the call returns the runs that reached a final state after that point, at once or when the next one does |
-| `GetRunLogs` | `GET /v1/scripts/runs/{run_id}/logs` | By chunk offset, the shape of `GET /v1/backups/{artifact_id}/logs` (`api/backup/v1/backup.proto:156-165`) |
+| `GetRunLogs` | `GET /v1/scripts/runs/{run_id}/logs` | By chunk offset, the shape of `GET /v1/backups/{artifact_id}/logs` (`api/backup/v1/backup.proto:156-165`). A chunk says how many bytes were dropped just before it |
 | `StopRun` | `POST /v1/scripts/runs/{run_id}:stop` | Returns at once. Says whether the stop was sent or is held |
 | `ListRunFiles` | `GET /v1/scripts/runs/{run_id}/files` | Regular files in `out/` |
 | `ReadRunFile` | `GET /v1/scripts/runs/{run_id}/files/{name}` | By offset and length, at most 2 MiB per call. Relayed from the host, never stored |
@@ -414,7 +416,7 @@ A beta gRPC service, `scripts.v1beta1.ScriptsService`, served through grpc-gatew
 
 **The run's id is the caller's [D].** `StartRun` takes a `run_id` that the caller generates. A second call with the same id returns the record of the first and starts nothing, so a caller that lost an answer can ask again safely.
 
-**Hearing of a run's end [D].** Every `ListRuns` answer carries a cursor. A call with `final_after` set to a cursor returns the runs that reached a final state after it, and `from_now` returns only the current cursor. A cursor can miss a run whose record is written late; the caller's own periodic check of its open runs covers that.
+**Hearing of a run's end [D].** Every `ListRuns` answer carries a cursor. A call with `final_after` set to a cursor returns the runs that reached a final state after it, and `from_now` returns only the current cursor. An answer with no runs returns the cursor it was given. A cursor can miss a run whose record is written late; the caller's own periodic check of its open runs covers that.
 
 **`StopRun` on a run that is already final** returns the record unchanged.
 
@@ -523,7 +525,7 @@ In the first release PMM Extensions sends no `run_as`: every task runs as it doe
 - **Time limit.** Tasks have no limit today. PMM Extensions sends one with every run: 7 days, from one setting. A limit per task is not part of the first release.
 - **Output limit.** PMM Extensions sends its own limit for stored output with every run, 100 MiB today, so that a task keeps as much output as it does now.
 - **A start with no answer.** The executor has stored the run's id, so it sends the same start again. If no answer comes, the history stays running and the periodic check settles it: the run is followed if pmm-managed has it, and recorded as never started if it does not.
-- **Logs.** The executor copies chunks into PMM Extensions' own log store, as the prototype's does.
+- **Logs.** The executor copies chunks into PMM Extensions' own log store, as the prototype's does, and splits them into the two steps at the wrapper's marks. Where output was dropped, a mark can be gone with it, so after a gap the executor takes what follows as the script's own output, which is the part that is anonymized.
 - **Files.** `list_files` and `stream_file` read `ListRunFiles` and `ReadRunFile`. A task's result file is read right after the run ends, inside `keep_files_for`.
 - **Stop.** The shared stop path stores nothing of the output written before a stop: it syncs without a log writer (`app/tasks/execution/models.py:104`, with `app/tasks/execution/executors/nomad/models.py:2233-2240`). That is the 0 of 40 lines in §3.3. It is fixed in the base class, for every executor.
 - **Events.** The step timeline that the history shows comes from Nomad's task states today (`executors/nomad/models.py:743-773`). Under the new executor it is built from the run's state times and the wrapper's step marks.
@@ -712,6 +714,7 @@ Each plan is test-first for its own code. Plan 06 repeats the spike's bars on re
 | O3 | The limits of §6.2 and §6.3 are first values. Which need to be settings from the start? | The two per-host counts |
 | O4 | PMM's two precedents, VMware deployments and upgrades from the UI, gave two releases of notice before a removal. Does Nomad get one or two? | One. Nomad is off by default, the people affected get the replacement in the same release as the notice, and the license is the reason to move |
 | O5 | Script content and the second token travel on PMM Extensions' connection to PMM. Plan 04 adds a CA setting for it. Which certificate does the bundle's default set-up use? | The CA setting ships in 3.12.0; the bundle's certificate is decided in this review |
+| O6 | The 1 GiB bound on stored output is kept by deleting finished runs' output. The output of open runs is never deleted, and PMM Extensions asks for 100 MiB a run (§6.6, §8.5). Should open runs have a budget of their own, applied when output is stored? | Not in the first release. Each open run is bounded by its own cap, and the total returns under 1 GiB when the runs end |
 
 **Risks.**
 

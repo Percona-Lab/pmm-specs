@@ -73,9 +73,9 @@ Names that more than one plan uses. A plan that needs to change one changes it h
 |---|---|---|
 | `StartJobRequest.RunScript run_script` | new member of the `job` oneof | The request of [spec §6.2](../spec.md#62-what-a-run-is): `files`, `command`, `env`, `stdin`, `run_as`, `start_within`, `max_output_bytes`, `keep_files_for`, `memory_max`. The run's time limit is the existing `StartJobRequest.timeout` |
 | `JobResult.RunScript run_script` | new member of the `result` oneof | `outcome` (enum), `exit_code`, `reason`, `dropped_output_bytes`, `started_at`, `finished_at` |
-| `JobProgress.RunScript run_script` | new member of the `result` oneof | `started` (the process is running) and `logs` (chunks with `chunk_id`, `stream`, `data`) |
+| `JobProgress.RunScript run_script` | new member of the `result` oneof | `started` (the process is running) and `logs` (chunks with `chunk_id`, `stream`, `data`, and `dropped_before`: the bytes dropped just before the chunk) |
 | `JobMessagesRequest` / `JobMessagesResponse` | agent to server, acknowledged | A batch of `JobProgress` and `JobResult` for `run_script` jobs. The response answers each item: stored, or discarded |
-| `ListRunsRequest` / `ListRunsResponse` | server to agent | Every run id pmm-agent knows, with its phase (`waiting`, `running`, `delivering`), and the host facts: `user`, `contained`, `disabled`, the two limits. Sent on every connect, repeated until answered, and after any start that got no answer |
+| `ListRunsRequest` / `ListRunsResponse` | server to agent | Every run id pmm-agent knows, with its phase (`waiting`, `running`, `delivering`), and the host facts: `user`, `contained`, `disabled`, the two limits. Sent on every connect, repeated until answered, after any start that got no answer, and again once the deadline of a start it could not yet judge has passed |
 | `ReadRunFileRequest` / `ReadRunFileResponse` | server to agent | List `out/`, or read one file by offset and length |
 
 All are additions. Field and oneof numbers are the next free ones at the time; plan 01 Task 1 checks them against `main` and against `buf breaking`.
@@ -126,20 +126,21 @@ Set by pmm-agent for every run: `PMM_RUN_ID`, `PMM_RUN_DIR` (the working directo
 
 | Limit | Value | Where enforced |
 |---|---|---|
-| Content of `files` in one request | 1 MiB, text | pmm-managed, and again in pmm-agent |
+| Names and content of `files` in one request | 1 MiB together, text; at most 64 files | pmm-managed, and again in pmm-agent |
 | `stdin` | 1 MiB, text | the same |
 | `command` and `env` together | 64 KiB | the same |
+| A whole start request, as one message to pmm-agent | 3 MiB, under the 4 MiB the stream takes | pmm-managed |
 | A request from pmm-managed to pmm-agent | 10 s to answer | pmm-managed |
 | Run time (`timeout`) | default 24 h, at most 7 days | pmm-managed sets the default; pmm-agent enforces |
 | Wait for a slot (`start_within`) | default 1 h, at most 24 h | pmm-managed and pmm-agent |
 | `memory_max` | at least 16 MiB; contained hosts only | pmm-managed checks the value, and the host from what pmm-agent reported; pmm-agent checks the host again |
-| Runs at once on a host / waiting | 16 / 256 | pmm-agent |
-| Output queue on the host | 4 MiB a run, 32 MiB a host | pmm-agent |
+| Runs at once on a host / waiting | 16 / 256. A run holds its place until its result is acknowledged | pmm-agent |
+| Output queue on the host | 4 MiB a run, 32 MiB a host; beside it, the kept end of each run pmm-agent knows | pmm-agent |
 | Stored output of one run (`max_output_bytes`) | default 16 MiB, at most 100 MiB | pmm-agent counts; pmm-managed refuses more |
-| Stored output of all runs | 1 GiB; the oldest finished runs' output goes first | pmm-managed's cleaner |
-| The end of a run's output that is always kept | 64 KiB | pmm-agent |
+| Stored output of all runs | Held to 1 GiB: the oldest finished runs' output goes first. Open runs' output is never deleted ([spec §13](../spec.md#13-risks-and-open-questions), O6) | pmm-managed's cleaner |
+| The end of a run's output that is always kept | 64 KiB, or half of `max_output_bytes` when that is less | pmm-agent |
 | Processes in one run's group | 4,096 | pmm-agent, on contained hosts |
-| `oom_score_adj` of a run | 1000 | pmm-agent |
+| `oom_score_adj` of a run | 1000, set before the program starts | pmm-agent |
 | One batch of messages | 256 KiB | pmm-agent |
 | Stop grace period | 5 s | pmm-agent |
 | Shutdown | runs killed at once; 5 s for acknowledgments | pmm-agent |

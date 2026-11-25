@@ -34,13 +34,13 @@ Option 2, through one entry at the end of the migration list in `managed/models/
 - **Never stored:** the content of `files`, the values of `env`, and `stdin`.
 - **Retention:** a finished run and its output are deleted 7 days after its final state, by a leader service, as the existing cleaner does for Action results (`managed/cmd/pmm-managed/main.go:1366`).
 - One run's stored output is capped by `max_output_bytes`: 16 MiB by default, 100 MiB at most.
-- All stored output together is capped at 1 GiB. Beyond that the cleaner deletes the output of the oldest finished runs first.
+- All stored output together is held to 1 GiB: beyond that the cleaner deletes the output of the oldest finished runs first. The output of open runs is never deleted, so the total can pass 1 GiB for as long as open runs alone hold more than that (open question O6 of the spec).
 - A file can be marked sensitive. Its SHA-256 is then not stored either: the hash of a short secret can be guessed.
 
 ## Consequences
 
 - Backup tables and backup code are not touched.
-- PostgreSQL's growth is bounded by 7 days of runs and by the total cap. An install that runs one task a minute with 10 KiB of output holds about 100 MiB. The cap matters most in PMM HA, where PostgreSQL's volume is 10 GB by default.
+- PostgreSQL's growth is bounded by 7 days of runs, by the total cap, and by each open run's own cap while it runs. An install that runs one task a minute with 10 KiB of output holds about 100 MiB. The cap matters most in PMM HA, where PostgreSQL's volume is 10 GB by default.
 - A caller that reads a run later than 7 days after its end gets "not found". PMM Extensions has its own copy by then.
 - The command and the file names of a run are stored in clear. A caller must not put a secret in an argument or a file name; secrets go in `stdin` or a file's content.
 - One more migration on a list that grows quickly: ten were added in the six weeks before this was written. The number is chosen when the PR is opened.

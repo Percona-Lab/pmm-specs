@@ -130,7 +130,7 @@ func (r *runGroup) oomKills() (uint64, error)
 **Steps:**
 - The group is named `run-<job_id>`, so that no job id can be `agent`.
 - The group's limits: `pids.max` = `RunScriptPidsMax` (4,096); `memory.oom.group` = 1, so that a memory kill takes the whole run, not one process of it; `memory.max` = `memory_max` when given.
-- The process starts inside its group: `SysProcAttr.UseCgroupFD = true`, `CgroupFD = runGroup.fd` (clone into the group, Linux 5.7 or later [I]). It is never in `agent`, not even for an instant, so nothing it forks can be born outside the run's group. The spike moved a started process by writing `cgroup.procs` [V]; that leaves a window this avoids. `oom_score_adj` stays as plan 01 Task 4 sets it.
+- The process starts inside its group: `SysProcAttr.UseCgroupFD = true`, `CgroupFD = runGroup.fd` (clone into the group, Linux 5.7 or later [I]). It is never in `agent`, not even for an instant, so nothing it forks can be born outside the run's group. The spike moved a started process by writing `cgroup.procs` [V]; that leaves a window this avoids. `oom_score_adj` stays as plan 01 Task 4 sets it: its launcher is what starts in the group, and the program replaces it there.
 - The stop of plan 01 becomes: SIGTERM to the process group, the grace period, then `cgroup.kill` on the run's group ([spec §6.5](../spec.md#65-containment)).
 - **The end of a run, however it ends:** everything still in the run's group is killed with `cgroup.kill`, and the group is removed, before the output readers' last 2 s. A task that must leave a process running hands it to the service manager (Task 7 documents it).
 - Shutdown (plan 01 Task 9) kills at once; on a contained host that kill is `cgroup.kill`.
@@ -194,7 +194,7 @@ func runAs(name string) (*runAsUser, error)
 - Ownership: the run directory, `out/` and every file of the request are given to the user's uid and primary gid before the start, with modes unchanged (0700 and the files' own). The run's control group is not given to the user (Task 3).
 - `ReadRunFile` is unchanged: no link is followed, and only a regular file with a link count of 1 is read (plan 01 Task 7).
 - The packaged pmm-agent runs as root (its unit has no `User=`, `build/packages/config/pmm-agent.service`) [V]; in the Docker image it runs as uid 1002 (`build/docker/client/Dockerfile.el9:22-23,108`) [V], where every `run_as` run is `not_started`.
-- Tests (root only; skip otherwise): with a `TempDir` the test first creates as 0700, a run as `nobody` succeeds; `id -u`, `id -G` and `$HOME` inside the script match the user; the files are owned by the user; `no-such-user` → `prepare_failed`; an ancestor made 0700 by the test → `prepare_failed` naming it. Not root: `run_as` → refused with the text.
+- Tests (root only; skip otherwise): with a `TempDir` the test first creates as 0700, a run as `nobody` succeeds; `id -u`, `id -G` and `$HOME` inside the script match the user, which also shows that the user can execute plan 01's launcher; the files are owned by the user; `no-such-user` → `prepare_failed`; an ancestor made 0700 by the test → `prepare_failed` naming it. Not root: `run_as` → refused with the text.
 - Commit `PMM-15979 Run scripts as another user`.
 
 ### Task 6: The host switch

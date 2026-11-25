@@ -23,7 +23,7 @@ The roadmap's branch rules and shared contract apply. In addition:
   - a request with `run_as` set is refused with `run_as needs a pmm-agent that runs as root` when pmm-agent is not root, and ends `prepare_failed` with `run_as is not supported by this pmm-agent` when it is;
   - a request with `memory_max` set is refused with `memory_max needs a host where runs are contained`, because no run is contained before plan 03;
   - the host facts are left at their zero values. The integration branch is not released in between.
-- **`oom_score_adj` is this plan's.** Every run gets `oom_score_adj` 1000 where the process is started (Task 4), contained or not; plan 03 does not repeat it.
+- **`oom_score_adj` is this plan's.** Every run gets `oom_score_adj` 1000 from the launcher that starts its program (Task 4), contained or not; plan 03 does not repeat it.
 - **Limits are named constants in one place:** a new file `api/agent/v1/scripts.go`, beside the protocol. pmm-managed (plan 02) imports the values both sides check and keeps only its own.
 - **Linux only.** On other systems `Manager.Start` refuses every run at once with `script runs need Linux`, which pmm-managed records as `not_started`; pmm-agent already builds elsewhere through stubs such as `utils/pdeathsig/pdeathsig.go` (`//go:build !linux`) [V].
 - **Version gate.** pmm-managed sends `run_script` only to pmm-agents at or above the gate of plan 02, which names the release that ships this plan. Nothing in pmm-agent checks a version.
@@ -34,7 +34,7 @@ The roadmap's branch rules and shared contract apply. In addition:
 
 ## Review Focus
 
-1. **A script that prints during a long cut.** Expected: the script never blocks; pmm-agent holds at most 4 MiB for the run and 32 MiB for the host; the start of the run's output and its last 64 KiB reach pmm-managed, and the result says how many bytes were dropped between them (T14). Tests: `TestOutboxBoundPerRun`, `TestOutboxBoundPerHost`, `TestOutboxKeepsTail` (Task 5).
+1. **A script that prints during a long cut.** Expected: the script never blocks; pmm-agent queues at most 4 MiB for the run and 32 MiB for the host, and keeps beside that one tail of at most 64 KiB for each run it knows; the start of the run's output and its last 64 KiB reach pmm-managed, and the first chunk after the gap and the result say how many bytes were dropped (T14). Tests: `TestOutboxBoundPerRun`, `TestOutboxBoundPerHost`, `TestOutboxKeepsTail`, `TestOutboxSmallCap` (Task 5).
 2. **A result that overtakes its own output.** Expected: a run's result goes into a batch only when every earlier item of that run is answered, so a partial store can never leave a final record with output still to come. Test: `TestBatchHoldsResultUntilChunksAcked` (Task 5).
 3. **pmm-managed answers part of a batch.** Expected: items answered `stored` or `discarded` leave the outbox; items with no answer go again in a later batch, after a delay. A discarded result takes its run out of `delivering`. Tests: `TestAcknowledgeAnswers` (Task 5), `TestScriptMessagesRetriedWithoutAnswer`, `TestScriptMessagesDiscarded` (Task 8).
 4. **A reconnect with messages in flight.** Expected: the same messages are sent first on the next connection, and nothing is lost or reordered (T1, T2 on the host side). Test: `TestScriptMessagesResentAfterReconnect` (Task 8).
@@ -49,8 +49,9 @@ The roadmap's branch rules and shared contract apply. In addition:
 13. **A configuration reload with runs in flight.** Expected: the runs go on; their output and results reach pmm-managed over the connection after the reload. Tests: `TestScriptMessagesSurviveNewClient` (Task 8), `TestCleanupTmpKeepsRunScript` (Task 9).
 14. **The same `job_id` sent twice.** Expected: the second start is refused; one process. Test: `TestDuplicateStartRefused` (Task 6).
 15. **A command that names one of its own files.** Expected: `["sh", "wrapper.sh"]` finds `wrapper.sh`, because the working directory is the run directory. Test: `TestProcessFindsItsFiles` (Task 4).
-16. **A run that fills the host's memory.** Expected: the kernel picks the run first, through `oom_score_adj` 1000 (the measurement is T5, plan 06). Test: `TestOOMScoreAdj` (Task 4).
+16. **A run that fills the host's memory.** Expected: the kernel picks the run first, through `oom_score_adj` 1000, which a launcher sets before the program's first instruction, so no child is born without it (the measurement is T5, plan 06). Tests: `TestOOMScoreAdj`, `TestLauncherFailure` (Task 4).
 17. **Secrets in logs.** Expected: `stdin`, `env` values and file contents never appear in pmm-agent's or pmm-managed's message logs (T13, the log part). Test: `TestRedactRunScript` (Task 1).
+18. **Results that pmm-managed does not acknowledge while it keeps sending starts.** Expected: a run holds its place in the host's limits until its result is answered, so pmm-agent refuses a start rather than know more than `Capacity` + `Queue` runs, and the kept tails stay bounded. Test: `TestUnansweredRunsCount` (Task 6).
 
 ---
 
@@ -139,6 +140,8 @@ Numbers are taken after the highest one in each oneof at `122590fc6` [V]: `Start
       uint32 chunk_id = 1;
       Stream stream = 2;
       string data = 3;
+      // Bytes of this run's output that were dropped between the previous chunk and this one.
+      int64 dropped_before = 4;
     }
     // The process is running.
     bool started = 1;
@@ -238,6 +241,7 @@ message ReadRunFileResponse {
 ```go
 const (
 	RunScriptMaxFilesBytes         = 1 << 20
+	RunScriptMaxFiles              = 64
 	RunScriptMaxStdinBytes         = 1 << 20
 	RunScriptMaxCommandEnvBytes    = 64 << 10
 	RunScriptDefaultTimeout        = 24 * time.Hour
@@ -339,10 +343,10 @@ func ParseRequest(jobID string, timeout *durationpb.Duration, p *agentv1.StartJo
 Rules, each with its own error text:
 - `jobID` is one path component: not empty, not `.` or `..`, no `/` and no NUL. It names the run directory. pmm-managed sends the caller's UUID.
 - `command` has at least one element; no element holds a NUL.
-- Each file name is one path component, is not `out` (the output directory), and appears once. All contents together are at most `RunScriptMaxFilesBytes`. Mode: 0 becomes 0600; otherwise one of 0400, 0500, 0600 and 0700; anything else is refused.
+- Each file name is one path component, is not `out` (the output directory), and appears once. A request has at most `RunScriptMaxFiles` (64) files. All names and contents together are at most `RunScriptMaxFilesBytes`: a name takes room in the request as content does. Mode: 0 becomes 0600; otherwise one of 0400, 0500, 0600 and 0700; anything else is refused.
 - An `env` name is not empty and holds no `=` or NUL; a value holds no NUL. Refused names: `PATH`, any name starting with `PMM_RUN_`, any name starting with `LD_` ([spec §6.2](../spec.md#62-what-a-run-is)). That is hygiene, not a control: the command may be any program.
 - `stdin` is at most `RunScriptMaxStdinBytes`.
-- `command` and `env` together are at most `RunScriptMaxCommandEnvBytes`, counted as the bytes of every command element plus every env name and value. With 1 MiB of files and 1 MiB of `stdin`, this keeps a request well under gRPC's default receive limit of 4 MiB, which nothing in `agent/` raises [I].
+- `command` and `env` together are at most `RunScriptMaxCommandEnvBytes`, counted as the bytes of every command element plus every env name and value. These counts leave out what the encoding adds for each element, so they do not bound the message by themselves, and pmm-agent cannot check the size of a message it could not receive: gRPC's default receive limit of 4 MiB, which nothing in `agent/` raises [I], ends the stream on a larger one. So pmm-managed also measures the whole `StartJobRequest` before it sends it, and refuses one above 3 MiB (plan 02 Task 5).
 - `timeout`: `handleStartJobRequest` refuses an invalid or absent duration with `CheckValid` before this is called (`agent/client/client.go:792-795`) [V]; an explicit 0 becomes `RunScriptDefaultTimeout`; above `RunScriptMaxTimeout` is refused. pmm-managed always sends one.
 - `start_within`: 0 becomes `RunScriptDefaultStartWithin`; negative, or above `RunScriptMaxStartWithin`, is refused.
 - `max_output_bytes`: 0 becomes `RunScriptDefaultMaxOutputBytes`; negative, or above `RunScriptMaxOutputBytes`, is refused.
@@ -351,7 +355,7 @@ Rules, each with its own error text:
 
 pmm-managed applies the same constants first; pmm-agent checks again and applies the defaults to a zero, so that a run never goes without a limit.
 
-- [ ] **Step 1: Write failing tests.** `TestParseRequestDefaults` (explicit zero values become the constants); `TestParseRequestRefusedEnv` (table: `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `PMM_RUN_ID`, `PMM_RUN_X`, `A=B`, an empty name → each refused; `PMM_RUNNER`, `MY_LD_X` → accepted); `TestParseRequestFiles` (`../x`, `a/b`, `out`, `.`, a duplicate name, mode 0644, mode 0200, 1 MiB + 1 byte in total → refused; mode 0400 and two files of 512 KiB → accepted); `TestParseRequestSizes` (a command of 32 KiB and env of 32 KiB + 1 byte → refused; exactly 64 KiB → accepted; stdin 1 MiB + 1 byte → refused); `TestParseRequestLimits` (timeout 7 days + 1 s, `start_within` 24 h + 1 s, `keep_files_for` 24 h + 1 s, `max_output_bytes` 100 MiB + 1, negative values, empty command, a NUL in an argument → refused; each maximum exactly → accepted); `TestParseRequestJobID` (`""`, `..`, `a/b` → refused).
+- [ ] **Step 1: Write failing tests.** `TestParseRequestDefaults` (explicit zero values become the constants); `TestParseRequestRefusedEnv` (table: `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `PMM_RUN_ID`, `PMM_RUN_X`, `A=B`, an empty name → each refused; `PMM_RUNNER`, `MY_LD_X` → accepted); `TestParseRequestFiles` (`../x`, `a/b`, `out`, `.`, a duplicate name, mode 0644, mode 0200, 1 MiB + 1 byte of content in total, names and contents of 1 MiB + 1 byte together, 65 files → refused; mode 0400, two files whose names and contents make exactly 1 MiB, and 64 empty files → accepted); `TestParseRequestSizes` (a command of 32 KiB and env of 32 KiB + 1 byte → refused; exactly 64 KiB → accepted; stdin 1 MiB + 1 byte → refused); `TestParseRequestLimits` (timeout 7 days + 1 s, `start_within` 24 h + 1 s, `keep_files_for` 24 h + 1 s, `max_output_bytes` 100 MiB + 1, negative values, empty command, a NUL in an argument → refused; each maximum exactly → accepted); `TestParseRequestJobID` (`""`, `..`, `a/b` → refused).
 - [ ] **Step 2: Run:** `go test -race -count=1 -run TestParseRequest ./agent/runner/scripts/` → FAIL (package does not exist).
 - [ ] **Step 3: Implement** `request.go`.
 - [ ] **Step 4: Run** the same command → PASS.
@@ -362,7 +366,8 @@ pmm-managed applies the same constants first; pmm-agent checks again and applies
 ### Task 4: The run directory, the process and the stop
 
 **Files:**
-- Create: `agent/runner/scripts/process_linux.go`, `agent/runner/scripts/process_other.go` (`//go:build !linux`)
+- Create: `agent/runner/scripts/process_linux.go`, `agent/runner/scripts/launcher_linux.go`, `agent/runner/scripts/process_other.go` (`//go:build !linux`)
+- Modify: `agent/main.go` (`main`, `:26-41`)
 - Test: `agent/runner/scripts/process_linux_test.go`
 
 **Interfaces:**
@@ -397,6 +402,13 @@ func (p *process) kill()
 
 // wait returns the exit code (-1 when killed by a signal) and a reason for a signal.
 func (p *process) wait() (int32, string)
+
+// LauncherArg is the first argument that makes pmm-agent's binary act as the launcher.
+const LauncherArg = "run-script-exec"
+
+// Launch sets oom_score_adj for the calling process, then replaces it with the program argv[0].
+// It returns only when that failed, after it wrote the reason to file descriptor 3.
+func Launch(argv []string) error
 ```
 
 What `startProcess` sets [V, prototype `agent/runner/jobs/run_script_job.go:147-191` on branch `PMM-15696-proto`, unless marked]:
@@ -404,7 +416,7 @@ What `startProcess` sets [V, prototype `agent/runner/jobs/run_script_job.go:147-
 - `cmd.Env` = `PATH=<fixedPath>`, `HOME=<pmm-agent's HOME>`, `LANG=C.UTF-8`, `PMM_RUN_ID=<job_id>`, `PMM_RUN_DIR=<run dir>`, `PMM_RUN_OUTPUT_DIR=<out dir>`, then the request's `env`. Nothing else of pmm-agent's environment. `fixedPath` is the prototype's `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` (prototype :58). The request may set `HOME` and `LANG`; `os/exec` keeps the last of two equal names [I].
 - **stdin** is an `os.Pipe`: the child gets the read end; pmm-agent writes the request's `stdin` from a goroutine of its own and closes the write end when done, or when the run ends. `cmd.Stdin` is never a Go reader, so `Wait` does not wait for a copy that a script that never reads its `stdin` would hold up [I, `os/exec`].
 - `SysProcAttr{Setpgid: true, Pdeathsig: SIGKILL}`. `Start` and `Wait` run in one goroutine under `runtime.LockOSThread()`, because Pdeathsig fires when the thread that forked the child exits (prototype :170-182). This pins one OS thread per running script: 16 at most.
-- **`oom_score_adj`**: right after `Start`, pmm-agent writes `RunScriptOOMScoreAdj` (1000) to `/proc/<pid>/oom_score_adj`, so that when the host runs out of memory the kernel takes the run before the database or pmm-agent ([spec §6.2](../spec.md#62-what-a-run-is)). Raising the value needs no privilege [I]. Children inherit it; a child forked in the instant between the start and the write keeps pmm-agent's own value [I]. This is the only place it is set, contained or not; plan 03 does not repeat it. A failed write is logged and the run goes on.
+- **`oom_score_adj`, set by a launcher [D]**: pmm-agent does not start the program directly. It starts its own binary, as `/proc/self/exe`, with `LauncherArg` and then the resolved program and its arguments. `main` passes those to `Launch` when its first argument is `LauncherArg`, before it parses a flag or reads any configuration (`agent/main.go:26-41`) [V]. `Launch` writes `RunScriptOOMScoreAdj` (1000) to `/proc/self/oom_score_adj` and then replaces itself with the program (`syscall.Exec`): the same process, so the same directory, environment, process group, `Pdeathsig` and, on a contained host, control group. The value is therefore set before the program's first instruction and every child inherits it, so that when the host runs out of memory the kernel takes the run before the database or pmm-agent ([spec §6.2](../spec.md#62-what-a-run-is)). Raising the value needs no privilege [I]. Writing it from pmm-agent after `Start` instead would leave a moment in which a program that forks at once has children with pmm-agent's own value. `startProcess` gives the launcher a pipe as file descriptor 3, which the launcher marks close-on-exec: an end of file means the program is running, and anything else is the launcher's error, with which the run ends `prepare_failed`. So no program runs without the value. This is the only place it is set, contained or not; plan 03 does not repeat it. `/proc/self/exe` still names the running binary after an upgrade has replaced the file on disk [I]. With `run_as` (plan 03) the launcher already runs as the run's user, who must be able to execute pmm-agent's binary; plan 03 tests that.
 - stdout and stderr are `os.Pipe` write ends, closed in pmm-agent after `Start`.
 - `resolveProgram` does not use `exec.LookPath`, which searches pmm-agent's own `PATH` [I, stdlib], but walks `fixedPath`.
 
@@ -414,7 +426,7 @@ The end of a run, however it ends:
 - The output readers get 2 s after that; then the read ends are closed (prototype `drainGracePeriod`, :56).
 - Everything in the run directory is removed except `out/`: the request's files and anything else the script left there. `out/` is removed at once when empty, otherwise when `keep_files_for` has passed (Task 6 owns the timer).
 
-Outcomes this task produces: `succeeded` (exit 0), `failed` (any other exit, or a signal not sent by pmm-agent: `exit_code -1`, reason `killed by signal <name>`), `stopped`, `timed_out`, and `prepare_failed` when a directory or a file cannot be written, the program does not resolve, `run_as` is set on a root pmm-agent (until plan 03), or `Start` fails.
+Outcomes this task produces: `succeeded` (exit 0), `failed` (any other exit, or a signal not sent by pmm-agent: `exit_code -1`, reason `killed by signal <name>`), `stopped`, `timed_out`, and `prepare_failed` when a directory or a file cannot be written, the program does not resolve, `run_as` is set on a root pmm-agent (until plan 03), `Start` fails, or the launcher reports an error.
 
 The time limit runs from the start of the process, not from the request: the wait for a slot is `start_within`'s (Task 6).
 
@@ -426,14 +438,15 @@ The time limit runs from the start of the process, not from the request: the wai
   - `TestProcessEnvironment`: a script that prints `env` shows exactly the six fixed names plus the request's, and no variable of the test process (set `PMM_TEST_LEAK=1` with `t.Setenv` before).
   - `TestProcessStdin`: `cat` gets the request's `stdin` and then end of file.
   - `TestRunEndsWithUnreadStdin`: 1 MiB of `stdin`, a script that starts `setsid sleep 300 < /dev/stdin &` and exits at once → the run ends within 2 s.
-  - `TestOOMScoreAdj`: a script that prints `/proc/self/oom_score_adj` prints 1000, and so does a child it starts.
+  - `TestOOMScoreAdj`: a script that prints `/proc/self/oom_score_adj` prints 1000, and so does a child it starts; `sh -c 'cat /proc/self/oom_score_adj & wait'`, a program that forks at once, prints 1000 in each of 200 runs.
+  - `TestLauncherFailure`: a program file that is not executable (mode 0600, named by an absolute path) → `prepare_failed` with the launcher's reason; a script that lists `/proc/self/fd` shows no descriptor 3. The package's `TestMain` calls `Launch` when the test binary is started with `LauncherArg`, as `main` does, because in a test `/proc/self/exe` is the test binary.
   - `TestResolveProgram`: `sh` resolves to a file under `fixedPath`; `no-such-program` fails; `./x.sh` resolves against the run directory.
   - `TestStopEscalatesToKill`: a script that traps SIGTERM and sleeps ends by SIGKILL between 5 s and 6 s after `stop(RunScriptStopGrace)`. This is the one test that waits for the real grace period.
   - `TestStopReachesTheGroup`: a script that starts `sleep 300 &` and waits; after `stop` (grace 50 ms) no process with the run's process group id is left.
   - `TestRunEndsWhileGrandchildHoldsPipe`: `setsid sleep 300 &` keeps stdout open; the run ends within 2 s of the script's exit. (The grandchild itself is plan 03's: it left the group.)
   - `TestPdeathsig`: a helper process (re-exec of the test binary with `-test.run=TestHelperProcess`) starts a run and exits with `os.Exit`; the run's process is gone within 2 s.
-- [ ] **Step 2: Run:** `go test -race -count=1 -run 'TestPrepare|TestProcess|TestRunEndsWith|TestOOMScoreAdj|TestResolve|TestStop|TestRunEndsWhile|TestPdeathsig' ./agent/runner/scripts/` → FAIL (undefined: `prepare`, `startProcess`).
-- [ ] **Step 3: Implement** `process_linux.go` and `process_other.go`.
+- [ ] **Step 2: Run:** `go test -race -count=1 -run 'TestPrepare|TestProcess|TestRunEndsWith|TestOOMScoreAdj|TestLauncher|TestResolve|TestStop|TestRunEndsWhile|TestPdeathsig' ./agent/runner/scripts/` → FAIL (undefined: `prepare`, `startProcess`).
+- [ ] **Step 3: Implement** `process_linux.go`, `launcher_linux.go`, the branch in `main`, and `process_other.go`.
 - [ ] **Step 4: Run** the same command → PASS.
 - [ ] **Step 5: Commit** `PMM-15977 Start and stop run_script processes`.
 
@@ -483,15 +496,16 @@ func pump(r io.Reader, emit func(string))
 Rules:
 - **Chunks:** one per read, at most 32 KiB read [V, prototype :54, :434-466]. `chunk_id` counts up from 0 per run over both streams [V, prototype :385], and is taken only when a chunk is queued, so ids have no gaps.
 - **Replacement:** invalid UTF-8 and NUL become U+FFFD ([spec §6.3](../spec.md#63-delivery-of-output-and-results)): PostgreSQL does not store a NUL in a text column [I]. Every byte count below is of the text after replacement, which is what pmm-managed stores, so the two sides count the same bytes. A 32 KiB read can grow to 96 KiB this way (three bytes for each byte replaced); a batch of 256 KiB still holds at least one chunk.
-- **The bounds:** a run may hold `RunScriptRunQueueBytes` (4 MiB) of unanswered output, and the host `RunScriptHostQueueBytes` (32 MiB); a run's output in total is capped by its `max_output_bytes`. Each run's last `RunScriptKeptTailBytes` (64 KiB) is reserved inside its 4 MiB and inside its `max_output_bytes`, so neither cap is exceeded.
-- **What is dropped, and what is kept ([ADR-04](../adr/ADR-04-acknowledged-delivery.md)):** while a run is within its bounds, its output is queued as it comes; that is the start of its output. Output that finds a bound full goes into the run's tail buffer, which holds the newest 64 KiB; what it pushes out is counted in `dropped_output_bytes`. When answers free room in the queue, the tail buffer is moved into the queue first, then output is queued as it comes again. At the end of the run, `addResult` moves what the tail buffer holds into the queue before the result. So the start of the output and its last 64 KiB always reach pmm-managed, and a failing script's last lines with them. None of this ever blocks the reader: the script never waits for the network.
+- **The bounds:** a run may hold `RunScriptRunQueueBytes` (4 MiB) of unanswered output in the queue, and the host `RunScriptHostQueueBytes` (32 MiB); a run's output in total is capped by its `max_output_bytes`. Each run has a tail: `RunScriptKeptTailBytes` (64 KiB), or half of its `max_output_bytes`, rounded down, when that is less. The tail is reserved inside the run's 4 MiB and inside its `max_output_bytes`, so neither of those two caps is exceeded. The tails are not part of the host's 32 MiB: a run whose output finds the host's queue full still keeps its tail. So pmm-agent holds at most 32 MiB of queued output and one tail for each run it knows, and Task 6 bounds those runs: 272 at the default limits, which is 17 MiB of tails.
+- **What is dropped, and what is kept ([ADR-04](../adr/ADR-04-acknowledged-delivery.md)):** while a run is within its bounds, its output is queued as it comes; that is the start of its output. Output that finds a bound full goes into the run's tail buffer, which holds the newest bytes up to the run's tail size; what it pushes out is counted in `dropped_output_bytes`. When answers free room in the queue, the tail buffer is moved into the queue first, then output is queued as it comes again. At the end of the run, `addResult` moves what the tail buffer holds into the queue before the result. The first chunk queued after a drop carries, in `dropped_before`, the bytes dropped since the chunk before it, so a reader knows where each gap is and how large; the result carries the run's total. So the start of the output and its last 64 KiB always reach pmm-managed, and a failing script's last lines with them. None of this ever blocks the reader: the script never waits for the network.
 - **Batches:** the 256 KiB counts `proto.Size` of each entry, envelope included.
 
 - [ ] **Step 1: Write failing tests** (pure, no process; small bounds through `newOutbox`):
   - `TestPumpReplaces`: a 3-byte rune split over two reads arrives whole; `"\xff"` and `"\x00"` each become `"\uFFFD"`, the replacement character.
-  - `TestOutboxBoundPerRun`: run bound 96 KiB with a 32 KiB tail: three 32 KiB pieces → two queued, the third in the tail buffer; a fourth pushes the third out (32 KiB counted as dropped); after the first two are answered, the tail is queued next, with the next ids and no gap.
+  - `TestOutboxBoundPerRun`: run bound 96 KiB with a 32 KiB tail: three 32 KiB pieces → two queued, the third in the tail buffer; a fourth pushes the third out (32 KiB counted as dropped); after the first two are answered, the tail is queued next, with the next ids and no gap in them, and `dropped_before` 32 KiB on its first chunk.
   - `TestOutboxBoundPerHost`: two runs share a host bound; the second's output goes to its tail buffer while the first holds the queue.
-  - `TestOutboxKeepsTail`: 200 pieces of 1 KiB with `max_output_bytes` 64 KiB and a 16 KiB tail → what is queued is the first 48 KiB and, after `addResult`, the last 16 KiB, in order; the result's `dropped_output_bytes` is the 136 KiB between them.
+  - `TestOutboxKeepsTail`: 200 pieces of 1 KiB with `max_output_bytes` 64 KiB and a 16 KiB tail → what is queued is the first 48 KiB and, after `addResult`, the last 16 KiB, in order; the result's `dropped_output_bytes` is the 136 KiB between them, and so is `dropped_before` on the first chunk of the tail.
+  - `TestOutboxSmallCap`: `max_output_bytes` 1 KiB with the 64 KiB tail setting → the tail is 512 bytes: of 3 KiB of output the first 512 bytes and the last 512 are queued, with `dropped_before` 2 KiB; `max_output_bytes` 1 → one byte queued and no tail. Neither run passes its cap.
   - `TestOutboxResultNeverDropped`: a full outbox still takes `addStarted` and `addResult`.
   - `TestBatchSize`: 20 chunks of 32 KiB → the first batch holds 7 and is at most 256 KiB.
   - `TestBatchHoldsResultUntilChunksAcked`: chunks 0–2 and the result of run A → the first batch holds the chunks only; after they are answered, the next holds the result.
@@ -549,15 +563,16 @@ func (m *Manager) Acknowledge(batch *agentv1.JobMessagesRequest, resp *agentv1.J
 ```
 
 The life of a run in the `Manager`:
-- **Refused by `Start`**, with nothing kept, in this order: not Linux (`script runs need Linux`); a `Manager` that is shutting down (Task 9); a request `ParseRequest` refuses; a `job_id` the `Manager` already knows, in any phase or with its `out/` still kept (`run <job_id> is already known`), so that nothing starts twice; `run_as` set on a pmm-agent that is not root (`run_as needs a pmm-agent that runs as root`; pmm-managed already decides this from the host facts, and pmm-agent checks again); `memory_max` set on a host that is not contained (`memory_max needs a host where runs are contained`; in this plan no host is contained, plan 03 makes it depend on the host); `Capacity` running and `Queue` waiting already (`pmm-agent already has <n> script runs waiting`). The texts match the roadmap's shared contract.
+- **Refused by `Start`**, with nothing kept, in this order: not Linux (`script runs need Linux`); a `Manager` that is shutting down (Task 9); a request `ParseRequest` refuses; a `job_id` the `Manager` already knows, in any phase or with its `out/` still kept (`run <job_id> is already known`), so that nothing starts twice; `run_as` set on a pmm-agent that is not root (`run_as needs a pmm-agent that runs as root`; pmm-managed already decides this from the host facts, and pmm-agent checks again); `memory_max` set on a host that is not contained (`memory_max needs a host where runs are contained`; in this plan no host is contained, plan 03 makes it depend on the host); `Capacity` + `Queue` runs already known and not yet forgotten, whether waiting, running or delivering (`pmm-agent already has <n> script runs that are not finished and acknowledged`). With every result answered, that is `Capacity` running and `Queue` waiting. A result that pmm-managed has not answered keeps its run's place, so results cannot pile up while starts keep coming. The texts match the roadmap's shared contract.
 - **Known** from the moment `Start` accepts it, before the `StartJobResponse` is sent. A start whose answer is lost on the way is therefore in pmm-managed's next `ListRunsRequest` answer and proceeds; a start pmm-agent never received is not, and plan 02 records it `lost`.
 - **Waiting** until one of the `Capacity` slots is free, in arrival order. These slots are the `Manager`'s own, not the runner's ([spec §6.2](../spec.md#62-what-a-run-is)). When `start_within` passes first, the run ends `expired`. A stop ends it `stopped`. Neither takes a slot or starts a process.
 - **Running** from the slot on: `prepare` and `startProcess` (Task 4), then `addStarted`, the two pumps into `addOutput`, the time limit. `prepare_failed` goes straight to delivering.
-- **Delivering** once the process and its readers are done: the slot is freed, `addResult` queues the tail and the result with `finished_at` and the dropped count.
+- **Delivering** once the process and its readers are done: the slot is freed, `addResult` queues the tail and the result with `finished_at` and the dropped count. The run frees its slot for the next waiting run, but keeps its place in the count above until it is forgotten.
 - **Forgotten** when `Acknowledge` reports its result answered, `stored` or `discarded`. A small entry stays until `keep_files_for` passes, with the `out/` removal timer, so that `ReadRunFile` (Task 7) and a repeated `Start` still know the id: a run whose `out/` was empty and removed at once lists no files rather than an error. The timer is in memory; after a restart `New` removes everything.
 
 - [ ] **Step 1: Write failing tests** (real processes, small limits and durations through `Config`):
   - `TestSlotsAndQueue`: capacity 2, queue 3; six runs of `sleep 0.3` → two running, three waiting, the sixth refused with the reason. Separately, 32 runs of `true` with capacity 16 never use the runner (no `runner.Runner` in the test).
+  - `TestUnansweredRunsCount`: capacity 2, queue 3; five runs of `true` end and nothing is acknowledged → a sixth start is refused with the reason; after `Acknowledge` answers one result, a start is accepted.
   - `TestExpiredWhenNoSlot`: capacity 1, a `sleep 1` run, then a run with `start_within` 100 ms → `OUTCOME_EXPIRED`, `exit_code -1`, no `started_at`, and no process started for it.
   - `TestStopWhileWaiting` → `OUTCOME_STOPPED`, no process started.
   - `TestStopWhileRunning` → `OUTCOME_STOPPED` within the grace period; `TestTimedOut` (timeout 200 ms, `sleep 5`) → `OUTCOME_TIMED_OUT`.
@@ -568,7 +583,7 @@ The life of a run in the `Manager`:
   - `TestRunDirRemoval`: after the end, the run directory holds only `out/`; with an empty `out/` nothing is left and the listing is empty; with a file and `keep_files_for` 200 ms, `out/` is gone 1 s later.
   - `TestNewRemovesOldRunDirs`: a leftover `<TempDir>/run-script/x/out/f` is gone after `New`.
   - `TestOrder`: progress `started`, then chunks in order, then the result, as `NextBatch` yields them.
-- [ ] **Step 2: Run:** `go test -race -count=1 -run 'TestSlots|TestExpired|TestStopWhile|TestTimedOut|TestOutcomes|TestMemoryMax|TestListRuns|TestDuplicate|TestRunDir|TestNewRemoves|TestOrder' ./agent/runner/scripts/` → FAIL (undefined: `New`).
+- [ ] **Step 2: Run:** `go test -race -count=1 -run 'TestSlots|TestUnanswered|TestExpired|TestStopWhile|TestTimedOut|TestOutcomes|TestMemoryMax|TestListRuns|TestDuplicate|TestRunDir|TestNewRemoves|TestOrder' ./agent/runner/scripts/` → FAIL (undefined: `New`).
 - [ ] **Step 3: Implement** `manager.go`.
 - [ ] **Step 4: Run** the same command → PASS. Then `cd agent && make test` → PASS within the 80 s per package.
 - [ ] **Step 5: Commit** `PMM-15977 Run scripts in their own slots and queue`.

@@ -53,13 +53,13 @@ On the integration branch the first value also admits a released pmm-agent of th
 3. **A chunk stored twice, answered `stored` and not stored, or one bad chunk holding up a host.** Expected: `(run_id, chunk_id)` is the key; a transient failure answers nothing; a store that no retry can fix is `discarded` and counted, and the rest of the batch is stored. Tests: `TestJobMessagesDuplicateChunk`, `TestJobMessagesStoreFailsNoAnswer`, `TestJobMessagesPermanentFailure` (Task 6).
 4. **An item pmm-managed will not store.** Expected: every item gets `stored` or `discarded`; an item for a run with no open record is `discarded` and that run is stopped; an item for another pmm-agent's run is `discarded`, with no stop and a warning. Tests: `TestJobMessagesNoOpenRecord`, `TestJobMessagesWrongAgent`, `TestJobMessagesOutputCap` (Task 6).
 5. **A run marked lost while it waits in pmm-agent's queue, while its result is on the way, or while its start is in flight.** Expected: no. The check judges only records that were `queued` or `running` before the question, and `pending` records past their start deadline, which every `pending` record has from its creation. Tests: `TestCheckQueuedNotLost`, `TestCheckResultInFlight`, `TestCheckStartInFlight` (Task 7).
-6. **A list question that gets no answer.** Expected: asked again on the same stream with a growing pause until answered or the stream ends, and asked again after any start that got no answer. Tests: `TestCheckRetriesUntilAnswered`, `TestCheckAfterUnansweredStart` (Task 7).
-7. **`ListRuns` with `final_after` skips a run.** Expected: never; every answer carries a cursor, and `from_now` returns the cursor alone. Final transitions take their cursor value under one transaction-level lock, so values become visible in the order they are taken. Tests: `TestScriptRunsFinalSeqOrder` (Task 2), `TestListRunsFinalAfterConcurrent` (Task 8).
+6. **A list question that gets no answer.** Expected: asked again on the same stream with a growing pause until answered or the stream ends, asked again after any start that got no answer, and asked once more when the deadline of a start it could not yet judge has passed, so that no `pending` record waits for the next reconnect. Tests: `TestCheckRetriesUntilAnswered`, `TestCheckAfterUnansweredStart`, `TestCheckRunsAgainAfterStartDeadline`, `TestCheckRequestDuringCheck` (Task 7).
+7. **`ListRuns` with `final_after` skips a run.** Expected: never; every answer carries a cursor, and `from_now` returns the cursor alone. Final transitions take their cursor value under one transaction-level lock, so values become visible in the order they are taken. An answer with no runs returns the cursor it was given, never a newer one read apart from the runs. Tests: `TestScriptRunsFinalSeqOrder` (Task 2), `TestListRunsFinalAfterConcurrent`, `TestListRunsEmptyAnswerKeepsCursor` (Task 8).
 8. **The second token.** Expected: 403 without it, with a wrong one, and with one of another length; the comparison is constant-time; the gateway forwards the header. Tests: `TestScriptsToken` (Task 4), `TestScriptsTokenRequired` (Task 11, T12).
 9. **No internal token.** Expected: on all three paths where `ResolveExtensions` returns none, an authenticated caller gets exactly what an unknown path gives it, and pmm-managed logs an error. Tests: `TestTokenSource`, `TestScriptsAbsentWithoutToken`, `TestScriptsTokenFromResolveExtensions` (Task 4).
 10. **`connected` and `responsive` in HA and under load.** Expected: `connected` is the replica's own registry, the lookup a start uses; `responsive` turns false only after 30 s with nothing received, and not while pmm-managed's own loop holds the receiver. Tests: `TestScriptHostConnected`, `TestResponsive` (Task 9).
 11. **A call that waits, on a replica that did not store the result.** Expected: it returns within about a second of the record turning final, because it re-reads PostgreSQL every second. Tests: `TestGetRunWaitRereads`, `TestListRunsWaitRereads` (Task 8).
-12. **Stored output.** Expected: one run stores at most its `max_output_bytes`; all runs together at most 1 GiB, enforced by the cleaner from the oldest finished run. Tests: `TestJobMessagesOutputCap` (Task 6), `TestCleanerOutputBound` (Task 10).
+12. **Stored output.** Expected: one run stores at most its `max_output_bytes`; all runs together are held to 1 GiB by the cleaner, from the oldest finished run; open runs' output is never deleted, and a pass ends when no finished run has output left. Tests: `TestJobMessagesOutputCap` (Task 6), `TestCleanerOutputBound` (Task 10).
 13. **Retention runs on the leader only.** Expected: the cleaner is a leader service. Test: `TestScriptRunsCleanerIsLeaderService` (Task 10).
 14. **A pmm-agent removed from the inventory.** Expected: its runs are stopped where this replica can still reach it, then marked `lost`; runs of a pmm-agent removed elsewhere are closed by the cleaner. Tests: `TestRemovedAgentStopsThenLoses`, `TestCleanerClosesRunsOfRemovedAgents` (Task 10).
 
@@ -206,7 +206,8 @@ message ListRunsResponse {
   repeated Run runs = 1;
   int32 total_items = 2;
   int32 total_pages = 3;
-  // Always set: after the last run returned with final_after, otherwise the current one.
+  // Always set. With final_after: after the last run returned, or the given cursor when none is.
+  // Otherwise the current one.
   string cursor = 4;
 }
 
@@ -214,6 +215,8 @@ message LogChunk {
   uint32 chunk_id = 1;
   LogStream stream = 2;
   string data = 3;
+  // Bytes of the run's output that were dropped between the previous chunk and this one.
+  int64 dropped_before = 4;
 }
 message GetRunLogsRequest {
   string run_id = 1 [(validate.rules).string.uuid = true];
@@ -338,7 +341,7 @@ service ScriptsService {
   - do the same again after every merge of `main` that adds one. Entries 121 to 129 landed in the six weeks before `122590fc6` (`git log 016153c7a..122590fc6 -- managed/models/database.go`) [V].
 
   `migrateDB` runs every pending entry in one transaction (`database.go:1723`) [V], and a duplicate key does not compile, so a clash shows at once.
-- **Sizing** (ADR-05, ADR-11): one run a second for 7 days is 604,800 rows in `script_runs` [I: the rate is ADR-11's]. At about 1 KiB a row with its request summary, that is about 600 MiB of rows and well under 100 MiB for each of the indexes below [I: estimated, not measured]. Every query of this plan reads by an index: the key, the open runs of one pmm-agent (a partial index), `final_seq`, `finished_at`, and `created_at` for the plain list. Output is bounded apart, at 1 GiB in all (Task 10). Task 10's retention pass deletes about 600 runs every 10 minutes at that rate.
+- **Sizing** (ADR-05, ADR-11): one run a second for 7 days is 604,800 rows in `script_runs` [I: the rate is ADR-11's]. At about 1 KiB a row with its request summary, that is about 600 MiB of rows and well under 100 MiB for each of the indexes below [I: estimated, not measured]. Every query of this plan reads by an index: the key, the open runs of one pmm-agent (a partial index), `final_seq`, `finished_at`, and `created_at` for the plain list. Output is bounded apart: held to 1 GiB in all by the cleaner, and by each run's own cap (Task 10). Task 10's retention pass deletes about 600 runs every 10 minutes at that rate.
 - DDL. `TIMESTAMP` without time zone and `VARCHAR`, as entry 129 [V]. No `DEFAULT`. `node_id` and `node_name` are copied in, and `pmm_agent_id` has no foreign key, so a record outlives its node and its pmm-agent, as `jobs.pmm_agent_id` does (`database.go:521-534`) [V].
 
 ```sql
@@ -374,6 +377,7 @@ CREATE TABLE script_run_logs (
   chunk_id INTEGER NOT NULL,
   stream SMALLINT NOT NULL,
   data TEXT NOT NULL,
+  dropped_before BIGINT NOT NULL,
   PRIMARY KEY (run_id, chunk_id)
 );
 
@@ -435,7 +439,7 @@ type ScriptRunRequest struct {
 type ScriptRun struct { … }
 
 //reform:script_run_logs
-type ScriptRunLog struct { RunID string; ChunkID uint32; Stream int16; Data string }
+type ScriptRunLog struct { RunID string; ChunkID uint32; Stream int16; Data string; DroppedBefore int64 }
 
 //reform:script_stop_requests
 type ScriptStopRequest struct { RunID, PMMAgentID string; RequestedAt time.Time }
@@ -455,6 +459,9 @@ func FindScriptRunsFinalAfter(ctx context.Context, q *reform.Querier, pmmAgentID
 func CurrentScriptRunsCursor(ctx context.Context, q *reform.Querier) (int64, error)
 // FindScriptRunsToCheck returns the records the check may judge (Task 7).
 func FindScriptRunsToCheck(ctx context.Context, q *reform.Querier, pmmAgentID string, asked time.Time) ([]*ScriptRun, error)
+// LatestPendingStartDeadline returns the latest start_deadline of the pmm-agent's pending records
+// that is not before asked, or nil when there is none.
+func LatestPendingStartDeadline(ctx context.Context, q *reform.Querier, pmmAgentID string, asked time.Time) (*time.Time, error)
 func FindOpenScriptRuns(ctx context.Context, q *reform.Querier, pmmAgentID string) ([]*ScriptRun, error)
 
 // TransitionScriptRun moves a run to `to` along one arrow of spec §6.2, and reports whether it did.
@@ -469,7 +476,8 @@ func FindScriptRunLogs(ctx context.Context, q *reform.Querier, runID string, off
 func HoldScriptStop(ctx context.Context, q *reform.Querier, runID, pmmAgentID string) error
 func FindScriptStop(ctx context.Context, q *reform.Querier, runID string) (*ScriptStopRequest, error)
 func DeleteOldScriptRuns(ctx context.Context, q *reform.Querier, finishedBefore time.Time) (int, error)
-// DeleteOldestScriptRunOutput deletes the logs of the oldest finished runs until the stored total is at most limit.
+// DeleteOldestScriptRunOutput deletes the logs of the oldest finished runs until the stored total is at most limit,
+// or no finished run has output left.
 func DeleteOldestScriptRunOutput(ctx context.Context, q *reform.Querier, limit int64) (int, error)
 // FindScriptRunsOfRemovedAgents returns open runs whose pmm-agent row no longer exists.
 func FindScriptRunsOfRemovedAgents(ctx context.Context, q *reform.Querier) ([]*ScriptRun, error)
@@ -486,9 +494,10 @@ func FindScriptRunsOfRemovedAgents(ctx context.Context, q *reform.Querier) ([]*S
   - **The cursor of `ListRuns`.** A final transition takes `pg_advisory_xact_lock(scriptRunsFinalLockID)` and then sets `final_seq = nextval('script_runs_final_seq')` in its `UPDATE`. The lock is held to the commit, so the values become visible in the order they are taken, on every replica, and a reader that has seen value N never later finds a smaller one appear. The precedent is `encryptionKeyLockID` (`managed/models/encryption_helpers.go:37-39,153`) [V]; `scriptRunsFinalLockID` is a new constant with another value. Final transitions are rare next to log writes, so the lock is not a bottleneck [I].
   - **`CurrentScriptRunsCursor`** is `SELECT max(final_seq)`: by the lock above, every value below it is already visible.
   - **`FindScriptRunsToCheck`** ([spec §6.4](../spec.md#64-reconnect-and-lost-runs) step 3): the pmm-agent's records in `queued` or `running` whose `queued_at` is before `asked`, and those in `pending` whose `start_deadline` is before `asked`. A start still in flight is never returned. A move from `pending` straight to `running` cannot happen (the arrows), so every `running` record has a `queued_at`.
+  - **`LatestPendingStartDeadline`** names the records that `FindScriptRunsToCheck` left out as still in flight: the check runs again after the deadline it returns (Task 7, step 6).
   - **A final transition deletes the run's `script_stop_requests` row** in the same transaction.
   - **`AddScriptRunLogs`** inserts with `INSERT … ON CONFLICT (run_id, chunk_id) DO NOTHING`, counts the bytes of `data` it inserted (the text as received, after pmm-agent's replacement of invalid bytes), refuses a chunk that would take `stored_bytes` above `request.max_output_bytes`, and updates both counters.
-  - **`DeleteOldestScriptRunOutput`**: while `sum(stored_bytes)` is above `limit`, delete the logs of the final run with the oldest `finished_at` that still has output, set its `stored_bytes` to 0 and its `output_deleted_at`.
+  - **`DeleteOldestScriptRunOutput`**: while `sum(stored_bytes)` over all runs is above `limit` and a final run still has output, delete the logs of the final run with the oldest `finished_at` that still has output, set its `stored_bytes` to 0 and its `output_deleted_at`. It ends when the total is within the limit or no final run has output left: the output of open runs is never deleted ([spec §6.6](../spec.md#66-records-and-retention)).
 
 - [ ] **Step 1: Write the failing migration test** in `TestDatabaseMigrations`: open `testdb` at the previous version (`testdb.Open(t, models.SkipFixtures, new(<N-1>))`, then `testdb.SetupDB(t, sqlDB, models.SkipFixtures, new(<N>))`, as the existing cases do, `database_test.go:390-430`) [V]; the three tables and the sequence exist; a `script_run_logs` row without its run fails with a foreign-key error; deleting the run deletes its logs and its stop row.
 - [ ] **Step 2: Write the failing helper tests** in `script_run_helpers_test.go` on `testdb.Open(t, models.SkipFixtures, nil)`:
@@ -499,10 +508,11 @@ func FindScriptRunsOfRemovedAgents(ctx context.Context, q *reform.Querier) ([]*S
   - `TestAddScriptRunLogs`: chunks 0, 1, 2 stored; chunk 1 again → counted as neither stored nor refused, data unchanged; with `max_output_bytes` 10 and chunks of 6 bytes → the second refused, `dropped_bytes` 6.
   - `TestFindScriptRunLogs`: `offset` and `limit` by `chunk_id`, ordered by it.
   - `TestFindScriptRunsToCheck`: only that pmm-agent's rows; `queued` and `running` with `queued_at` before `asked`; `pending` only with `start_deadline` before `asked`.
+  - `TestLatestPendingStartDeadline`: two `pending` records of the pmm-agent with deadlines after `asked` → the later one; a `pending` record past its deadline, a `queued` record and another pmm-agent's record → nil.
   - `TestDeleteOldScriptRuns`: deletes final runs finished before the cut, with their logs; keeps open runs whatever their age.
-  - `TestDeleteOldestScriptRunOutput`: three final runs of 600, 600 and 600 bytes and a limit of 1,000 → the two oldest lose their logs and read `stored_bytes` 0 with `output_deleted_at`; an open run is never touched.
+  - `TestDeleteOldestScriptRunOutput`: three final runs of 600, 600 and 600 bytes and a limit of 1,000 → the two oldest lose their logs and read `stored_bytes` 0 with `output_deleted_at`; an open run is never touched; with open runs alone above the limit it deletes nothing and returns.
   - `TestFindScriptRunsOfRemovedAgents`: an open run whose pmm-agent row was deleted is returned; one whose row exists is not.
-- [ ] **Step 3: Run them** in the devcontainer: `… go test -race -p 1 -run 'TestDatabaseMigrations|TestCreateScriptRun|TestScriptRun|TestFindScriptRun|TestAddScriptRunLogs|TestDeleteOld' ./models/` → FAIL: undefined names, then missing tables.
+- [ ] **Step 3: Run them** in the devcontainer: `… go test -race -p 1 -run 'TestDatabaseMigrations|TestCreateScriptRun|TestScriptRun|TestFindScriptRun|TestLatestPending|TestAddScriptRunLogs|TestDeleteOld' ./models/` → FAIL: undefined names, then missing tables.
 - [ ] **Step 4: Implement** the migration entry, the model and the helpers. Run `make gen` for `script_run_model_reform.go`.
 - [ ] **Step 5: Run the tests again** → PASS. Run the whole `./models/` package in the devcontainer: no other migration test changes.
 - [ ] **Step 6: Commit** `PMM-15978 Add the script run tables and helpers`.
@@ -686,8 +696,9 @@ type StartScriptRunParams struct {
 
 ```go
 const (
-	agentCallTimeout    = 10 * time.Second
-	startDeadlineMargin = 5 * time.Second
+	agentCallTimeout     = 10 * time.Second
+	startDeadlineMargin  = 5 * time.Second
+	maxStartRequestBytes = 3 << 20
 )
 
 type ScriptRunsService struct { db *reform.DB; sender agentSender; r *Registry; l *logrus.Entry; waiters *runWaiters }
@@ -701,12 +712,14 @@ func (s *ScriptRunsService) IsConnected(pmmAgentID string) bool
 
 **Steps of `StartRun`** ([spec §6.2](../spec.md#62-what-a-run-is), §9.3):
 1. **Validate** in `Server.StartRun`, after the generated rules (`grpc_validator`, `main.go:288`) [V]. Each failure is `codes.InvalidArgument` naming the rule, and no record is made:
-   - the total bytes of `files[].content` above `RunScriptMaxFilesBytes`; `stdin` above `RunScriptMaxStdinBytes`; the bytes of every `command` item plus every env name and value above `RunScriptMaxCommandEnvBytes`;
+   - more than `RunScriptMaxFiles` files; the total bytes of `files[].name` and `files[].content` above `RunScriptMaxFilesBytes`; `stdin` above `RunScriptMaxStdinBytes`; the bytes of every `command` item plus every env name and value above `RunScriptMaxCommandEnvBytes`;
    - two files with one name; a file name `.`, `..` or `out`;
    - an env name starting with `PMM_RUN_` or `LD_`, or equal to `PATH` (00); an env name given twice;
    - `memory_max` above 0 and below `minMemoryMax`.
 
    Then the defaults, each when 0 or absent: a file `mode` `RunScriptDefaultFileMode` (0600), `timeout` `RunScriptDefaultTimeout`, `start_within` `RunScriptDefaultStartWithin`, `max_output_bytes` `RunScriptDefaultMaxOutputBytes`, `keep_files_for` `RunScriptDefaultKeepFilesFor`. The record and pmm-agent always see the values used.
+
+   One more rule is `ScriptRunsService.StartRun`'s, before step 2, because it needs the message itself: the `StartJobRequest` it would send, measured with `proto.Size`, is at most `maxStartRequestBytes` (3 MiB). Above that it returns `codes.InvalidArgument` and makes no record. The byte counts above leave out what the encoding adds for each element, and a message above pmm-agent's 4 MiB receive limit would end that pmm-agent's stream (plan 01 Task 3). pmm-managed itself accepts API requests of up to 100 MiB (`gRPCMessageMaxSize`, `managed/cmd/pmm-managed/main.go:128`) [V], so nothing earlier stops such a request.
 2. **An id that exists**: `models.FindScriptRunByID` finds it → return that record, send nothing. The race of two first calls is settled by `CreateScriptRun` in step 4.
 3. **Find the pmm-agent**: `models.FindAgentByID` (`agent_helpers.go:427`) [V]; not found, or not `models.PMMAgentType` (`agent_model.go:80`) [V] → `codes.NotFound`. An unknown pmm-agent is an error, not a record: a record needs a host. Its node by `models.FindNodeByID` (`node_helpers.go:153`) [V] for `node_id` and `node_name`.
 4. **Create the record** with `CreateScriptRun`: state `pending`, `start_deadline` = now + `agentCallTimeout` + `startDeadlineMargin`, so every `pending` record has one from its creation and a start still in flight is never judged (Task 7). The request is stored without its secrets: `size`, `mode` and `sensitive` per file, the `sha256` only for a file that is not sensitive, `env_names` sorted. If `CreateScriptRun` reports the id was not new, return the stored record and send nothing.
@@ -722,7 +735,7 @@ func (s *ScriptRunsService) IsConnected(pmmAgentID string) bool
 7. **The answer:**
    - `errAgentNotConnected` (the stream went between step 5 and the send): `not_started`, "pmm-agent is not connected";
    - pmm-agent answered with a refusal: a non-empty `StartJobResponse.error`, as `jobs.go:445-447` reads it [V], or an error that carries a gRPC status, which the channel returns for a non-OK answer (`channel.go:448-454`) [V] → `not_started` with that text, the last reason of the roadmap's list. This covers pmm-agent's own limits and a pmm-agent that does not know the job type;
-   - **any other error**: the deadline passed, or the stream closed while waiting. The record stays `pending`, with the reason "pmm-agent did not answer the start within 10 s; the next check with it settles the run", and the run's pmm-agent is asked which runs it knows (Task 7, `requestCheck`). The script may have started, so the run is not `not_started`;
+   - **any other error**: the deadline passed, or the stream closed while waiting. The record stays `pending`, with the reason "pmm-agent did not answer the start within 10 s; the next check with it settles the run", and the run's pmm-agent is asked which runs it knows (Task 7, `requestCheck`). That check cannot judge the record before its `start_deadline`, so it runs again once the deadline has passed (Task 7, step 6). The script may have started, so the run is not `not_started`;
    - accepted → `TransitionScriptRun(…, queued, QueuedAt: now)`; the guard leaves a run that a message has already moved;
    - a stop held while the run was `pending` (Task 8) is sent now.
 8. **Return** the record, whatever its state. A run that cannot start is a record, not an error ([spec §6.7](../spec.md#67-the-api)).
@@ -741,7 +754,8 @@ func (s *ScriptRunsService) IsConnected(pmmAgentID string) bool
   - `TestStartRunSameID`: a run id that exists → the stored record, no insert, no send.
   - `TestStartRunNoSecretsStored` (T13 in part): the SQL arguments sqlmock receives contain neither a file's content, nor an env value, nor the stdin, nor the SHA-256 of a sensitive file.
 - [ ] **Step 2: Write the failing tests** in `scripts/scripts_test.go`, with the mocked `scriptRuns`:
-  - each validation rule of step 1 → `InvalidArgument` and no call, including `command` and `env` of 64 KiB plus one byte together, a file named `out`, and `memory_max` of 16 MiB minus one byte; `memory_max` 0 and 16 MiB pass;
+  - each validation rule of step 1 → `InvalidArgument` and no call, including `command` and `env` of 64 KiB plus one byte together, 65 files, file names and contents of 1 MiB plus one byte together, a file named `out`, and `memory_max` of 16 MiB minus one byte; `memory_max` 0 and 16 MiB pass;
+  - `TestStartRunRequestTooLarge` (`script_runs_test.go`): with `maxStartRequestBytes` lowered through an unexported field, a request whose `StartJobRequest` is above it → `InvalidArgument`, no record and nothing sent;
   - the defaults reach `StartRun`, including a file `mode` of 0 as 0600 and 0700 unchanged;
   - an unknown pmm-agent → `NotFound`; `GetRun` of an unknown id → `NotFound` with "script run <id> not found";
   - `TestStartRunRequestRedacted`: a `StartRunRequest` with a file content, an env value and a stdin, each a distinct marker, formatted as the debug log of `interceptors.UnaryAdd` formats a request, `prototext.Format(logger.RedactMessage(req))` (`managed/utils/interceptors/interceptors.go:134-147`) [V] → none of the three markers appears; the file name and the env name do.
@@ -779,7 +793,7 @@ type scriptRunsService interface {
    The prototype answered even after a failed write (prototype `handler.go:173-185`) [V]; that is not kept.
 3. **`discarded`, and a stop:** an item for a run with no open record: no row at all (after a restore of PMM Server), or a final record (a late result, or output after the run was closed). The run's id gets one `StopJobRequest` to the pmm-agent that sent the item, with `agentCallTimeout`, from a goroutine started after the commit, so the loop is not held. A failed send is logged; the next check sends it again (Task 7, step 5).
 4. **`discarded` without a stop:** an item whose run has an open record of another pmm-agent. Nothing is stored, no stop is sent to either pmm-agent, and pmm-managed logs a warning with both pmm-agent ids.
-5. **Logs:** `AddScriptRunLogs` per run, so `(run_id, chunk_id)` dedups: a chunk already stored is answered `stored`. A chunk refused because it would pass `max_output_bytes` is `discarded`, and its bytes are counted in `dropped_bytes`. Bytes are counted on the text as received, after pmm-agent's replacement of invalid bytes; plan 01 counts the same text.
+5. **Logs:** `AddScriptRunLogs` per run, so `(run_id, chunk_id)` dedups: a chunk already stored is answered `stored`. A chunk refused because it would pass `max_output_bytes` is `discarded`, and its bytes are counted in `dropped_bytes`. A chunk's `dropped_before` is stored with it. A chunk that pmm-managed itself discards leaves a hole in the run's stored `chunk_id`s, which is how a reader sees that gap. Bytes are counted on the text as received, after pmm-agent's replacement of invalid bytes; plan 01 counts the same text.
 6. **A message before its start's answer.** A `pending` record that receives an item from its own pmm-agent has been accepted: it first moves `pending` → `queued` (`QueuedAt`: now), then on along the arrows. A `started` progress, or a result that implies the process ran, moves it on to `running` first.
 7. **`started`:** `TransitionScriptRun(running, StartedAt)`; `stored`.
 8. **The result:** one case for every outcome pmm-agent can send, plan 01 Task 1's enum:
@@ -863,8 +877,9 @@ func (s *ScriptRunsService) requestCheck(pmmAgentID string)
 
    Wake the waiters of every record that turned final.
 5. For each id in the answer with no open record (final, or no row at all): send `StopJobRequest`. Nothing is stored for it. An id whose record is open but was not judged in step 4 (a start in flight) is left alone.
+6. **Records left for later.** `LatestPendingStartDeadline(agent.id, asked)` (Task 2) says whether the pmm-agent has `pending` records that step 4 did not judge because their `start_deadline` is not before `asked`. If so, a timer sends on `recheck` just after the latest of those deadlines, and the check then runs only if one of the pmm-agent's `pending` records is past its deadline: a start that was answered meanwhile needs no check. So a start that got no answer is settled within about 15 s of being sent, and not at the next reconnect.
 
-**When a check runs:** once when the stream registers, and again each time `recheck` receives: `requestCheck` is called after any start that got no answer (Task 5, step 7). A check that is waiting for an answer absorbs a further request.
+**When a check runs:** once when the stream registers, and again each time `recheck` receives: `requestCheck` is called after any start that got no answer (Task 5, step 7), and by the timer of step 6. A check that is waiting for an answer absorbs a further request; the record that request was about is `pending` with a deadline after `asked`, so step 6 brings the check back for it.
 
 **The facts in `StartRun`.** From this task on, `StartRun` reads `agent.facts` for checks 3 to 5 of its step 5, in that order and with the roadmap's texts. pmm-agent is root when `facts.User` is `root` [I: plan 03 fills `user` with the name of the user pmm-agent runs as].
 
@@ -881,6 +896,8 @@ func (s *ScriptRunsService) requestCheck(pmmAgentID string)
   - `TestCheckUnansweredStartLost`: the same, not in the answer → `lost` with the "may have started" reason.
   - `TestCheckRetriesUntilAnswered`: the sender times out twice, then answers → three requests, pauses of about 1 s and 2 s (a fake clock), then the records are judged; with the context canceled during a pause → no further request, nothing changed.
   - `TestCheckAfterUnansweredStart`: `requestCheck` while no check runs → one more `ListRunsRequest`.
+  - `TestCheckRunsAgainAfterStartDeadline` (a fake clock): a `pending` record whose `start_deadline` is 5 s after `asked`, absent from the answer → unchanged, then a second `ListRunsRequest` once the deadline has passed, after which the record is `lost` with the "may have started" reason. The same with the record moved to `queued` before the deadline → no second request.
+  - `TestCheckRequestDuringCheck`: `requestCheck` for a second unanswered start while a check waits for its answer → no extra request then, and the second record is still settled after its own deadline.
   - `TestCheckTooOld`: a version below the gate → no request is sent.
   - In `script_runs_test.go`, `TestStartRunFromFacts`: facts with `Disabled` → `not_started`, "script runs are switched off on this host"; `User: "pmm-agent"` and `run_as` set → "run_as needs a pmm-agent that runs as root"; `Contained: false` and `memory_max` 64 MiB → "memory_max needs a host where runs are contained"; all three at once → the first; no facts yet → sent. No `StartJobRequest` in the refused cases.
 - [ ] **Step 2: Run** in the devcontainer: `… go test -race -p 1 -run 'TestCheck|TestStartRunFromFacts' ./services/agents/` → FAIL.
@@ -924,11 +941,11 @@ const waitReread = time.Second
   - it returns at once with the record and never waits for the run to end. A `pending` run's stop is sent by `StartRun` once pmm-agent accepts it (Task 5, step 7), or by the check (Task 7). The stop row goes when the run turns final (Task 2).
 - **`GetRun` with `wait`**, for a caller that follows one run: when the run is open, `WaitFinal` waits for a wake-up from Task 6 or 7 or the end of the wait, and re-reads the record every `waitReread` meanwhile, so it returns whichever replica stored the result ([ADR-13](../adr/ADR-13-high-availability.md)). It returns the record as it then is.
 - **`ListRuns`**, every answer carries `cursor` ([spec §6.7](../spec.md#67-the-api)):
-  - **plain** (no `final_after`, no `from_now`): `FindScriptRuns` by `pmm_agent_id` and `final`, ordered by `created_at` descending (`script_runs_created_at_idx`), `page_size` default `defaultListPageSize`, with `total_items` and `total_pages` as `ListInsightsResponse` (`advisors.proto:302-306`) [V]; `cursor` is `CurrentScriptRunsCursor`. `wait` without `final_after` is `codes.InvalidArgument`.
+  - **plain** (no `final_after`, no `from_now`): `FindScriptRuns` by `pmm_agent_id` and `final`, ordered by `created_at` descending (`script_runs_created_at_idx`), `page_size` default `defaultListPageSize`, with `total_items` and `total_pages` as `ListInsightsResponse` (`advisors.proto:302-306`) [V]; `cursor` is `CurrentScriptRunsCursor`, read before the runs: a run that turns final between the two reads is then above the cursor, and comes with the caller's next `final_after` call. `wait` without `final_after` is `codes.InvalidArgument`.
   - **`from_now`**: no runs, `cursor` is `CurrentScriptRunsCursor`. With `final_after`, `final`, `page_index` or `wait` it is `codes.InvalidArgument`.
-  - **`final_after`**, for a caller that keeps one call open to hear of every run's end ([ADR-10](../adr/ADR-10-api-shape.md); plan 04): the cursor is the decimal text of a `final_seq`, and `""` means 0; anything else is `codes.InvalidArgument`, as are `final` and `page_index` with it. `page_size` caps the runs returned; `pmm_agent_id` filters. Runs whose `final_seq` is above the cursor come back at once, by `final_seq`. With none, `WaitFinalAfter` waits for the broadcast wake-up or the end of `wait`, re-reading every `waitReread`, and returns what it then finds, which may be nothing. `cursor` is the `final_seq` of the last run returned, otherwise the larger of the given cursor and `CurrentScriptRunsCursor`. `total_items` and `total_pages` are 0.
+  - **`final_after`**, for a caller that keeps one call open to hear of every run's end ([ADR-10](../adr/ADR-10-api-shape.md); plan 04): the cursor is the decimal text of a `final_seq`, and `""` means 0; anything else is `codes.InvalidArgument`, as are `final` and `page_index` with it. `page_size` caps the runs returned; `pmm_agent_id` filters. Runs whose `final_seq` is above the cursor come back at once, by `final_seq`. With none, `WaitFinalAfter` waits for the broadcast wake-up or the end of `wait`, re-reading every `waitReread`, and returns what it then finds, which may be nothing. `cursor` is the `final_seq` of the last run returned; with no run returned it is the cursor that was given (`"0"` for `""`). It is never read from `CurrentScriptRunsCursor` here: a run that commits between the read of the runs and that read would be passed over for good. `total_items` and `total_pages` are 0.
   - A run deleted by retention before the caller read it is not returned. The caller's own periodic check of its open runs covers a cursor that is older than 7 days.
-- **`GetRunLogs`**: `FindScriptRunLogs(offset, limit)`, `limit` default 100. `end` is true when the run is final and the page holds the run's last stored chunk. Unlike `BackupService.GetLogs` (`backup_service.go:426-475`) [V], there is no `last_chunk` row: the final state marks the end. A run whose output the cleaner deleted (Task 10) returns no chunks and `end: true`, and its record says `output_deleted`.
+- **`GetRunLogs`**: `FindScriptRunLogs(offset, limit)`, `limit` default 100. Each chunk carries its `dropped_before`. `end` is true when the run is final and the page holds the run's last stored chunk. Unlike `BackupService.GetLogs` (`backup_service.go:426-475`) [V], there is no `last_chunk` row: the final state marks the end. A run whose output the cleaner deleted (Task 10) returns no chunks and `end: true`, and its record says `output_deleted`.
 - **`ListRunFiles` and `ReadRunFile`**: relayed to pmm-agent with `ReadRunFileRequest` and `agentCallTimeout`; nothing is stored. No stream on this replica → `codes.FailedPrecondition` "pmm-agent is not connected"; pmm-agent's own error (no such file, not a regular file, a run it no longer knows) → `codes.NotFound` with its text. A known run whose `out/` is empty or gone lists no files, which is not an error. Confinement to `out/` is pmm-agent's ([spec §6.7](../spec.md#67-the-api), plan 01). The gateway writes `data` as base64 in JSON [I: grpc-gateway's `JSONPb` for `bytes`].
 - **Logging of the two waiting calls.** `logRequest` logs every call at info and any call of 1 s or more at warning (`interceptors.go:42-82`) [V]. A caller keeps one `ListRuns` open at all times, so pmm-managed would log a warning every 30 s. A new `waitingEndpointsRE` (`^/scripts.v1beta1.ScriptsService/(GetRun|ListRuns)$`) makes `UnaryAdd` log those two methods at debug, start and end, whatever their length; an error is still logged as today. `dropEndpointsRE` gains `ReadRunFile` and `GetRunLogs`, so a debug log does not print up to 2 MiB of a file or a page of output. The agent channel's own debug log prints every message whole (`channel/channel.go:261-267`) [V], including a 2 MiB file read; that is debug level only, and this plan leaves it as it is.
 
@@ -943,9 +960,10 @@ const waitReread = time.Second
   - `TestListRuns`: filters, order and paging; `cursor` set; `wait` without `final_after` → `InvalidArgument`.
   - `TestListRunsFromNow`: two runs already final → no runs, and `cursor` equal to the second's `final_seq`; `from_now` with `final_after` → `InvalidArgument`.
   - `TestListRunsFinalAfter`: two runs already final → both at once, in order, with `cursor` the second's; called again with it and a 5 s wait, a third run turned final 100 ms in → returned within 300 ms; a wait with nothing happening → no runs, `cursor` unchanged; `final_after: "x"` → `InvalidArgument`.
+  - `TestListRunsEmptyAnswerKeepsCursor`: `final_after` with a `pmm_agent_id` filter, while a run of another pmm-agent has turned final above the cursor → no runs, and `cursor` is the one given, not the other run's `final_seq`; a run of the filtered pmm-agent that turns final next is returned by the following call.
   - `TestListRunsWaitRereads`: a run turned final by another `ScriptRunsService` on the same database → returned within about 1.2 s.
   - `TestListRunsFinalAfterConcurrent`: 20 goroutines turn 200 runs final while a reader loops on `ListRuns` with `final_after`, `wait` and each answer's `cursor` → the reader sees all 200, each once.
-  - `TestGetRunLogs`: offsets; `end` false while open, true once final and read to the last chunk; `end: true` with no chunks for a run whose output was deleted.
+  - `TestGetRunLogs`: offsets; `dropped_before` as it was stored; `end` false while open, true once final and read to the last chunk; `end: true` with no chunks for a run whose output was deleted.
   - `TestReadRunFile`: the request carries offset and length; pmm-agent's error → `NotFound`; no stream here → `FailedPrecondition`.
   - `TestWaitingCallsLogAtDebug` (interceptors): a `ListRuns` call of 1.5 s through `UnaryAdd` logs nothing at info or warning; another method of 1.5 s still logs its warning.
 - [ ] **Step 2: Run** in the devcontainer: `… go test -race -p 1 -run 'TestStopRun|TestGetRunWait|TestListRuns|TestGetRunLogs|TestReadRunFile' ./services/agents/ ./services/scripts/` and on the host `cd managed && go test -race -p 1 -run TestWaitingCallsLogAtDebug ./utils/interceptors/` → FAIL.
@@ -1030,7 +1048,7 @@ func addScriptRunsCleaner(leader leaderServices, c *scripts.Cleaner)
 
 - **One pass of the cleaner**, in this order, each step in its own transaction:
   1. `DeleteOldScriptRuns`: final runs whose `finished_at` is older than `runRetention` (7 days), with their logs and stop rows by cascade.
-  2. `DeleteOldestScriptRunOutput(maxStoredOutputBytes)`: the stored output of all runs together stays within 1 GiB, the oldest finished runs' output going first ([spec §6.6](../spec.md#66-records-and-retention)). Open runs are never touched; a run whose output goes reads `output_deleted`.
+  2. `DeleteOldestScriptRunOutput(maxStoredOutputBytes)`: the stored output of all runs together is held to 1 GiB, the oldest finished runs' output going first ([spec §6.6](../spec.md#66-records-and-retention)). Open runs are never touched, so the step ends when no finished run has output left, even with the total still above the bound; a run whose output goes reads `output_deleted`.
   3. `FindScriptRunsOfRemovedAgents`: each open run whose pmm-agent row is gone becomes `lost`, "pmm-agent was removed from the inventory". This covers a removal that `beforeKick` did not see.
 
   Each step logs its count at info level when it is not 0. The loop is `clean.Results.Run`'s (`managed/utils/clean/clean.go:38-52`) [V].
@@ -1044,7 +1062,7 @@ func addScriptRunsCleaner(leader leaderServices, c *scripts.Cleaner)
 
 - [ ] **Step 1: Write the failing tests:**
   - `TestCleanerRetention` (`testdb`): runs finished 8 days and 6 days ago, and an open run created 30 days ago → after one pass only the first is gone, with its logs (T23 in part).
-  - `TestCleanerOutputBound` (`testdb`): `maxStoredOutputBytes` lowered for the test through an unexported field; three final runs above it together → the oldest loses its output first.
+  - `TestCleanerOutputBound` (`testdb`): `maxStoredOutputBytes` lowered for the test through an unexported field; three final runs above it together → the oldest loses its output first; open runs alone above it → the pass deletes nothing and ends.
   - `TestCleanerClosesRunsOfRemovedAgents` (`testdb`): an open run whose pmm-agent row was deleted → `lost` with the reason.
   - `TestCleanerStops`: `Run` returns when `ctx` is canceled.
   - `TestRemovedAgentStopsThenLoses` (`script_runs_test.go`, `testdb` and `mockAgentSender`): a pmm-agent with a `running` and a `queued` run, its row deleted, its stream held → two `StopJobRequest`s, then both `lost` with the reason; the order of the calls is checked.
@@ -1077,7 +1095,7 @@ func addScriptRunsCleaner(leader leaderServices, c *scripts.Cleaner)
   - `TestStartRunSameID`: two `StartRun` calls with one `run_id` → the same record; the script, which appends a line to a file in `/tmp` named after the id, ran once.
   - `TestRunFileModes`: two files, `mode` 0 and `0700`, and a script that prints `stat -c %a` of each → `600` and `700`; a file with `mode` `0644` → 400.
   - `TestRunFails`: `exit 3` → `failed`, `exit_code` 3.
-  - `TestRunValidation`: env `LD_PRELOAD`, `PMM_RUN_ID` and `PATH`; a file name `../x`; files of 1 MiB plus one byte; `command` and `env` of 64 KiB plus one byte together; `timeout` of 8 days; `start_within` of 25 h; `max_output_bytes` of 101 MiB; `memory_max` of 1 MiB; a `run_id` that is not a UUID → 400 each, and `ListRuns` shows no new record.
+  - `TestRunValidation`: env `LD_PRELOAD`, `PMM_RUN_ID` and `PATH`; a file name `../x`; files of 1 MiB plus one byte; 65 files; `command` and `env` of 64 KiB plus one byte together; `timeout` of 8 days; `start_within` of 25 h; `max_output_bytes` of 101 MiB; `memory_max` of 1 MiB; a `run_id` that is not a UUID → 400 each, and `ListRuns` shows no new record.
   - `TestStopRun`: `sleep 600` → `StopRun` `sent: true` → `stopped` within 10 s; `StopRun` again → the same record, `sent: false`.
   - `TestListRunsFinalAfter`: `ListRuns` with `from_now` → a cursor and no runs; start two short runs; `ListRuns` with that cursor and `wait=30s`, repeated with each answer's `cursor`, returns both, each once, within 30 s of their end.
   - `TestRunNotConnected`: `pmmapitests.AddGenericNode` (`helpers.go:164`), which removes its node itself after the test (`helpers.go:162-163`) [V], then `AddPMMAgent` (`:263`), never connected, with its removal registered after the node's helper so that it runs first → `not_started`, "pmm-agent is not connected"; `ListHosts` shows it with `can_run: false` and that reason.

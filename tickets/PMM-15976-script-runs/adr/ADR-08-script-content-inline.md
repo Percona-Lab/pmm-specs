@@ -31,7 +31,7 @@ pmm-agent accepts messages of up to 4 MiB from the server, gRPC's default, which
 Option 2.
 
 - A request carries `files`: a name, the content and a mode for each. pmm-agent writes them into the run directory before the start, and starts the process there. A name has no path in it, and a mode sets owner bits only.
-- Content is text. The content of all files of one request is at most 1 MiB, and so is `stdin`.
+- Content is text. The names and content of all files of one request are at most 1 MiB together, in at most 64 files, and `stdin` is at most 1 MiB. pmm-managed refuses a request that would be above 3 MiB as one message, so none can pass the 4 MiB that pmm-agent accepts.
 - pmm-managed records each file's name, size and SHA-256, and never its content (ADR-05).
 - A run's command is a list: the program and its arguments. pmm-agent does not pass it through a shell. The program must resolve on the host, or the run ends as `prepare_failed`.
 - Inputs that are secret travel as `stdin` or as a file of mode 0600, never in the environment.

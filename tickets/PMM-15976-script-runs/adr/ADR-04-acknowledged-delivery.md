@@ -29,7 +29,8 @@ Form 3 has three faults [V]: the queue has no bound; pmm-managed acknowledges ev
 Option 3.
 
 - The script never waits for the network.
-- One run may hold 4 MiB of output that has not been acknowledged, and all runs of a host together 32 MiB. Output beyond that is dropped from the middle and counted: the start of a run's output and its last 64 KiB are kept, because a failing script prints its error last. The result carries the number of bytes dropped, and the record shows it.
+- One run may hold 4 MiB of output that has not been acknowledged, and all runs of a host together 32 MiB. Output beyond that is dropped from the middle and counted: the start of a run's output and its last 64 KiB are kept, because a failing script prints its error last. A run whose `max_output_bytes` is under 128 KiB keeps half of it as its end. The first chunk after a gap carries the number of bytes dropped there; the result carries the run's total, and the record shows it.
+- The kept ends are held beside the 32 MiB, one for each run pmm-agent knows. A run holds its place in the host's limits until its result is acknowledged, so their number is bounded: 272 runs at the default limits, 17 MiB.
 - `max_output_bytes` caps what one run may store, in the same way.
 - A chunk or a result travels in a request that pmm-managed answers. pmm-agent keeps it until the answer arrives and sends it again after a reconnect.
 - pmm-managed stores first and answers second. Each item is answered as stored or as discarded, and pmm-agent sends again what got no answer. A chunk is stored once: `(run_id, chunk_id)` is the key.
@@ -44,7 +45,7 @@ The numbers are in [the roadmap's limits](../plans/00-roadmap.md#limits).
 
 ## Consequences
 
-- Complete output across the cuts the spike tested, with pmm-agent's memory bounded at 32 MiB above its base whatever scripts print.
+- Complete output across the cuts the spike tested, with pmm-agent's memory bounded whatever scripts print: 32 MiB of queued output and the kept ends, 49 MiB above its base at the default limits.
 - Output can be lost when a script prints more than 4 MiB while its host is cut off. The record says how much. Before this, the choice was between losing it silently and growing without limit.
 - A slow PostgreSQL slows delivery but loses nothing: pmm-agent re-sends what was not answered.
 - Output is text. Bytes that are not valid UTF-8, and NUL bytes, are replaced.

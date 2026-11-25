@@ -53,7 +53,7 @@ The third line tells pmm-agent that its group is delegated. A root pmm-agent can
 - when a run ends, however it ends, kills everything still in its group and removes the group;
 - at start-up kills and removes every run group it finds.
 
-**Every run**, contained or not, gets a high `oom_score_adj`: when the host itself runs out of memory, the kernel takes the run before the database or pmm-agent.
+**Every run**, contained or not, gets a high `oom_score_adj`: when the host itself runs out of memory, the kernel takes the run before the database or pmm-agent. A launcher sets it before the program's first instruction, so no child of a run is born without it.
 
 **Where that is not possible** (the Docker image of PMM Client, cgroup v1, a unit without the settings, a kernel without `cgroup.kill`), pmm-agent uses the process group and the environment mark, and reports `contained: false` for the host ([ADR-12](ADR-12-host-list.md)). At start-up it kills every process that still carries a run's mark. A run that asks for `memory_max` on such a host is not started: a limit that cannot be enforced is not silently dropped.
 
